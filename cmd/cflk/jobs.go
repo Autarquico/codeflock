@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"slices"
 	"strings"
 	"sync"
 
@@ -33,6 +32,7 @@ const stateDirVar = "CFLK_STATE_DIR"
 // and `cflk doctor` never depend on it.
 type localJobs struct {
 	exe  string
+	over overrides
 	once sync.Once
 	peer *peer
 	err  error
@@ -46,14 +46,28 @@ type peer struct {
 	runner *runner.Runner
 }
 
-func newLocalJobs(exe string) *localJobs { return &localJobs{exe: exe} }
+// overrides are what a test of this package swaps in the composition: the
+// agents that stand for the harnesses, and the program a launch runs as its
+// wrapper. They are not flags of the binary.
+type overrides struct {
+	agents  map[string]runner.Agent
+	wrapper func(launchDir string) []string
+}
+
+func newLocalJobs(exe string, over ...overrides) *localJobs {
+	l := &localJobs{exe: exe}
+	if len(over) > 0 {
+		l.over = over[0]
+	}
+	return l
+}
 
 func (l *localJobs) open() (*peer, error) {
-	l.once.Do(func() { l.peer, l.err = openPeer(l.exe) })
+	l.once.Do(func() { l.peer, l.err = openPeer(l.exe, l.over) })
 	return l.peer, l.err
 }
 
-func openPeer(exe string) (*peer, error) {
+func openPeer(exe string, over overrides) (*peer, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
@@ -76,14 +90,19 @@ func openPeer(exe string) (*peer, error) {
 	}
 	store := job.NewStore(root)
 	hostname, _ := os.Hostname()
+	wrapper := over.wrapper
+	if wrapper == nil {
+		wrapper = func(dir string) []string { return []string{exe, "internal", "wrapper", dir} }
+	}
 	return &peer{
 		name:  config.MachineName(hostname, "this machine"),
 		store: store,
 		tmux:  rt,
 		runner: runner.New(runner.Config{
 			Store: store, Host: host, Tmux: rt,
-			Wrapper:   func(dir string) []string { return []string{exe, "internal", "wrapper", dir} },
+			Wrapper:   wrapper,
 			NotifyCmd: []string{exe, "internal", "notify"},
+			Agents:    over.agents,
 		}),
 	}, nil
 }
@@ -189,9 +208,6 @@ func (l *localJobs) Resume(ctx context.Context, id string) (cli.JobView, error) 
 	if err != nil {
 		return cli.JobView{}, err
 	}
-	if !slices.Contains([]job.State{job.Stopped, job.Lost, job.Failed}, j.State) {
-		return cli.JobView{}, domain.NewError(domain.CodeInvalidTransition, fmt.Sprintf("job %s is %s: only a stopped, lost or failed Job is resumed", j.ID, j.State), nil)
-	}
 	if err := p.tmux.Check(ctx); err != nil {
 		return cli.JobView{}, err
 	}
@@ -292,6 +308,9 @@ func invalid(format string, args ...any) error {
 func mapErr(err error) error {
 	if errors.Is(err, job.ErrNotFound) {
 		return domain.NewError(domain.CodeNotFound, err.Error(), nil)
+	}
+	if errors.Is(err, job.ErrInvalidTransition) {
+		return domain.NewError(domain.CodeInvalidTransition, err.Error(), nil)
 	}
 	return err
 }

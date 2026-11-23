@@ -4,6 +4,7 @@ package runner_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -287,5 +288,84 @@ func TestGivenAStopWhoseProcessSurvivesWhenStoppingThenTheJobStaysStoppingAndSto
 	}
 	if j, err := p.store.Get(sj.id); err != nil || j.State != job.Stopped {
 		t.Fatalf("job after the second stop = %+v, %v; want stopped", j, err)
+	}
+}
+
+func TestGivenAWaitingJobWhenLaunchedAgainThenItIsRefusedAndTheLaunchIsKept(t *testing.T) {
+	p, scripts := newPeer(t, runner.Stopper{}, "fake")
+	sj := p.newJob(t, "fake", scripts["fake"], "Ready?")
+	launched, err := p.run.Launch(t.Context(), sj.id, "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.theAgentAsks(t, sj.id)
+	if got := p.state(t, sj.id); got != job.Waiting {
+		t.Fatalf("state = %s, want waiting", got)
+	}
+
+	for _, state := range []job.State{job.Waiting, job.Running, job.Stopping, job.Done} {
+		err := p.store.WithLock(sj.id, func(j *job.Job) error { j.State = state; return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := p.run.Launch(t.Context(), sj.id, ""); !errors.Is(err, job.ErrInvalidTransition) {
+			t.Errorf("launch of a %s Job = %v, want ErrInvalidTransition", state, err)
+		}
+	}
+	// Back to what it was, so that the cleanup stops the agent.
+	if err := p.store.WithLock(sj.id, func(j *job.Job) error { j.State = job.Waiting; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if j, _ := p.store.Get(sj.id); j.Launch == nil || j.Launch.ID != launched.Launch.ID {
+		t.Errorf("a refused launch replaced the launch: %+v", j.Launch)
+	}
+	if n := len(*p.asked); n != 1 {
+		t.Errorf("the agent was prepared %d times, want 1", n)
+	}
+}
+
+func TestGivenAStopInProgressWhenTheJobIsReadThenItShowsStoppingWithoutWaiting(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	slow := runner.Stopper{
+		Grace: 2 * time.Second, KillWait: 2 * time.Second, Poll: 20 * time.Millisecond,
+		Signal: func(pgid int, sig syscall.Signal) error {
+			once.Do(func() { close(entered); <-release })
+			return syscall.Kill(-pgid, sig)
+		},
+	}
+	p, scripts := newPeer(t, slow, "fake")
+	sj := p.newJob(t, "fake", scripts["fake"], "Ready?")
+	if _, err := p.run.Launch(t.Context(), sj.id, "work"); err != nil {
+		t.Fatal(err)
+	}
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- p.run.Stop(context.WithoutCancel(t.Context()), sj.id) }()
+	select {
+	case <-entered:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the stop never signalled")
+	}
+	// Reading takes the lock of the Job: it must not wait for the stop to end.
+	read := make(chan job.State, 1)
+	go func() {
+		j, _ := p.run.Reconcile(context.WithoutCancel(t.Context()), sj.id)
+		read <- j.State
+	}()
+	select {
+	case got := <-read:
+		if got != job.Stopping {
+			t.Errorf("state during the stop = %s, want stopping", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("reading the Job waited for the stop to end")
+	}
+	close(release)
+	if err := <-stopped; err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if got := p.state(t, sj.id); got != job.Stopped {
+		t.Errorf("state after the stop = %s, want stopped", got)
 	}
 }

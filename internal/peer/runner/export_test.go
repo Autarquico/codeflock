@@ -9,6 +9,9 @@ import (
 // WriteClaudeSettings exposes the hooks writer to the tests.
 var WriteClaudeSettings = writeClaudeSettings
 
+// MarkTurnsEndedBefore exposes the launch's look at the turns kept before its session was known.
+var MarkTurnsEndedBefore = markTurnsEndedBefore
+
 // ReadHooks is the commands of each event of a settings file.
 func ReadHooks(t *testing.T, path string) map[string][]string {
 	t.Helper()

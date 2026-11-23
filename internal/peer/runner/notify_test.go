@@ -53,6 +53,49 @@ func TestHandleNotify(t *testing.T) {
 	}
 }
 
+// A turn that ends before the launch knows its session is not lost: the launch
+// marks it waiting once it records the session, whichever comes first.
+func TestATurnThatEndsBeforeTheSessionIsKnownMarksTheJobWaitingOnceItIs(t *testing.T) {
+	const job, other = "0196a7b2-0000-7000-8000-000000000001", "0196a7b2-0000-7000-8000-000000000002"
+	turn := func(thread string) string { return `{"type":"agent-turn-complete","thread-id":"` + thread + `"}` }
+
+	t.Run("the turn of the session came first", func(t *testing.T) {
+		marker, sessionFile := notifyFixture(t, "")
+		for _, thread := range []string{other, job} {
+			if err := runner.HandleNotify(marker, sessionFile, turn(thread)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if exists(marker) {
+			t.Fatal("marked waiting before the session was known")
+		}
+		if err := os.WriteFile(sessionFile, []byte(job), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := runner.MarkTurnsEndedBefore(marker, sessionFile, job); err != nil {
+			t.Fatal(err)
+		}
+		if !exists(marker) {
+			t.Error("the turn that ended before the session was known was lost")
+		}
+	})
+	t.Run("only other threads ended", func(t *testing.T) {
+		marker, sessionFile := notifyFixture(t, "")
+		if err := runner.HandleNotify(marker, sessionFile, turn(other)); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(sessionFile, []byte(job), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := runner.MarkTurnsEndedBefore(marker, sessionFile, job); err != nil {
+			t.Fatal(err)
+		}
+		if exists(marker) {
+			t.Error("another thread's turn marked the Job waiting")
+		}
+	})
+}
+
 // The hooks of a Claude launch are plain shell commands: Stop sets the marker and
 // UserPromptSubmit removes it, whatever the path holds.
 func TestClaudeSettingsHooksSetAndClearTheMarker(t *testing.T) {
@@ -65,7 +108,11 @@ func TestClaudeSettingsHooksSetAndClearTheMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	hooks := runner.ReadHooks(t, settings)
-	for event, wantMarker := range map[string]bool{"Stop": true, "UserPromptSubmit": false} {
+	for _, step := range []struct {
+		event      string
+		wantMarker bool
+	}{{"Stop", true}, {"UserPromptSubmit", false}} {
+		event, wantMarker := step.event, step.wantMarker
 		cmds := hooks[event]
 		if len(cmds) != 1 {
 			t.Fatalf("%s hooks = %v", event, cmds)

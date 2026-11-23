@@ -128,31 +128,33 @@ func (r *Runner) Send(ctx context.Context, id, text string) error {
 }
 
 // Stop writes stopping, ends the group of the Job's launch (see Stopper.Stop) and,
-// only with the group gone, destroys its session and writes stopped. If something
-// of the group survives, or the wrapper cannot be identified, the Job stays
-// stopping, which is written, and Stop says why: a later Stop repeats it. A Job
-// already stopped is left alone.
+// only with the group gone, destroys its session and writes stopped. The lock is
+// not held while the group ends, which may take a while: stopping is on disk
+// meanwhile, so that ps and show see it. If something of the group survives, or
+// the wrapper cannot be identified, the Job stays stopping and Stop says why: a
+// later Stop repeats it. A Job already stopped is left alone.
 func (r *Runner) Stop(ctx context.Context, id string) error {
-	var notStopped error
+	var launch job.Job
+	var already bool
 	err := r.cfg.Store.WithLock(id, func(j *job.Job) error {
-		if j.State == job.Stopped {
+		if already = j.State == job.Stopped; already {
 			return nil
 		}
-		if err := j.Transition(job.Stopping); err != nil {
-			return err
-		}
-		if notStopped = r.endLaunch(ctx, *j); notStopped != nil {
-			return nil // stopping is what is true, and it is kept
+		launch = *j
+		return j.Transition(job.Stopping)
+	})
+	if err != nil || already {
+		return err
+	}
+	if notStopped := r.endLaunch(ctx, launch); notStopped != nil {
+		return fmt.Errorf("runner: job %s stays stopping: %w", id, notStopped)
+	}
+	return r.cfg.Store.WithLock(id, func(j *job.Job) error {
+		if j.State != job.Stopping { // another Stop got here first
+			return nil
 		}
 		return j.Transition(job.Stopped)
 	})
-	if err != nil {
-		return err
-	}
-	if notStopped != nil {
-		return fmt.Errorf("runner: job %s stays stopping: %w", id, notStopped)
-	}
-	return nil
 }
 
 func (r *Runner) endLaunch(ctx context.Context, j job.Job) error {

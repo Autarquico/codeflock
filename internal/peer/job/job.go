@@ -2,7 +2,10 @@
 // identifiers, its state machine and the store that keeps it on disk.
 package job
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // State is where a Job is in its life on this peer.
 type State string
@@ -73,10 +76,13 @@ type Location struct {
 	Gen  int    `json:"gen"`
 }
 
+// ErrInvalidTransition is what a change of state the spec does not allow wraps.
+var ErrInvalidTransition = errors.New("not allowed in that state")
+
 // Transition changes the state of j, refusing the changes the spec does not allow.
 func (j *Job) Transition(to State) error {
 	if !CanTransition(j.State, to) {
-		return fmt.Errorf("job %s: transition %s -> %s is not allowed", j.ID, j.State, to)
+		return fmt.Errorf("job %s is %s, it cannot become %s: %w", j.ID, j.State, to, ErrInvalidTransition)
 	}
 	j.State = to
 	return nil

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/Autarquico/codeflock/internal/adapters/harness"
@@ -83,6 +84,9 @@ func New(cfg Config) *Runner {
 	return &Runner{cfg: cfg, agents: agents}
 }
 
+// resumable are the states a launch may start from.
+var resumable = []job.State{job.Stopped, job.Lost, job.Failed}
+
 // Launch starts the agent of the Job as a new launch: its own id, the tmux session
 // cflk-<job>-<launch>, the harness under the wrapper, in the worktree of the Job's
 // generation. A Job without a session names one (Claude) or has it discovered
@@ -93,6 +97,9 @@ func New(cfg Config) *Runner {
 func (r *Runner) Launch(ctx context.Context, id, prompt string) (job.Job, error) {
 	var out job.Job
 	err := r.cfg.Store.WithLock(id, func(j *job.Job) error {
+		if !slices.Contains(resumable, j.State) {
+			return fmt.Errorf("job %s is %s, it cannot be launched: only a stopped, lost or failed Job is: %w", j.ID, j.State, job.ErrInvalidTransition)
+		}
 		if err := j.Transition(job.Running); err != nil {
 			return err
 		}
@@ -196,7 +203,10 @@ func (r *Runner) settle(ctx context.Context, agent Agent, in Input, l job.Launch
 	if err != nil {
 		return "", fmt.Errorf("runner: finding the session of the launch: %w", err)
 	}
-	return session, writeSession(in.SessionFile, session)
+	if err := writeSession(in.SessionFile, session); err != nil {
+		return "", err
+	}
+	return session, markTurnsEndedBefore(in.Waiting, in.SessionFile, session)
 }
 
 // abort ends a launch that did not come to be.
