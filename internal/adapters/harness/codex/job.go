@@ -45,9 +45,9 @@ func (a Adapter) StartSession(_ context.Context, host harness.Host, run harness.
 }
 
 // DiscoverSessions lists the sessions under <configDir>/sessions that were created
-// at or after `after` with cwd as their working directory (compared with symlinks
+// at or after `after` and not after `before` with cwd as their working directory (compared with symlinks
 // resolved). A launch that starts one session finds exactly one.
-func DiscoverSessions(ctx context.Context, configDir, cwd string, after time.Time) ([]string, error) {
+func DiscoverSessions(ctx context.Context, configDir, cwd string, after, before time.Time) ([]string, error) {
 	all, err := rollouts(configDir)
 	if err != nil {
 		return nil, fmt.Errorf("codex: looking for sessions: %w", err)
@@ -66,7 +66,7 @@ func DiscoverSessions(ctx context.Context, configDir, cwd string, after time.Tim
 			continue
 		}
 		meta, err := readMeta(raw)
-		if err != nil || meta.Timestamp.Before(after) || realPath(meta.Cwd) != want {
+		if err != nil || meta.Timestamp.Before(after) || meta.Timestamp.After(before) || realPath(meta.Cwd) != want {
 			continue
 		}
 		ids = append(ids, r.id)

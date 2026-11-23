@@ -55,7 +55,7 @@ func (a fakeAgent) Prepare(context.Context, runner.Input) (runner.Plan, error) {
 	}, nil
 }
 
-func (fakeAgent) Discover(context.Context, runner.Input, time.Time) ([]string, error) {
+func (fakeAgent) Discover(context.Context, runner.Input, time.Time, time.Time) ([]string, error) {
 	return nil, nil
 }
 

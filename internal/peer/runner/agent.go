@@ -42,8 +42,9 @@ type Agent interface {
 	// Prepare readies what must exist before the harness starts (trust of the folder,
 	// the hooks of the launch) and says what to run.
 	Prepare(ctx context.Context, in Input) (Plan, error)
-	// Discover lists the sessions the launch created, for a Plan without one.
-	Discover(ctx context.Context, in Input, after time.Time) ([]string, error)
+	// Discover lists the sessions the launch created, for a Plan without one: those
+	// created from after until before (the end of the launch, or now).
+	Discover(ctx context.Context, in Input, after, before time.Time) ([]string, error)
 }
 
 // staleWaiting is implemented by an Agent whose waiting marker the activity of the

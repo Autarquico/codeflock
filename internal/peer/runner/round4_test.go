@@ -164,7 +164,7 @@ type discoveringAgent struct {
 	ids []string
 }
 
-func (a discoveringAgent) Discover(context.Context, runner.Input, time.Time) ([]string, error) {
+func (a discoveringAgent) Discover(context.Context, runner.Input, time.Time, time.Time) ([]string, error) {
 	return a.ids, nil
 }
 
@@ -218,4 +218,89 @@ func cutShortLaunch(t *testing.T, p peerUnderTest, id string) job.Launch {
 		t.Fatal(err)
 	}
 	return l
+}
+
+func TestGivenASendThatFailedWhenTheHookWroteAFresherMarkerThenTheFresherOneStays(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "waiting")
+	aside := marker + ".sending"
+	older, newer := time.Now().Add(-time.Hour), time.Now()
+	write := func(path string, content string, at time.Time) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(aside, "old", older)
+	runner.RestoreMarker(aside, marker)
+	if info, err := os.Stat(marker); err != nil || !info.ModTime().Equal(older) {
+		t.Fatalf("marker without a newer one = %v, %v; want the one set aside, with its time", info, err)
+	}
+	if exists(aside) {
+		t.Error("the marker set aside is left behind")
+	}
+
+	write(marker, "new", newer)
+	write(aside, "old", older)
+	runner.RestoreMarker(aside, marker)
+	raw, _ := os.ReadFile(marker) //nolint:gosec // a file of the test
+	if string(raw) != "new" {
+		t.Errorf("marker = %q, want the fresher one", raw)
+	}
+	if exists(aside) {
+		t.Error("the marker set aside is left behind")
+	}
+}
+
+// A Codex session recovered after the launch was cut short is adopted as the
+// launch would have: its first turn, ended before the id was known, marks the
+// Job waiting.
+func TestGivenARecoveredSessionWhoseTurnHadEndedThenTheJobIsWaiting(t *testing.T) {
+	p, scripts := newPeer(t, runner.Stopper{}, "fake")
+	sj := p.newJob(t, "fake", scripts["fake"], "Ready?")
+	l := cutShortLaunch(t, p, sj.id)
+	dir := p.store.LaunchDir(sj.id, l.ID)
+	if err := os.WriteFile(filepath.Join(dir, runner.SessionFile+".turns"), []byte("rollout-1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	agent := discoveringAgent{scriptedAgent: scriptedAgent{script: scripts["fake"], mu: &sync.Mutex{}, asked: p.asked}, ids: []string{"rollout-1"}}
+	run := p.runnerWith(runner.Stopper{}, map[string]runner.Agent{"fake": agent})
+	if _, err := run.Reconcile(t.Context(), sj.id); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(p.store.WaitingPath(sj.id, l.ID)) {
+		t.Error("the turn that ended before the session was known was not consumed")
+	}
+}
+
+// Discovery looks only between the start of the launch and its end: the exit
+// record bounds it, and a launch still alive is bounded by now.
+func TestGivenARecoveryThenTheSessionsAreLookedForUntilTheLaunchEnded(t *testing.T) {
+	p, scripts := newPeer(t, runner.Stopper{}, "fake")
+	sj := p.newJob(t, "fake", scripts["fake"], "Ready?")
+	l := cutShortLaunch(t, p, sj.id)
+	ended := time.Now().Add(-30 * time.Second).Truncate(time.Second)
+	writeExit(t, p.store.ExitPath(sj.id, l.ID), execwrap.Exit{ExitedAt: ended, Cause: execwrap.CauseExit})
+	var before time.Time
+	agent := boundsAgent{scriptedAgent: scriptedAgent{script: scripts["fake"], mu: &sync.Mutex{}, asked: p.asked}, before: &before}
+	run := p.runnerWith(runner.Stopper{}, map[string]runner.Agent{"fake": agent})
+	if _, err := run.Reconcile(t.Context(), sj.id); err != nil {
+		t.Fatal(err)
+	}
+	if !before.Equal(ended) {
+		t.Errorf("upper bound = %v, want the exit time %v", before, ended)
+	}
+}
+
+type boundsAgent struct {
+	scriptedAgent
+	before *time.Time
+}
+
+func (a boundsAgent) Discover(_ context.Context, _ runner.Input, _, before time.Time) ([]string, error) {
+	*a.before = before
+	return nil, nil
 }

@@ -43,7 +43,7 @@ func (a probeAgent) Prepare(ctx context.Context, in runner.Input) (runner.Plan, 
 	return plan, err
 }
 
-func (a probeAgent) Discover(context.Context, runner.Input, time.Time) ([]string, error) {
+func (a probeAgent) Discover(context.Context, runner.Input, time.Time, time.Time) ([]string, error) {
 	return a.discover, nil
 }
 

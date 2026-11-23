@@ -62,8 +62,8 @@ func codexConfigDir(host harness.Host) string {
 	return dir
 }
 
-func (a codexAgent) Discover(ctx context.Context, in Input, after time.Time) ([]string, error) {
-	return codex.DiscoverSessions(ctx, codexConfigDir(a.host), in.Worktree, after)
+func (a codexAgent) Discover(ctx context.Context, in Input, after, before time.Time) ([]string, error) {
+	return codex.DiscoverSessions(ctx, codexConfigDir(a.host), in.Worktree, after, before)
 }
 
 // WaitingStale: the notification comes at the end of a turn, so a rollout that

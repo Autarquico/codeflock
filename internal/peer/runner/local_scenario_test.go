@@ -45,7 +45,7 @@ func (a scriptedAgent) Prepare(_ context.Context, in runner.Input) (runner.Plan,
 	}, nil
 }
 
-func (scriptedAgent) Discover(context.Context, runner.Input, time.Time) ([]string, error) {
+func (scriptedAgent) Discover(context.Context, runner.Input, time.Time, time.Time) ([]string, error) {
 	return nil, nil
 }
 

@@ -136,9 +136,7 @@ func (r *Runner) Send(ctx context.Context, id, text string) error {
 			return fmt.Errorf("runner: clearing the waiting marker: %w", err)
 		}
 		if err := r.cfg.Tmux.SendText(ctx, r.cfg.Tmux.HandleFor(j.Launch.Session), text); err != nil {
-			if _, statErr := os.Stat(marker); errors.Is(statErr, fs.ErrNotExist) {
-				_ = os.Rename(aside, marker)
-			}
+			restoreMarker(aside, marker)
 			return err
 		}
 		_ = os.Remove(aside)
@@ -147,6 +145,14 @@ func (r *Runner) Send(ctx context.Context, id, text string) error {
 		}
 		return nil
 	})
+}
+
+// restoreMarker puts the marker set aside back unless one was written meanwhile:
+// that one is newer and stays (a link fails where the name exists, a rename would
+// replace it).
+func restoreMarker(aside, marker string) {
+	_ = os.Link(aside, marker)
+	_ = os.Remove(aside)
 }
 
 // Stop writes stopping, ends the group of the Job's launch (see Stopper.Stop) and,

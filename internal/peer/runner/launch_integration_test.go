@@ -28,7 +28,7 @@ func (a fakeAgent) Prepare(_ context.Context, _ runner.Input) (runner.Plan, erro
 	}, nil
 }
 
-func (fakeAgent) Discover(context.Context, runner.Input, time.Time) ([]string, error) {
+func (fakeAgent) Discover(context.Context, runner.Input, time.Time, time.Time) ([]string, error) {
 	return nil, nil
 }
 
@@ -196,7 +196,7 @@ func (a envDumpAgent) Prepare(context.Context, runner.Input) (runner.Plan, error
 	return runner.Plan{Argv: []string{"/bin/sh", "-c", "env > " + a.dump}, SessionID: "fake-session"}, nil
 }
 
-func (envDumpAgent) Discover(context.Context, runner.Input, time.Time) ([]string, error) {
+func (envDumpAgent) Discover(context.Context, runner.Input, time.Time, time.Time) ([]string, error) {
 	return nil, nil
 }
 

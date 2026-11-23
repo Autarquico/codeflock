@@ -235,31 +235,53 @@ func (r *Runner) settle(ctx context.Context, agent Agent, in Input, l job.Launch
 		return session, nil
 	}
 	err = poll(ctx, r.cfg.DiscoverTimeout, func() (bool, error) {
-		ids, err := agent.Discover(ctx, in, started.StartedAt)
-		switch {
-		case err != nil:
-			return false, err
-		case len(ids) > 1:
-			return false, fmt.Errorf("%d sessions of the harness were created in %s: %v", len(ids), in.Worktree, ids)
-		case len(ids) == 1:
-			session = ids[0]
-		}
-		return session != "", nil
+		var err error
+		session, err = r.discover(ctx, agent, in, r.cfg.Store.ExitPath(in.Job.ID, l.ID), started.StartedAt)
+		return session != "", err
 	})
 	if err != nil {
 		return "", fmt.Errorf("runner: finding the session of the launch: %w", err)
 	}
-	if err := writeSession(in.SessionFile, session); err != nil {
+	return session, recordSession(in, session)
+}
+
+// discover is the session the harness created for the launch, between its start
+// and its end (now, if it has not ended); empty if there is none yet. Several are
+// an error.
+func (r *Runner) discover(ctx context.Context, agent Agent, in Input, exitPath string, started time.Time) (string, error) {
+	before := time.Now()
+	var exit execwrap.Exit
+	if ok, err := readRecord(exitPath, &exit); err != nil {
 		return "", err
+	} else if ok {
+		before = exit.ExitedAt
 	}
-	return session, markTurnsEndedBefore(in.Waiting, in.SessionFile, session)
+	ids, err := agent.Discover(ctx, in, started, before)
+	switch {
+	case err != nil:
+		return "", err
+	case len(ids) > 1:
+		return "", fmt.Errorf("%d sessions of the harness were created in %s during the launch: %v", len(ids), in.Worktree, ids)
+	case len(ids) == 1:
+		return ids[0], nil
+	}
+	return "", nil
+}
+
+// recordSession is what a launch does once it knows its session, however it came
+// to know it: write it down, then see whether its first turn had already ended.
+func recordSession(in Input, session string) error {
+	if err := writeSession(in.SessionFile, session); err != nil {
+		return err
+	}
+	return markTurnsEndedBefore(in.Waiting, in.SessionFile, session)
 }
 
 // importSession gives a Job that lacks a session the one its current launch
 // discovered and wrote to its session file or, if the launch was cut short before
-// writing it, the one the harness created since the launch started (found as
-// settle would, and then written). Several candidates are an error and leave the
-// Job without a session.
+// writing it, the one the harness created during the launch (found and recorded
+// as the launch would). Several candidates are an error and leave the Job without
+// a session.
 func (r *Runner) importSession(ctx context.Context, j *job.Job) error {
 	if j.SessionID != "" || j.Launch == nil {
 		return nil
@@ -278,20 +300,16 @@ func (r *Runner) importSession(ctx context.Context, j *job.Job) error {
 	if ok, err := readRecord(r.cfg.Store.StartedPath(j.ID, j.Launch.ID), &started); err != nil || !ok {
 		return err
 	}
-	in := Input{Job: *j, Worktree: r.cfg.Store.WorktreeDir(j.ID, j.Gen), LaunchDir: launchDir}
-	ids, err := agent.Discover(ctx, in, started.StartedAt)
-	switch {
-	case err != nil:
-		return err
-	case len(ids) > 1:
-		return fmt.Errorf("%d sessions of the harness were created in %s since the launch started: %v; the session of job %s is not known", len(ids), in.Worktree, ids, j.ID)
-	case len(ids) == 1:
-		if err := writeSession(file, ids[0]); err != nil {
-			return err
-		}
-		j.SessionID = ids[0]
+	in := Input{
+		Job: *j, Worktree: r.cfg.Store.WorktreeDir(j.ID, j.Gen), LaunchDir: launchDir,
+		Waiting: r.cfg.Store.WaitingPath(j.ID, j.Launch.ID), SessionFile: file,
 	}
-	return nil
+	session, err := r.discover(ctx, agent, in, r.cfg.Store.ExitPath(j.ID, j.Launch.ID), started.StartedAt)
+	if err != nil || session == "" {
+		return err
+	}
+	j.SessionID = session
+	return recordSession(in, session)
 }
 
 func writeSession(path, id string) error {

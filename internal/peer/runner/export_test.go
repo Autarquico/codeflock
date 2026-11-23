@@ -45,3 +45,6 @@ func ReadHooks(t *testing.T, path string) map[string][]string {
 func PrepareFor(r *Runner, harnessID string, in Input) (Plan, error) {
 	return r.agents[harnessID].Prepare(context.Background(), in)
 }
+
+// RestoreMarker exposes the undoing of a send that failed.
+var RestoreMarker = restoreMarker

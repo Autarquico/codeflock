@@ -29,16 +29,19 @@ func TestDiscoverSessionsFindsTheOneCreatedAfterTheStartInTheWorktree(t *testing
 	const old, mine, other = "0196a7b2-0000-7000-8000-000000000001", "0196a7b2-0000-7000-8000-000000000002", "0196a7b2-0000-7000-8000-000000000003"
 	writeMetaRollout(t, cfg, old, wt, start.Add(-time.Hour))
 	writeMetaRollout(t, cfg, other, elsewhere, start.Add(time.Second))
-	got, err := codex.DiscoverSessions(t.Context(), cfg, wt, start)
+	got, err := codex.DiscoverSessions(t.Context(), cfg, wt, start, time.Now().Add(time.Hour))
 	if err != nil || len(got) != 0 {
 		t.Fatalf("before mine: %v, %v", got, err)
 	}
 	writeMetaRollout(t, cfg, mine, wt, start.Add(2*time.Second))
-	if got, err = codex.DiscoverSessions(t.Context(), cfg, wt, start); err != nil || len(got) != 1 || got[0] != mine {
+	if got, err = codex.DiscoverSessions(t.Context(), cfg, wt, start, time.Now().Add(time.Hour)); err != nil || len(got) != 1 || got[0] != mine {
 		t.Fatalf("sessions = %v, %v", got, err)
 	}
 	writeMetaRollout(t, cfg, "0196a7b2-0000-7000-8000-000000000004", wt, start.Add(3*time.Second))
-	if got, _ = codex.DiscoverSessions(t.Context(), cfg, wt, start); len(got) != 2 {
+	if got, _ = codex.DiscoverSessions(t.Context(), cfg, wt, start, start.Add(2*time.Second)); len(got) != 1 || got[0] != mine {
+		t.Errorf("a session created after the end of the launch is not its own: %v", got)
+	}
+	if got, _ = codex.DiscoverSessions(t.Context(), cfg, wt, start, time.Now().Add(time.Hour)); len(got) != 2 {
 		t.Errorf("two sessions are both reported (the caller refuses them): %v", got)
 	}
 }

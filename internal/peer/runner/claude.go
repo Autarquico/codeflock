@@ -72,7 +72,9 @@ func claudeConfigDir(host harness.Host) string {
 }
 
 // Discover is never needed: the session of a Claude launch is named at the start.
-func (claudeAgent) Discover(context.Context, Input, time.Time) ([]string, error) { return nil, nil }
+func (claudeAgent) Discover(context.Context, Input, time.Time, time.Time) ([]string, error) {
+	return nil, nil
+}
 
 // writeClaudeSettings installs the hooks that say that the agent waits: Stop, the
 // end of a turn, writes the marker, and UserPromptSubmit, which also fires for
