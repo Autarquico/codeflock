@@ -43,7 +43,6 @@ func errorOf(t *testing.T, stdout string) map[string]any {
 	return env
 }
 
-
 func TestApiSdkCliStatus_UsageErrorsAreInvalidRequestWithExit2(t *testing.T) {
 	cases := map[string][]string{
 		"unknown flag":         {"doctor", "--bogus"},
