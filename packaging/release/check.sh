@@ -46,15 +46,13 @@ for name in $expected; do
 	# the rule of install.sh: exactly one entry per binary, and a regular file
 	tar -tzf "$dist/$name" >"$scratch/members" || fail "$name is not readable"
 	if grep -Eq '(^/|(^|/)\.\.(/|$))' "$scratch/members"; then fail "$name has an unsafe member path"; fi
-	for bin in cflk cf; do
-		count=$(grep -cx "$bin" "$scratch/members" || true)
-		[ "$count" -ge 1 ] || fail "$name does not contain $bin"
-		[ "$count" -eq 1 ] || fail "$name contains $bin more than once"
-		rm -rf "$scratch/unpacked"
-		mkdir "$scratch/unpacked"
-		tar -xzf "$dist/$name" -C "$scratch/unpacked" "$bin" || fail "could not extract $bin from $name"
-		{ [ -f "$scratch/unpacked/$bin" ] && [ ! -L "$scratch/unpacked/$bin" ]; } || fail "$bin in $name is not a regular file"
-	done
+	count=$(grep -cx cflk "$scratch/members" || true)
+	[ "$count" -ge 1 ] || fail "$name does not contain cflk"
+	[ "$count" -eq 1 ] || fail "$name contains cflk more than once"
+	rm -rf "$scratch/unpacked"
+	mkdir "$scratch/unpacked"
+	tar -xzf "$dist/$name" -C "$scratch/unpacked" cflk || fail "could not extract cflk from $name"
+	{ [ -f "$scratch/unpacked/cflk" ] && [ ! -L "$scratch/unpacked/cflk" ]; } || fail "cflk in $name is not a regular file"
 done
 [ "$(find "$dist" -maxdepth 1 -name 'cflk_*.tar.gz' | wc -l | tr -d ' ')" -eq 4 ] || fail "dist holds tarballs beyond the four listed"
 echo "release-check: $dist ok ($version)"

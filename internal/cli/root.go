@@ -1,4 +1,4 @@
-// Package cli implements the cf command tree. It is a client of internal/client only.
+// Package cli implements the cflk command tree.
 package cli
 
 import (
@@ -12,99 +12,43 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 	"unicode"
 
 	"github.com/spf13/cobra"
 
-	v1 "github.com/Autarquico/codeflock/internal/api/v1"
-	"github.com/Autarquico/codeflock/internal/client"
-	"github.com/Autarquico/codeflock/internal/client/handoff"
-	"github.com/Autarquico/codeflock/internal/client/notify"
 	"github.com/Autarquico/codeflock/internal/domain"
+	"github.com/Autarquico/codeflock/internal/worker/doctor"
 )
 
-// Persistent flags every command shares. Commands composed in from other
-// packages (the daemon's) read them by name from their own flag set.
+// Persistent flags every command shares.
 const (
-	flagJSON       = "json"
-	flagController = "controller"
-	flagDebug      = "debug"
+	flagJSON  = "json"
+	flagDebug = "debug"
 )
 
 // Options are what the binary composes into the CLI that the CLI cannot reach
 // itself (ADR 0001): only cmd/cflk may know the adapters.
 type Options struct {
-	// Terminal opens the session of a Run in this terminal (`cflk attach`). Without
-	// one, attach answers CF_NOT_IMPLEMENTED once the Controller has answered.
-	Terminal Terminal
-	// Windows opens a window of its own for `cflk attach` without a terminal.
-	// Without one, attach refuses and gives the command to run in a terminal.
-	Windows Windows
-	// Workflows builds the adopter of the harness configuration of this machine
-	// (`cflk workflow adopt|commit`). Without one they answer CF_NOT_IMPLEMENTED.
-	Workflows WorkflowAdopterFactory
-	// Sessions builds the sessions of this machine's harnesses (`--session` of `cflk do`
-	// and `cflk task resume`). Without it they answer CF_NOT_IMPLEMENTED.
-	Sessions SessionsFactory
-	// TUI opens the terminal UI over the Controller (`cflk` with no arguments on a
-	// terminal). internal/tui is composed in by cmd/cflk: the CLI may not import
-	// it. Without one, `cflk` prints its help.
-	TUI func(ctx context.Context, c *client.Client) error
-	// Native shows the desktop notifications of `cflk notify`. Without one they
-	// are only logged as unavailable.
-	Native notify.Native
-
-	// openTUIClient replaces the Controller client that the TUI gets in tests.
-	openTUIClient func(*cobra.Command) (*client.Client, error)
-	// handoffStore replaces the Controller client of `cflk handoff` in tests.
-	handoffStore func(*cobra.Command) (handoff.Controller, error)
-	// workflowStore replaces the Controller client of the workflow commands in tests.
-	workflowStore func(*cobra.Command) (workflowStore, error)
-	// workflowApplyStore does the same for status, diff, apply, rollback, explain and sync.
-	workflowApplyStore func(*cobra.Command) (workflowApplyStore, error)
-	// applyTimer and applyPoll replace the timer and the polling interval of
-	// the wait for an order in tests.
-	applyTimer timerFunc
-	applyPoll  time.Duration
-	// environmentStore does the same for the environment commands.
-	environmentStore func(*cobra.Command) (environmentStore, error)
-	// projectUpdater replaces the Controller client of `project set` in tests.
-	projectUpdater func(*cobra.Command) (projectUpdater, error)
-	// doctorStore and sshProbe replace the Controller client and the ssh of `cflk doctor` in tests.
-	doctorStore func(*cobra.Command) (doctorStore, error)
-	sshProbe    sshProbe
-	// doctorTimer replaces the timer of the deadline of the real ssh probe in tests.
-	doctorTimer timerFunc
+	// Doctor replaces the checks of `cflk doctor`; nil answers CF_NOT_IMPLEMENTED.
+	Doctor func(context.Context) ([]doctor.Component, error)
 }
 
-// Execute runs the cf command tree, plus any extra top-level commands the
-// binary composes in (the daemon commands, ADR 0001), and returns the exit code.
-func Execute(extra ...*cobra.Command) int { return ExecuteWith(Options{}, extra...) }
-
-// ExecuteWith is Execute with the composition of the binary.
-func ExecuteWith(opts Options, extra ...*cobra.Command) int {
+// ExecuteWith runs the cf command tree with the composition of the binary and
+// returns the exit code.
+func ExecuteWith(opts Options) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	return RunContextWith(ctx, opts, os.Args[1:], os.Stdin, os.Stdout, os.Stderr, extra...)
+	return RunContextWith(ctx, opts, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 }
 
-// Run is Execute over explicit streams.
-func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, extra ...*cobra.Command) int {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-	return RunContext(ctx, args, stdin, stdout, stderr, extra...)
+// Run is ExecuteWith over explicit streams.
+func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	return RunContextWith(context.Background(), Options{}, args, stdin, stdout, stderr)
 }
 
-// RunContext is Run under a context the caller ends: commands that run until
-// interrupted stop when ctx does, whatever the process gets.
-func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, extra ...*cobra.Command) int {
-	return RunContextWith(ctx, Options{}, args, stdin, stdout, stderr, extra...)
-}
-
-// RunContextWith is RunContext with the composition of the binary.
-func RunContextWith(ctx context.Context, opts Options, args []string, stdin io.Reader, stdout, stderr io.Writer, extra ...*cobra.Command) int {
-	root := CommandTree(opts, extra...)
+// RunContextWith is Run under a context the caller ends, with the composition of the binary.
+func RunContextWith(ctx context.Context, opts Options, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	root := newRootCmd(opts)
 	root.SetArgs(args)
 	root.SetIn(stdin)
 	root.SetOut(stdout)
@@ -119,15 +63,6 @@ func RunContextWith(ctx context.Context, opts Options, args []string, stdin io.R
 		return report(stdout, stderr, err, jsonRequested(root, args), debug)
 	}
 	return 0
-}
-
-// CommandTree builds a fresh cf command tree. Nothing is shared between two
-// trees, so a caller that runs a command from one cannot leak flag or context
-// state into the next. The parity test of the action registry walks it.
-func CommandTree(opts Options, extra ...*cobra.Command) *cobra.Command {
-	root := newRootCmd(opts)
-	addCommands(root, extra)
-	return root
 }
 
 // jsonRequested also looks at the raw arguments: a usage error can stop flag
@@ -154,10 +89,6 @@ func jsonRequested(root *cobra.Command, args []string) bool {
 // envelope goes to stdout, so a script parses one stream whether or not the
 // command worked. Errors without a code are unclassified (1).
 func report(stdout, stderr io.Writer, err error, asJSON, debug bool) int {
-	var shell ShellStatus
-	if errors.As(err, &shell) {
-		return int(shell) // the shell's own status: not an error of cf, so nothing is printed
-	}
 	var coded *domain.Error
 	isCoded := errors.As(err, &coded)
 	if !isCoded {
@@ -165,7 +96,7 @@ func report(stdout, stderr io.Writer, err error, asJSON, debug bool) int {
 	}
 	switch {
 	case asJSON:
-		_ = encodeJSON(stdout, v1.ErrorEnvelope{Error: v1.ErrorBody{Code: coded.Code, Message: coded.Message, Details: coded.Details}})
+		_ = encodeJSON(stdout, errorEnvelope{Error: errorBody{Code: coded.Code, Message: coded.Message, Details: coded.Details}})
 	case !isCoded:
 		fmt.Fprintln(stderr, "error:", err)
 	default:
@@ -174,9 +105,19 @@ func report(stdout, stderr io.Writer, err error, asJSON, debug bool) int {
 	return domain.ExitCode(coded.Code)
 }
 
+// errorEnvelope is what --json prints for a failure: {"error":{code,message,details}}.
+type errorEnvelope struct {
+	Error errorBody `json:"error"`
+}
+
+type errorBody struct {
+	Code    domain.Code    `json:"code"`
+	Message string         `json:"message"`
+	Details map[string]any `json:"details,omitempty"`
+}
+
 // humanError keeps internals out of sight: an internal error shows only the
-// request ID that finds it in the Controller's log, and --debug adds the rest
-// of the details (never a server stack: that stays on the server).
+// request ID that finds it in the log, and --debug adds the rest of the details.
 func humanError(e *domain.Error, debug bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "error: %s: %s", e.Code, printable(e.Message))
@@ -196,7 +137,7 @@ func humanError(e *domain.Error, debug bool) string {
 	return b.String()
 }
 
-// printable drops control characters from text that came from the server, so
+// printable drops control characters from text that came from outside, so
 // it cannot move the cursor, recolour the terminal or fake extra lines.
 func printable(s string) string {
 	return strings.Map(func(r rune) rune {
@@ -210,67 +151,17 @@ func printable(s string) string {
 func newRootCmd(opts Options) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "cflk",
-		Short:         "Code Flock: run coding agents across a pool of machines",
+		Short:         "Code Flock: coding agents that move between your machines",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.ArbitraryArgs,
-		RunE:          rootRun(opts),
+		RunE:          showHelpOrRejectArgs,
 	}
 	flags := root.PersistentFlags()
 	flags.Bool(flagJSON, false, "output as JSON; errors too, as {\"error\":{code,message,details}} on stdout")
-	flags.String(flagController, "", "host:port of the Controller for this run, instead of the one stored at connect time")
 	flags.Bool(flagDebug, false, "show the details of an error")
-	root.AddCommand(newVersionCmd(), newStatusCmd(), newConnectCmd(), newClientCmd(), newConfigCmd(),
-		newProjectCmd(openProjectUpdater(opts)), newTaskCmd(opts.Sessions), newDoCmd(opts.Sessions), newRunCmd(), newWorkerCmd(),
-		newAttachCmd(opts.Terminal, opts.Windows), newShellCmd(opts.Terminal), newPsCmd(), newInboxCmd(), newEventsCmd(), newLogsCmd(), newSearchCmd(),
-		newWorkflowCmd(workflowDepsOf(opts)), newEnvironmentCmd(openEnvironmentStore(opts)),
-		newDoctorCmd(openDoctorStore(opts), probeOf(opts)), newNotifyCmd(opts.Native), newMCPCmd(), newClaudeCmd(), newCodexCmd(), newHandoffCmd(opts), newGCCmd(), newStorageCmd())
+	root.AddCommand(newVersionCmd(), newDoctorCmd(opts))
 	return root
-}
-
-// rootRun is what bare `cflk` does: open the TUI when both ends are a terminal
-// and JSON was not asked for; else it is what it always was, a command that
-// only groups the others.
-func rootRun(opts Options) func(*cobra.Command, []string) error {
-	open := opts.openTUIClient
-	if open == nil {
-		open = openClient
-	}
-	return func(cmd *cobra.Command, args []string) error {
-		asJSON, _ := cmd.Flags().GetBool(flagJSON)
-		if opts.TUI == nil || len(args) > 0 || asJSON || !isTerminal(cmd.InOrStdin()) || !isTerminalStream(cmd.OutOrStdout()) {
-			return showHelpOrRejectArgs(cmd, args)
-		}
-		c, err := open(cmd)
-		if err != nil {
-			return err
-		}
-		return opts.TUI(cmd.Context(), c)
-	}
-}
-
-// isTerminalStream is isTerminal for an output stream; one that says so itself
-// (tests) is believed.
-func isTerminalStream(w io.Writer) bool {
-	if t, ok := w.(interface{ IsTerminal() bool }); ok {
-		return t.IsTerminal()
-	}
-	r, ok := w.(io.Reader)
-	return ok && isTerminal(r)
-}
-
-// addCommands composes commands from other packages into root. One that has
-// the name of a command root already has (`worker`) contributes its
-// subcommands to it instead of replacing it.
-func addCommands(root *cobra.Command, extra []*cobra.Command) {
-	for _, cmd := range extra {
-		i := slices.IndexFunc(root.Commands(), func(existing *cobra.Command) bool { return existing.Name() == cmd.Name() })
-		if i < 0 {
-			root.AddCommand(cmd)
-			continue
-		}
-		root.Commands()[i].AddCommand(cmd.Commands()...)
-	}
 }
 
 // reportUsageAsInvalidRequest makes a wrong flag or argument count a

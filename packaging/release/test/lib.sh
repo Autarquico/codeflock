@@ -19,7 +19,7 @@ assert_no_requests() { [ "$(requests)" -eq 0 ] || fail "the server saw $(request
 
 # --- release fixture -------------------------------------------------------
 
-# make_dist DIR [MODE]: the four platform tarballs, each holding a fake cflk that prints the bare version and a fake transition cf.
+# make_dist DIR [MODE]: the four platform tarballs, each holding a fake cflk that prints the bare version.
 make_dist() {
 	mkdir -p "$1"
 	for target in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do

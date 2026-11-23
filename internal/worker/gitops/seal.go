@@ -10,10 +10,16 @@ import (
 	"strings"
 	"time"
 
-	v1 "github.com/Autarquico/codeflock/internal/api/v1"
 	"github.com/Autarquico/codeflock/internal/config"
 	"github.com/Autarquico/codeflock/internal/domain"
 	"github.com/Autarquico/codeflock/internal/support/redact"
+)
+
+// A sealing names the paths it left out as metadata: at most MaxExcludedPaths,
+// within MaxExcludedBytes, sorted. A longer list is cut and says so.
+const (
+	MaxExcludedPaths = 100
+	MaxExcludedBytes = 8 << 10
 )
 
 // Exclusions are the paths a sealing leaves out (§23.1, Appendix A): what is
@@ -36,7 +42,7 @@ type Intent struct {
 type Sealed struct {
 	Commit string
 	// Excluded are the untracked paths the sealing left out, sorted and cut to
-	// v1.MaxExcludedPaths and v1.MaxExcludedBytes; Truncated says it was cut.
+	// MaxExcludedPaths and MaxExcludedBytes; Truncated says it was cut.
 	Excluded  []string
 	Truncated bool
 }
@@ -259,7 +265,7 @@ func bound(paths []string) ([]string, bool) {
 			truncated = true
 			continue
 		}
-		if len(out) >= v1.MaxExcludedPaths || size+len(p) > v1.MaxExcludedBytes {
+		if len(out) >= MaxExcludedPaths || size+len(p) > MaxExcludedBytes {
 			return out, true
 		}
 		out = append(out, p)

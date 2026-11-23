@@ -3,7 +3,6 @@ package doctor_test
 import (
 	"testing"
 
-	"github.com/Autarquico/codeflock/internal/config"
 	"github.com/Autarquico/codeflock/internal/worker/doctor"
 )
 
@@ -21,21 +20,5 @@ func TestParseThreshold(t *testing.T) {
 		if _, err := doctor.ParseThreshold(text); err == nil {
 			t.Errorf("%q was accepted", text)
 		}
-	}
-}
-
-func TestSettingsPersistAndOverride(t *testing.T) {
-	paths := config.Paths{ConfigDir: t.TempDir(), DataDir: t.TempDir()}
-	if got, err := doctor.MinFree(paths, ""); err != nil || got.Percent != 20 {
-		t.Fatalf("default = %+v, %v", got, err)
-	}
-	if err := doctor.SaveSettings(paths, doctor.Settings{DiskMinFree: "50GiB"}); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := doctor.MinFree(paths, ""); err != nil || got.Bytes != 50<<30 {
-		t.Errorf("persisted = %+v, %v", got, err)
-	}
-	if got, err := doctor.MinFree(paths, "10%"); err != nil || got.Percent != 10 {
-		t.Errorf("override = %+v, %v", got, err)
 	}
 }

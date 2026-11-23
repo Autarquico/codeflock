@@ -1,0 +1,178 @@
+package sessions
+
+import (
+	"bufio"
+	"bytes"
+	"crypto/rand"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/Autarquico/codeflock/internal/adapters/harness"
+	"github.com/Autarquico/codeflock/internal/adapters/harness/claude"
+	"github.com/Autarquico/codeflock/internal/adapters/harness/codex"
+)
+
+// access is what this package knows of the sessions of one harness on this machine
+// that the adapter does not: where they are when only the id is known, and what an id of
+// that harness looks like.
+type access struct {
+	id     string
+	porter harness.SessionPorter
+	// home is the directory of the harness: its environment variable, or under $HOME.
+	home func(getenv func(string) string) (string, error)
+	// find says where the transcript of the session is and the cwd it ran in.
+	find  func(dir, id string) (path, cwd string, found bool, err error)
+	newID func() string
+}
+
+func accesses() []access {
+	return []access{
+		{
+			id: claude.ID, porter: claude.Adapter{}, home: homeOf(claude.ConfigHomeEnv, ".claude"),
+			find: findClaude, newID: uuid4,
+		},
+		{
+			id: codex.ID, porter: codex.Adapter{}, home: homeOf(codex.ConfigHomeEnv, ".codex"),
+			find: findCodex, newID: uuid7,
+		},
+	}
+}
+
+func homeOf(env, dir string) func(func(string) string) (string, error) {
+	return func(getenv func(string) string) (string, error) {
+		if v := getenv(env); v != "" {
+			return v, nil
+		}
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("session: no home directory: %w", err)
+		}
+		return filepath.Join(home, dir), nil
+	}
+}
+
+// findClaude looks for projects/*/<id>.jsonl, since the directory is named after a cwd
+// that only the transcript tells. A session pulled into a second checkout (a
+// worktree) has a copy under each: the one written last is the session.
+func findClaude(dir, id string) (path, cwd string, found bool, err error) {
+	entries, err := os.ReadDir(filepath.Join(dir, "projects"))
+	if errors.Is(err, os.ErrNotExist) {
+		return "", "", false, nil
+	}
+	if err != nil {
+		return "", "", false, err
+	}
+	var latest time.Time
+	for _, e := range entries {
+		p := filepath.Join(dir, "projects", e.Name(), id+".jsonl")
+		if info, err := os.Stat(p); err == nil && info.Mode().IsRegular() && (path == "" || info.ModTime().After(latest)) {
+			path, latest = p, info.ModTime()
+		}
+	}
+	if path == "" {
+		return "", "", false, nil
+	}
+	cwd, err = firstString(path, func(line []byte) string {
+		var l struct {
+			Cwd string `json:"cwd"`
+		}
+		_ = json.Unmarshal(line, &l)
+		return l.Cwd
+	})
+	if err != nil {
+		return "", "", false, err
+	}
+	if cwd == "" {
+		return "", "", false, fmt.Errorf("session %s does not say the directory it ran in", id)
+	}
+	return path, cwd, true, nil
+}
+
+// firstString is the first non-empty value pick finds in the lines of a file.
+func firstString(path string, pick func(line []byte) string) (string, error) {
+	f, err := os.Open(path) //nolint:gosec // a transcript found under the home of the harness
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	r := bufio.NewReader(f)
+	for {
+		line, err := r.ReadBytes('\n')
+		if v := pick(bytes.TrimSpace(line)); v != "" {
+			return v, nil
+		}
+		if errors.Is(err, io.EOF) {
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
+	}
+}
+
+// findCodex looks for the rollout named after the id under sessions/YYYY/MM/DD.
+func findCodex(dir, id string) (path, cwd string, found bool, err error) {
+	root := filepath.Join(dir, "sessions")
+	suffix := "-" + id + ".jsonl"
+	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		switch {
+		case errors.Is(err, os.ErrNotExist) && p == root:
+			return filepath.SkipAll
+		case err != nil:
+			return err
+		case d.Type().IsRegular() && strings.HasPrefix(d.Name(), "rollout-") && strings.HasSuffix(d.Name(), suffix):
+			if found {
+				return fmt.Errorf("session %s has more than one rollout in %s", id, dir)
+			}
+			path, found = p, true
+		}
+		return nil
+	})
+	if err != nil || !found {
+		return "", "", false, err
+	}
+	cwd, err = firstString(path, func(line []byte) string {
+		var l struct {
+			Payload struct {
+				Cwd string `json:"cwd"`
+			} `json:"payload"`
+		}
+		_ = json.Unmarshal(line, &l)
+		return l.Payload.Cwd
+	})
+	return path, cwd, true, err
+}
+
+func uuid4() string {
+	u := randomUUID()
+	u[6], u[8] = u[6]&0x0f|0x40, u[8]&0x3f|0x80
+	return formatUUID(u)
+}
+
+// uuid7 is the shape of the ids Codex names its threads with.
+func uuid7() string {
+	u := randomUUID()
+	ms := uint64(time.Now().UnixMilli())
+	for i := range 6 {
+		u[i] = byte(ms >> (8 * (5 - i))) //nolint:gosec // one byte of the 48-bit timestamp, truncation is the point
+	}
+	u[6], u[8] = u[6]&0x0f|0x70, u[8]&0x3f|0x80
+	return formatUUID(u)
+}
+
+func randomUUID() [16]byte {
+	var u [16]byte
+	_, _ = rand.Read(u[:])
+	return u
+}
+
+func formatUUID(u [16]byte) string {
+	return fmt.Sprintf("%x-%x-%x-%x-%x", u[0:4], u[4:6], u[6:8], u[8:10], u[10:16])
+}

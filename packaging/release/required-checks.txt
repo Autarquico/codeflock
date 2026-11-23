@@ -9,10 +9,6 @@ unit (macos-latest)
 cross-build
 integration (ubuntu-latest)
 integration (macos-latest)
-e2e (ubuntu-latest)
-e2e (macos-latest)
-service-units (ubuntu-latest)
-service-units (macos-latest)
 installer (ubuntu-latest)
 installer (macos-latest)
 workflow-policy

@@ -9,7 +9,6 @@ import (
 	"testing"
 	"unicode"
 
-	v1 "github.com/Autarquico/codeflock/internal/api/v1"
 	"github.com/Autarquico/codeflock/internal/domain"
 )
 
@@ -44,26 +43,18 @@ func errorOf(t *testing.T, stdout string) map[string]any {
 	return env
 }
 
-func isolatedMachine(t *testing.T) {
-	t.Helper()
-	t.Setenv("CFLK_CONFIG_DIR", t.TempDir())
-	t.Setenv("CFLK_DATA_DIR", t.TempDir())
-}
-
 func TestApiSdkCliStatus_UsageErrorsAreInvalidRequestWithExit2(t *testing.T) {
 	cases := map[string][]string{
-		"unknown flag":         {"status", "--bogus"},
+		"unknown flag":         {"doctor", "--bogus"},
 		"unknown flag on root": {"--bogus"},
-		"too many arguments":   {"status", "extra"},
-		"missing argument":     {"client", "remove"},
+		"too many arguments":   {"doctor", "extra"},
 		"unknown command":      {"nope"},
-		"unknown subcommand":   {"client", "nope"},
+		"unknown subcommand":   {"version", "nope"},
 		"bad flag value":       {"version", "--json=maybe"},
 	}
 	for name, args := range cases {
 		for _, mode := range []string{"human", "json before", "json after"} {
 			t.Run(name+"/"+mode, func(t *testing.T) {
-				isolatedMachine(t)
 				full := args
 				switch mode {
 				case "json before":
@@ -97,41 +88,14 @@ func TestApiSdkCliStatus_UsageErrorsAreInvalidRequestWithExit2(t *testing.T) {
 }
 
 func TestApiSdkCliStatus_JSONCommandsWriteExactlyOneValueToStdout(t *testing.T) {
-	isolatedMachine(t)
 	for _, args := range [][]string{
 		{"version", "--json"},
-		{"--json", "config", "paths"},
-		{"config", "show", "--json"},
 	} {
 		code, stdout, stderr := run(t, args...)
 		if code != 0 || stderr != "" {
 			t.Fatalf("cflk %v: exit %d, stderr %q", args, code, stderr)
 		}
 		oneJSONValue(t, stdout)
-	}
-}
-
-func TestApiSdkCliStatus_ConfigShowJSONSaysWhetherThisMachineIsConnected(t *testing.T) {
-	isolatedMachine(t)
-	_, stdout, _ := run(t, "config", "show", "--json")
-	client, ok := oneJSONValue(t, stdout)["client"].(map[string]any)
-	if !ok || client["connected"] != false {
-		t.Errorf("client %v", client)
-	}
-}
-
-func TestApiSdkCliStatus_AFailureWithJSONIsTheEnvelopeOnStdout(t *testing.T) {
-	isolatedMachine(t)
-	code, stdout, stderr := run(t, "status", "--json")
-	if code != 6 || stderr != "" {
-		t.Fatalf("exit %d, stderr %q", code, stderr)
-	}
-	var env v1.ErrorEnvelope
-	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
-		t.Fatal(err)
-	}
-	if env.Error.Code != domain.CodeUnauthenticated || !strings.Contains(env.Error.Message, "cflk connect") {
-		t.Errorf("envelope %+v", env)
 	}
 }
 
@@ -144,17 +108,7 @@ func TestApiSdkCliStatus_AnUncodedFailureWithJSONIsUnclassified(t *testing.T) {
 	}
 }
 
-func TestApiSdkCliStatus_ANoInvitationIsAUsageError(t *testing.T) {
-	isolatedMachine(t)
-	code, stdout, _ := run(t, "connect", "--json") // no invitation on stdin
-	env := errorOf(t, stdout)
-	if code != 2 || env["code"] != string(domain.CodeInvalidRequest) {
-		t.Errorf("exit %d, envelope %v", code, env)
-	}
-}
-
 func TestApiSdkCliStatus_HelpAndCompletionMisuseIsAUsageError(t *testing.T) {
-	isolatedMachine(t)
 	for _, args := range [][]string{{"completion", "nope"}, {"completion", "bash", "extra"}, {"help", "--bogus"}} {
 		code, stdout, _ := run(t, append(args, "--json")...)
 		if env := errorOf(t, stdout); code != 2 || env["code"] != string(domain.CodeInvalidRequest) {
@@ -167,14 +121,13 @@ func TestApiSdkCliStatus_HelpAndCompletionMisuseIsAUsageError(t *testing.T) {
 }
 
 func TestApiSdkCliStatus_AGroupingCommandWithJSONNeedsASubcommand(t *testing.T) {
-	isolatedMachine(t)
-	for _, args := range [][]string{{"--json"}, {"client", "--json"}, {"--json=true", "config"}, {"config", "--json=1"}} {
+	for _, args := range [][]string{{"--json"}, {"--json=true"}} {
 		code, stdout, stderr := run(t, args...)
 		if env := errorOf(t, stdout); code != 2 || env["code"] != string(domain.CodeInvalidRequest) || stderr != "" {
 			t.Errorf("cflk %v: exit %d, envelope %v, stderr %q", args, code, env, stderr)
 		}
 	}
-	for _, args := range [][]string{{}, {"client"}, {"client", "--json=false"}} {
+	for _, args := range [][]string{{}, {"--json=false"}} {
 		code, stdout, _ := run(t, args...)
 		if code != 0 || !strings.Contains(stdout, "Usage:") {
 			t.Errorf("cflk %v: exit %d, stdout %q", args, code, stdout)
@@ -227,5 +180,17 @@ func TestApiSdkCliStatus_DebugShowsDetailsAndTheDefaultDoesNot(t *testing.T) {
 	}
 	if !strings.Contains(debug.String(), "cause: x") || !strings.Contains(debug.String(), "request_id: req-1") {
 		t.Errorf("debug: %q", debug.String())
+	}
+}
+
+func TestAFailureWithJSONIsTheEnvelopeOnStdout(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := report(&stdout, &stderr, domain.NewError(domain.CodeNotImplemented, "no checks", nil), true, false)
+	var env errorEnvelope
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	if code != 8 || stderr.Len() != 0 || env.Error.Code != domain.CodeNotImplemented {
+		t.Errorf("exit %d, envelope %+v, stderr %q", code, env, stderr.String())
 	}
 }

@@ -2,8 +2,9 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, next]
   pull_request:
+    branches: [main, next]
 
 permissions:
   contents: read
@@ -62,130 +63,6 @@ jobs:
           CF_REQUIRE_TMUX: "1"
           CF_REQUIRE_GIT: "1"
 
-  # The scenarios of service-units against the real systemd --user and launchd
-  # of the runner. A required check since the end of Phase 1 (B5).
-  service-units:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version: "1.27.x"
-          check-latest: true
-      - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y git tmux dbus-user-session gnome-keyring
-      - if: runner.os == 'macOS'
-        run: brew install tmux
-      - if: runner.os == 'Linux'
-        name: Start the user's systemd
-        run: |
-          uid="$(id -u)"
-          sudo loginctl enable-linger "$USER"
-          sudo systemctl start "user@${uid}.service"
-          echo "XDG_RUNTIME_DIR=/run/user/${uid}" >> "$GITHUB_ENV"
-          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${uid}/bus" >> "$GITHUB_ENV"
-          for _ in $(seq 1 30); do
-            if XDG_RUNTIME_DIR="/run/user/${uid}" systemctl --user show-environment >/dev/null 2>&1; then exit 0; fi
-            sleep 1
-          done
-          echo "the user's systemd did not answer" >&2
-          exit 1
-      - run: CGO_ENABLED=1 go test -race -tags integration -count=1 -v -run 'TestScenario_ServiceUnits|TestServiceUnits' ./cmd/cflk/
-        env:
-          CF_REQUIRE_TMUX: "1"
-          CF_REQUIRE_GIT: "1"
-          CF_REQUIRE_SYSTEMD: ${{ runner.os == 'Linux' && '1' || '' }}
-          CF_REQUIRE_LAUNCHD: ${{ runner.os == 'macOS' && '1' || '' }}
-      # The keyring backend of secrets against a real, isolated keyring: a
-      # gnome-keyring-daemon with its own data dir on the user bus above, and a
-      # temporary keychain that is the default one on macOS (the login keychain
-      # is not touched). CF_REQUIRE_KEYRING makes the tests fail, not skip.
-      - if: runner.os == 'Linux'
-        name: Start an isolated Secret Service
-        run: |
-          data="$(mktemp -d)"
-          echo "XDG_DATA_HOME=${data}" >> "$GITHUB_ENV"
-          printf 'ci-keyring-password' | XDG_DATA_HOME="${data}" gnome-keyring-daemon --daemonize --unlock --components=secrets >/dev/null
-          for _ in $(seq 1 30); do
-            if busctl --user list --no-pager | grep -q org.freedesktop.secrets; then exit 0; fi
-            sleep 1
-          done
-          echo "the Secret Service did not appear on the user bus" >&2
-          exit 1
-      - if: runner.os == 'macOS'
-        name: Create a temporary default keychain
-        run: |
-          keychain="${RUNNER_TEMP}/cf-test.keychain-db"
-          security create-keychain -p ci-keychain-password "${keychain}"
-          security set-keychain-settings -lut 3600 "${keychain}"
-          security unlock-keychain -p ci-keychain-password "${keychain}"
-          security list-keychains -d user -s "${keychain}" "${HOME}/Library/Keychains/login.keychain-db"
-          security default-keychain -d user -s "${keychain}"
-      - name: Keyring tests
-        shell: bash
-        run: |
-          set -o pipefail
-          CGO_ENABLED=1 go test -race -tags integration -count=1 -v -run 'TestKeyring_' ./internal/adapters/secrets/keyring/ | tee keyring-tests.txt
-          # a selection that matches nothing, or tests that skipped, would pass quietly
-          passed="$(grep -c -e '^--- PASS: TestKeyring_' keyring-tests.txt || true)"
-          expected="$(grep -c -e '^func TestKeyring_' internal/adapters/secrets/keyring/keyring_integration_test.go)"
-          if [ "${expected}" -eq 0 ] || [ "${passed}" -ne "${expected}" ]; then echo "keyring tests passed: ${passed} of ${expected}" >&2; exit 1; fi
-          if grep -q -e '--- SKIP' keyring-tests.txt; then echo 'a keyring test skipped' >&2; exit 1; fi
-        env:
-          CF_REQUIRE_KEYRING: "1"
-      - if: always() && runner.os == 'macOS'
-        name: Remove the temporary keychain
-        run: |
-          security default-keychain -d user -s "${HOME}/Library/Keychains/login.keychain-db"
-          security delete-keychain "${RUNNER_TEMP}/cf-test.keychain-db" || true
-
-  # The end-to-end suite against the real cflk: the fixed seed corpus on ubuntu,
-  # its first seed with slower timings on macOS.
-  e2e:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
-    env:
-      CF_REQUIRE_TMUX: "1"
-      CF_REQUIRE_GIT: "1"
-      CF_E2E_ARTIFACTS: ${{ github.workspace }}/e2e-artifacts
-      CF_E2E_SCALE: ${{ matrix.os == 'macos-latest' && '1.5' || '1' }}
-      # Below the job's limit, so the tests fail and clean up before it cancels.
-      E2E_TIMEOUT: 20m
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version: "1.27.x"
-          check-latest: true
-      - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y git tmux
-      - if: runner.os == 'macOS'
-        run: brew install tmux
-      - run: git --version && tmux -V
-      - if: runner.os == 'macOS'
-        name: Pick the first seed of the corpus
-        run: |
-          seed="$(awk '!/^[[:space:]]*(#|$)/ { print $1; exit }' internal/e2e/testdata/seeds.txt)"
-          test -n "$seed"
-          echo "E2E_SEED=$seed" >> "$GITHUB_ENV"
-      - run: make test-e2e
-      - if: always()
-        run: make e2e-reap
-      - if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: e2e-logs-${{ matrix.os }}
-          path: ${{ env.CF_E2E_ARTIFACTS }}
-          if-no-files-found: ignore
-
   cross-build:
     runs-on: ubuntu-latest
     steps:
@@ -218,9 +95,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The update of a real beta.6 (transition_test.sh) builds it from its tag.
-      - name: Fetch the beta.6 tag
-        run: git fetch --no-tags --depth=1 origin +refs/tags/v0.4.0-beta.6:refs/tags/v0.4.0-beta.6
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.27.x"

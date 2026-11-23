@@ -7,7 +7,6 @@ on:
     paths:
       - "site/**"
       - "docs/guide/**"
-      - "internal/tui/testdata/**"
       - ".github/workflows/site.yml"
       - ".github/workflows/pages.yml"
 
