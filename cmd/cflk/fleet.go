@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -25,8 +26,9 @@ import (
 // before it counts as unreachable: a fleet listing must not wait for a dead peer.
 const queryTimeout = 4 * time.Second
 
-// unreachableState is the state a listing shows for a peer that did not answer.
-const unreachableState = "unreachable"
+// listBudget is how long `cflk ps` may take in all: discovery and the peers
+// share it, and the local Jobs are read meanwhile.
+const listBudget = 4500 * time.Millisecond
 
 // fleet is cli.Jobs over this peer and the others: every command works on a Job
 // wherever it is. The peers are the discovered ones, and a peer is only ever
@@ -38,6 +40,11 @@ type fleet struct {
 	windows   attachwindow.Runner
 	// timeout is how long a peer has to answer a question.
 	timeout time.Duration
+	// budget is how long a listing may take in all; zero is listBudget.
+	budget time.Duration
+	// orderTimeout is how long a peer has to carry out an order (stop, send,
+	// screen, resume); zero is remote.DefaultOrderTimeout.
+	orderTimeout time.Duration
 }
 
 var _ cli.Jobs = (*fleet)(nil)
@@ -70,7 +77,7 @@ func (f *fleet) ask(ctx context.Context, peers []discovery.Peer, req wire.Reques
 	for i, p := range peers {
 		replies[i].peer = p
 		if !p.Online {
-			replies[i].err = domain.NewError(domain.CodeWorkerOffline, "offline (Tailscale)", nil)
+			replies[i].err = domain.NewError(domain.CodePeerUnreachable, "offline (Tailscale)", nil)
 			continue
 		}
 		wg.Add(1)
@@ -98,42 +105,55 @@ func (f *fleet) isThis(name string) (bool, error) {
 	return name == "local" || name == self, err
 }
 
-func (f *fleet) List(ctx context.Context, only string) ([]cli.JobView, error) {
-	res, err := f.discover(ctx)
+// List is the Jobs of this peer and the others. Discovery and the peers share
+// one budget; this peer's Jobs are read while the others answer.
+func (f *fleet) List(ctx context.Context, only string) (cli.JobList, error) {
+	budget, cancel := context.WithTimeout(ctx, cmp.Or(f.budget, listBudget))
+	defer cancel()
+	res, err := f.discover(budget)
 	if err != nil {
-		return nil, err
+		return cli.JobList{}, err
 	}
 	wantLocal, peers := true, res.Peers
 	if only != "" {
 		this, err := f.isThis(only)
 		if err != nil {
-			return nil, err
+			return cli.JobList{}, err
 		}
 		wantLocal, peers = this, nil
 		if !this {
 			p, err := findPeer(res, only)
 			if err != nil {
-				return nil, err
+				return cli.JobList{}, err
 			}
 			peers = []discovery.Peer{p}
 		}
 	}
-	var views []cli.JobView
-	if wantLocal {
-		if views, err = f.local.List(ctx); err != nil {
-			return nil, err
+	var local []cli.JobView
+	var localErr error
+	localDone := make(chan struct{})
+	go func() {
+		defer close(localDone)
+		if wantLocal {
+			local, localErr = f.local.List(ctx)
 		}
+	}()
+	replies := f.ask(budget, peers, wire.Request{Op: wire.OpPS})
+	<-localDone
+	if localErr != nil {
+		return cli.JobList{}, localErr
 	}
-	for _, r := range f.ask(ctx, peers, wire.Request{Op: wire.OpPS}) {
+	list := cli.JobList{Jobs: local}
+	for _, r := range replies {
 		if r.err != nil {
-			views = append(views, cli.JobView{Peer: r.peer.Name, State: unreachableState, Problem: r.err.Error()})
+			list.Unreachable = append(list.Unreachable, cli.UnreachablePeer{Peer: r.peer.Name, Problem: r.err.Error()})
 			continue
 		}
 		for _, v := range r.resp.Jobs {
-			views = append(views, cli.JobView(v))
+			list.Jobs = append(list.Jobs, cli.JobView(v))
 		}
 	}
-	return views, nil
+	return list, nil
 }
 
 func (f *fleet) Peers(ctx context.Context) ([]cli.PeerView, error) {
@@ -218,7 +238,7 @@ func (f *fleet) locate(ctx context.Context, id string) (owner, error) {
 	for _, r := range f.ask(ctx, res.Peers, wire.Request{Op: wire.OpShow, Job: id}) {
 		switch {
 		case codeOf(r.err) == domain.CodeNotFound:
-		case r.err != nil || r.resp.Job == nil:
+		case r.err != nil || r.resp.Job == nil || r.resp.Job.ID != id:
 			silent = append(silent, r.peer.Name)
 		case r.resp.Job.State == string(job.Moved):
 		case found == nil || r.resp.Job.Gen > found.view.Gen:
@@ -228,15 +248,17 @@ func (f *fleet) locate(ctx context.Context, id string) (owner, error) {
 	if found != nil {
 		return *found, nil
 	}
-	msg := fmt.Sprintf("no peer has job %s", id)
 	if len(silent) > 0 {
-		msg = fmt.Sprintf("job %s is not on a peer that answered (no answer from: %s)", id, strings.Join(silent, ", "))
+		return owner{}, domain.NewError(domain.CodePeerNoAnswer,
+			fmt.Sprintf("job %s is not on a peer that answered (no answer from: %s)", id, strings.Join(silent, ", ")), nil)
 	}
-	return owner{}, domain.NewError(domain.CodeNotFound, msg, nil)
+	return owner{}, domain.NewError(domain.CodeNotFound, fmt.Sprintf("no peer has job %s", id), nil)
 }
 
 // call is op on the Job at its owner, expecting the generation that was found.
 func (f *fleet) call(ctx context.Context, o owner, op wire.Op, body []byte) (wire.Response, []byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, cmp.Or(f.orderTimeout, remote.DefaultOrderTimeout))
+	defer cancel()
 	return remote.Call(ctx, f.transport, *o.peer, wire.Request{Op: op, Job: o.view.ID, Gen: o.view.Gen}, body)
 }
 
@@ -296,8 +318,8 @@ func (f *fleet) Attach(ctx context.Context, id string, readOnly bool) error {
 	if o.peer == nil {
 		return f.local.Attach(ctx, id, readOnly)
 	}
-	if err := hasTerminal(job.Job{ID: id, State: job.State(o.view.State), Launch: &job.Launch{}}, domain.CodeRunNotAttachable); err != nil {
-		return err
+	if state := job.State(o.view.State); !runsAgent(state) {
+		return notRunning(id, state, domain.CodeRunNotAttachable)
 	}
 	argv, err := f.transport.AttachArgv(*o.peer, id, readOnly)
 	if err != nil {
@@ -318,6 +340,9 @@ func wireHarness(name string) (string, error) {
 }
 
 func (f *fleet) Run(ctx context.Context, req cli.RunRequest) (cli.JobView, error) {
+	if req.Prompt == "" {
+		return cli.JobView{}, invalid("the prompt is empty: say what the agent should do")
+	}
 	this, err := f.isThis(req.On)
 	if err != nil {
 		return cli.JobView{}, err
@@ -328,6 +353,16 @@ func (f *fleet) Run(ctx context.Context, req cli.RunRequest) (cli.JobView, error
 	harness, err := wireHarness(req.Harness)
 	if err != nil {
 		return cli.JobView{}, err
+	}
+	if len(req.Prompt) > wire.MaxBody {
+		return cli.JobView{}, invalid("the prompt is %d bytes: a Job sent to a peer takes at most %d", len(req.Prompt), wire.MaxBody)
+	}
+	createdBy, err := f.selfName()
+	if err != nil {
+		return cli.JobView{}, err
+	}
+	if !wire.ValidName(createdBy) {
+		return cli.JobView{}, invalid("the name of this machine, %q, cannot travel to a peer: use letters, digits, '.', '_' and '-' (hostname or CFLK machine name)", createdBy)
 	}
 	res, err := f.discover(ctx)
 	if err != nil {
@@ -345,12 +380,9 @@ func (f *fleet) Run(ctx context.Context, req cli.RunRequest) (cli.JobView, error
 	if err != nil {
 		return cli.JobView{}, err
 	}
-	createdBy, err := f.selfName()
-	if err != nil {
-		return cli.JobView{}, err
-	}
 	v, err := remote.Delegate(ctx, f.transport, *target, remote.Delegation{
 		RepoDir: src.dir, Repo: src.repo, Commit: src.commit, Harness: harness, CreatedBy: createdBy, Prompt: req.Prompt,
+		OrderTimeout: f.orderTimeout,
 	})
 	return cli.JobView(v), err
 }
@@ -364,7 +396,7 @@ func (f *fleet) target(ctx context.Context, res discovery.Result, on, harness st
 			return nil, err
 		}
 		if !p.Online {
-			return nil, domain.NewError(domain.CodeWorkerOffline, fmt.Sprintf("peer %s is offline", p.Name), nil)
+			return nil, domain.NewError(domain.CodePeerUnreachable, fmt.Sprintf("peer %s is offline (Tailscale)", p.Name), nil)
 		}
 		return &p, nil
 	}
@@ -380,7 +412,7 @@ func (f *fleet) target(ctx context.Context, res discovery.Result, on, harness st
 		}
 	}
 	if fewest < 0 {
-		return nil, domain.NewError(domain.CodeNoEligibleWorker, "no reachable peer has "+harness, nil)
+		return nil, domain.NewError(domain.CodeNoCandidatePeer, "no reachable peer has "+harness, nil)
 	}
 	return best, nil
 }

@@ -150,11 +150,62 @@ func TestARunNeedsTheCodeToBeInTheMirrorAtTheDeclaredCommit(t *testing.T) {
 	if err := run(id, head); err != nil {
 		t.Fatalf("the run that matches: %v", err)
 	}
-	if err := run(id, head); codeOf(err) != domain.CodeInvalidRequest {
-		t.Errorf("the same id twice: %v", err)
+	if err := run(id, head); err != nil {
+		t.Errorf("the same id twice is the same Job, not an error: %v", err)
+	}
+	jobs, _ := tp.remote.List(t.Context())
+	if len(jobs) != 1 || jobs[0].ID != id {
+		t.Errorf("jobs = %v", jobs)
+	}
+}
+
+func TestARunForAnIdThatIsAlreadyThereAnswersThatJobAndOnlyForTheSameRepo(t *testing.T) {
+	repo := repoWithOrigin(t)
+	tp := newTwoPeers(t, fakeharness.Step{WaitFile: &fakeharness.WaitFile{Path: filepath.Join(t.TempDir(), "never"), TimeoutMS: 120000}})
+	head := runGit(t, repo, "rev-parse", "HEAD")
+	mirror, _, err := tp.call(t, wire.Request{Op: wire.OpMirror, Repo: "example.com/o/r"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := job.NewID()
+	runGit(t, repo, "push", "-q", mirror.Mirror, "HEAD:refs/cflk/"+id+"/g1")
+	run := wire.Request{Op: wire.OpRun, Job: id, Harness: "claude", Repo: "example.com/o/r", Commit: head, CreatedBy: "laptop"}
+	first, _, err := tp.call(t, run, "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, _, err := tp.call(t, run, "work")
+	if err != nil || again.Job.ID != first.Job.ID || again.Job.Branch != first.Job.Branch {
+		t.Fatalf("the second ask answered %+v, %v; the first %+v", again.Job, err, first.Job)
 	}
 	if jobs, _ := tp.remote.List(t.Context()); len(jobs) != 1 {
-		t.Errorf("jobs = %v", jobs)
+		t.Errorf("an agent per ask: %v", jobs)
+	}
+	// The id of a Job of another repo is not this ask's Job.
+	other, _, err := tp.call(t, wire.Request{Op: wire.OpMirror, Repo: "example.com/o/other"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "push", "-q", other.Mirror, "HEAD:refs/cflk/"+id+"/g1")
+	run.Repo = "example.com/o/other"
+	if _, _, err := tp.call(t, run, "work"); codeOf(err) != domain.CodeInvalidRequest {
+		t.Errorf("the id of a Job of another repo: %v", err)
+	}
+}
+
+func TestARunThatFailsAndKeepsNothingTakesBackTheRefItWasPushedUnder(t *testing.T) {
+	repo := repoWithOrigin(t)
+	l := peerNamed(t, "mac-mini", func(string) fakeAgent { return fakeAgent{missing: true} })
+	tp := twoPeers{
+		remote: l, peer: discovery.Peer{ID: "nMAC", Name: "mac-mini", Host: "mac-mini.ts.net", Online: true},
+		dialer: &remotetest.Dialer{Peers: map[string]remotetest.ServeFunc{"mac-mini": l.servePeer}},
+	}
+	if _, err := tp.delegate(t, repo, "work"); err == nil {
+		t.Fatal("a launch whose agent does not start succeeded")
+	}
+	p, _ := l.open()
+	if refs := runGit(t, p.mirrorDir("example.com/o/r"), "for-each-ref", "refs/cflk/"); refs != "" {
+		t.Errorf("the refused delegation left its ref in the mirror:\n%s", refs)
 	}
 }
 

@@ -40,8 +40,12 @@ const (
 	CodeCursorExpired            Code = "CF_CURSOR_EXPIRED"
 	CodeConfirmationStale        Code = "CF_CONFIRMATION_STALE"
 	CodeNotImplemented           Code = "CF_NOT_IMPLEMENTED"
-	CodeInvalidRequest           Code = "CF_INVALID_REQUEST"
-	CodeInternal                 Code = "CF_INTERNAL"
+	// Peer codes: another machine of the user's own, reached over ssh.
+	CodePeerUnreachable Code = "CF_PEER_UNREACHABLE"  // could not be reached: offline, no ssh, no cflk
+	CodePeerNoAnswer    Code = "CF_PEER_NO_ANSWER"    // was reached and did not answer in time
+	CodeNoCandidatePeer Code = "CF_NO_CANDIDATE_PEER" // no reachable peer can take the Job
+	CodeInvalidRequest  Code = "CF_INVALID_REQUEST"
+	CodeInternal        Code = "CF_INTERNAL"
 )
 
 // Error is a failure that carries a §40 code. Parsing and invariant failures
@@ -84,9 +88,12 @@ var exitCodes = map[Code]int{
 	CodeBudgetExceeded:           5,
 	CodeSecretUnavailable:        5,
 	CodeControllerUnreachable:    6,
+	CodePeerUnreachable:          6,
+	CodePeerNoAnswer:             6,
 	CodeUnauthenticated:          6,
 	CodeConfirmationRequired:     7,
 	CodeNoEligibleWorker:         8,
+	CodeNoCandidatePeer:          8,
 	CodeHarnessUnavailable:       8,
 	CodeCheckpointUnsupported:    8,
 	CodeRunNotRespondable:        8,

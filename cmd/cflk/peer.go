@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 
 	"github.com/Autarquico/codeflock/internal/buildinfo"
+	"github.com/Autarquico/codeflock/internal/cli"
 	"github.com/Autarquico/codeflock/internal/peer/job"
 	"github.com/Autarquico/codeflock/internal/peer/server"
 	"github.com/Autarquico/codeflock/internal/peer/wire"
@@ -100,6 +102,9 @@ func (p *peer) mirrorDir(repo string) string {
 
 // RunFromMirror starts a delegated Job from the ref the sender pushed to the
 // mirror: refs/cflk/<job>/g1 must exist and be exactly the commit it declared.
+// It is idempotent on the id: when the Job is already here, from this repo, the
+// answer is that Job, so a sender whose first answer was lost can ask again
+// without a second agent. A start that fails and keeps nothing takes the ref back.
 func (s peerService) RunFromMirror(ctx context.Context, in server.RunInput) (wire.JobView, error) {
 	p, err := s.l.open()
 	if err != nil {
@@ -118,14 +123,27 @@ func (s peerService) RunFromMirror(ctx context.Context, in server.RunInput) (wir
 	if err != nil || pushed != in.Commit {
 		return wire.JobView{}, invalid("%s is not at %s in the mirror of %s: push the code first", ref, in.Commit, in.Repo)
 	}
-	if err := p.tmux.Check(ctx); err != nil {
+	if existing, err := p.store.Get(in.Job); err == nil && existing.Repo == in.Repo {
+		return wire.JobView(view(existing, "")), nil
+	}
+	v, err := p.startFromMirror(ctx, mirror, harnessID, in)
+	if err != nil {
+		if _, gone := p.store.Get(in.Job); errors.Is(gone, job.ErrNotFound) {
+			_, _ = git(context.WithoutCancel(ctx), mirror, "update-ref", "-d", ref)
+		}
 		return wire.JobView{}, err
 	}
-	v, err := p.start(ctx, startSpec{
+	return wire.JobView(v), nil
+}
+
+func (p *peer) startFromMirror(ctx context.Context, mirror, harnessID string, in server.RunInput) (cli.JobView, error) {
+	if err := p.tmux.Check(ctx); err != nil {
+		return cli.JobView{}, err
+	}
+	return p.start(ctx, startSpec{
 		repoDir: mirror, repo: in.Repo, harness: harnessID, commit: in.Commit,
 		prompt: in.Prompt, createdBy: in.CreatedBy, id: in.Job,
 	})
-	return wire.JobView(v), err
 }
 
 // servePeer is `cflk peer`: one request on stdin, one response on stdout.

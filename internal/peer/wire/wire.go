@@ -214,10 +214,47 @@ type Response struct {
 	Size int64 `json:"size,omitempty"`
 }
 
-// Validate checks the identity fields of the views and the size.
+// Limits on what a response may carry: the text of a peer is only ever printed,
+// so it is bounded rather than interpreted.
+const (
+	maxErrorMessage = 4096
+	maxHarnesses    = 32
+	maxHelloText    = 256
+	maxMirrorPath   = 4096
+)
+
+var errorCodePattern = regexp.MustCompile(`^CF_[A-Z0-9_]{1,60}$`)
+
+// Validate checks that the response says one thing (an error or a result, never
+// both), the identity fields of the views, the size and the bounds of the text.
 func (r Response) Validate() error {
 	if r.Size < 0 || r.Size > MaxBody {
 		return protocolf("response size %d is not valid", r.Size)
+	}
+	results := 0
+	for _, present := range []bool{r.Hello != nil, r.Job != nil, len(r.Jobs) > 0, r.Mirror != ""} {
+		if present {
+			results++
+		}
+	}
+	if r.Error != nil {
+		if results > 0 || r.Size != 0 {
+			return protocolf("response carries an error and a result")
+		}
+		if !errorCodePattern.MatchString(r.Error.Code) || len(r.Error.Message) > maxErrorMessage {
+			return protocolf("response error is not valid")
+		}
+	}
+	if results > 1 {
+		return protocolf("response carries more than one result")
+	}
+	if len(r.Mirror) > maxMirrorPath {
+		return protocolf("mirror path of %d bytes", len(r.Mirror))
+	}
+	if r.Hello != nil {
+		if err := r.Hello.Validate(); err != nil {
+			return err
+		}
 	}
 	if r.Job != nil {
 		if err := r.Job.Validate(); err != nil {
@@ -227,6 +264,19 @@ func (r Response) Validate() error {
 	for _, v := range r.Jobs {
 		if err := v.Validate(); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// Validate bounds what a peer says about itself.
+func (h Hello) Validate() error {
+	if h.Jobs < 0 || len(h.Name) > maxHelloText || len(h.Version) > maxHelloText || len(h.Harnesses) > maxHarnesses {
+		return protocolf("hello is not valid")
+	}
+	for _, name := range h.Harnesses {
+		if !harnessPattern.MatchString(name) {
+			return protocolf("hello: %q is not a harness name", name)
 		}
 	}
 	return nil

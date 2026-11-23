@@ -387,10 +387,17 @@ func (l *localJobs) read(ctx context.Context, id string) (job.Job, *peer, error)
 }
 
 func hasTerminal(j job.Job, code domain.Code) error {
-	if j.Launch == nil || (j.State != job.Running && j.State != job.Waiting) {
-		return domain.NewError(code, fmt.Sprintf("job %s is %s: its agent is not running", j.ID, j.State), nil)
+	if j.Launch == nil || !runsAgent(j.State) {
+		return notRunning(j.ID, j.State, code)
 	}
 	return nil
+}
+
+// runsAgent says whether a Job in this state has an agent running in a terminal.
+func runsAgent(state job.State) bool { return state == job.Running || state == job.Waiting }
+
+func notRunning(id string, state job.State, code domain.Code) error {
+	return domain.NewError(code, fmt.Sprintf("job %s is %s: its agent is not running", id, state), nil)
 }
 
 func view(j job.Job, problem string) cli.JobView {

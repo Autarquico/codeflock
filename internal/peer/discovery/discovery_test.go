@@ -50,8 +50,26 @@ func TestOnlyTaggedNodesAreDiscoveredAndTheirIdentityIsTheNodeID(t *testing.T) {
 	if res.Self.ID != "nSELF0000CNTRL" || res.Self.Name != "laptop" {
 		t.Errorf("self = %+v", res.Self)
 	}
-	if len(res.Warnings) != 1 || !strings.Contains(res.Warnings[0], "no usable name") {
+	if len(res.Warnings) != 3 || !strings.Contains(res.Warnings[0], "no usable name") {
 		t.Errorf("warnings = %v", res.Warnings)
+	}
+}
+
+func TestATaggedNodeThatIsNotOfThisTailnetIsNotAPeer(t *testing.T) {
+	res, err := Discover(t.Context(), Options{Run: fixture(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range res.Peers {
+		if p.Name == "friend-box" || p.Name == "stranger" {
+			t.Errorf("%s is somebody else's node and was admitted: %+v", p.Name, p)
+		}
+	}
+	warned := strings.Join(res.Warnings, "\n")
+	for _, name := range []string{"friend-box", "stranger"} {
+		if !strings.Contains(warned, name+`" is not a node of this tailnet`) {
+			t.Errorf("no warning for %s: %v", name, res.Warnings)
+		}
 	}
 }
 

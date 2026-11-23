@@ -29,6 +29,19 @@ type JobView struct {
 	Problem string `json:"problem,omitempty"`
 }
 
+// UnreachablePeer is a peer that did not answer a listing, and why.
+type UnreachablePeer struct {
+	Peer    string `json:"peer"`
+	Problem string `json:"problem"`
+}
+
+// JobList is what `cflk ps` lists: the Jobs of the peers that answered, and
+// apart from them the peers that did not.
+type JobList struct {
+	Jobs        []JobView         `json:"jobs"`
+	Unreachable []UnreachablePeer `json:"unreachable"`
+}
+
 // RunRequest asks for a new Job on the current repo.
 type RunRequest struct {
 	// Harness is the user's name for it ("claude", "codex"); empty is the default.
@@ -58,8 +71,8 @@ type PeerView struct {
 type Jobs interface {
 	Run(ctx context.Context, req RunRequest) (JobView, error)
 	// List is the Jobs of every peer, or of the one named; a peer that does not
-	// answer is a row with the state "unreachable".
-	List(ctx context.Context, peer string) ([]JobView, error)
+	// answer is in Unreachable, not among the Jobs.
+	List(ctx context.Context, peer string) (JobList, error)
 	// Peers lists the peers and whether they answer.
 	Peers(ctx context.Context) ([]PeerView, error)
 	Show(ctx context.Context, id string) (JobView, error)
@@ -124,8 +137,11 @@ func newJobCmds(opts Options) []*cobra.Command {
 			if err != nil {
 				return err
 			}
-			if list == nil {
-				list = []JobView{}
+			if list.Jobs == nil {
+				list.Jobs = []JobView{}
+			}
+			if list.Unreachable == nil {
+				list.Unreachable = []UnreachablePeer{}
 			}
 			return emit(cmd, list, func(w io.Writer) error { return printJobs(w, list) })
 		})
@@ -201,21 +217,31 @@ func newJobCmds(opts Options) []*cobra.Command {
 	return []*cobra.Command{run, ps, peers, show, stop, resume, screen, send, attach, newPeerCmd(opts), newInternalCmd(opts)}
 }
 
-func printJobs(w io.Writer, jobs []JobView) error {
-	if len(jobs) == 0 {
-		_, err := fmt.Fprintln(w, "no Jobs")
-		return err
-	}
-	t := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(t, "JOB\tPEER\tSTATE\tHARNESS\tREPO\tBRANCH")
-	for _, j := range jobs {
-		state := printable(j.State)
-		if j.Problem != "" {
-			state += "?"
+func printJobs(w io.Writer, list JobList) error {
+	if len(list.Jobs) == 0 {
+		if _, err := fmt.Fprintln(w, "no Jobs"); err != nil {
+			return err
 		}
-		fmt.Fprintf(t, "%s\t%s\t%s\t%s\t%s\t%s\n", dash(printable(j.ID)), printable(j.Peer), state, dash(printable(j.Harness)), dash(printable(j.Repo)), dash(printable(j.Branch)))
+	} else {
+		t := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(t, "JOB\tPEER\tSTATE\tHARNESS\tREPO\tBRANCH")
+		for _, j := range list.Jobs {
+			state := printable(j.State)
+			if j.Problem != "" {
+				state += "?"
+			}
+			fmt.Fprintf(t, "%s\t%s\t%s\t%s\t%s\t%s\n", dash(printable(j.ID)), printable(j.Peer), state, dash(printable(j.Harness)), dash(printable(j.Repo)), dash(printable(j.Branch)))
+		}
+		if err := t.Flush(); err != nil {
+			return err
+		}
 	}
-	return t.Flush()
+	for _, u := range list.Unreachable {
+		if _, err := fmt.Fprintf(w, "unreachable: %s (%s)\n", printable(u.Peer), printable(u.Problem)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func printPeers(w io.Writer, peers []PeerView) error {

@@ -131,7 +131,7 @@ type errorBody struct {
 // request ID that finds it in the log, and --debug adds the rest of the details.
 func humanError(e *domain.Error, debug bool) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "error: %s: %s", e.Code, printable(e.Message))
+	fmt.Fprintf(&b, "error: %s: %s", printable(string(e.Code)), printable(e.Message))
 	if id, ok := e.Details["request_id"].(string); ok && e.Code == domain.CodeInternal {
 		fmt.Fprintf(&b, " (request %s)", printable(id))
 	}

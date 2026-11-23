@@ -137,3 +137,66 @@ func FuzzReadRequest(f *testing.F) {
 		}
 	})
 }
+
+func TestAResponseSaysOneThingAndItsTextIsBounded(t *testing.T) {
+	view := &JobView{ID: testJob, State: "running"}
+	bad := map[string]Response{
+		"error and result":    {Error: &Error{Code: "CF_X", Message: "m"}, Job: view},
+		"two results":         {Job: view, Mirror: "/a"},
+		"hello and jobs":      {Hello: &Hello{}, Jobs: []JobView{*view}},
+		"error with a body":   {Error: &Error{Code: "CF_X"}, Size: 1},
+		"code with a newline": {Error: &Error{Code: "CF_X\nfake"}},
+		"lowercase code":      {Error: &Error{Code: "oops"}},
+		"huge message":        {Error: &Error{Code: "CF_X", Message: strings.Repeat("m", maxErrorMessage+1)}},
+		"negative jobs":       {Hello: &Hello{Jobs: -1}},
+		"harness not a name":  {Hello: &Hello{Harnesses: []string{"a b"}}},
+		"too many harnesses":  {Hello: &Hello{Harnesses: make([]string, maxHarnesses+1)}},
+		"long name":           {Hello: &Hello{Name: strings.Repeat("n", maxHelloText+1)}},
+	}
+	for name, r := range bad {
+		if err := r.Validate(); !errors.Is(err, ErrProtocol) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	good := []Response{
+		{},
+		{Job: view, Size: 0},
+		{Mirror: "/a/b.git"},
+		{Size: 3},
+		{Jobs: []JobView{*view}},
+		{Hello: &Hello{Name: "this machine", Harnesses: []string{"claude", "codex"}, Jobs: 2}},
+		{Error: &Error{Code: "CF_NOT_FOUND", Message: "gone"}},
+	}
+	for i, r := range good {
+		if err := r.Validate(); err != nil {
+			t.Errorf("good response %d: %v", i, err)
+		}
+	}
+}
+
+func FuzzReadResponse(f *testing.F) {
+	var buf bytes.Buffer
+	_ = WriteResponse(&buf, Response{Job: &JobView{ID: testJob, State: "running"}}, nil)
+	f.Add(buf.Bytes())
+	buf.Reset()
+	_ = WriteResponse(&buf, Response{}, []byte("screen"))
+	f.Add(buf.Bytes())
+	f.Add([]byte(`{"error":{"code":"CF_NOT_FOUND","message":"gone"}}` + "\n"))
+	f.Add([]byte(`{"hello":{"name":"x","version":"1","harnesses":["claude"],"jobs":1}}` + "\n"))
+	f.Add([]byte("{"))
+	f.Fuzz(func(t *testing.T, stream []byte) {
+		resp, body, err := ReadResponse(bytes.NewReader(stream))
+		if err != nil {
+			if !errors.Is(err, ErrProtocol) {
+				t.Fatalf("a refusal that is not a protocol error: %v", err)
+			}
+			return
+		}
+		if err := resp.Validate(); err != nil {
+			t.Fatalf("an accepted response does not validate: %v", err)
+		}
+		if int64(len(body)) != resp.Size {
+			t.Fatalf("body of %d bytes for size %d", len(body), resp.Size)
+		}
+	})
+}

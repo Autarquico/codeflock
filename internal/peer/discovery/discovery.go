@@ -1,7 +1,8 @@
 // Package discovery finds the peers of this one: the nodes of the tailnet that
 // carry tag:cflk (from `tailscale status --json`) plus the `peers` the user lists
 // in ~/.config/cflk/config.toml. A peer is identified by its Tailscale node ID;
-// its hostname is only for showing, and the host to ssh to is never typed by the
+// its hostname is only for showing, only nodes of this tailnet count (a node
+// shared in from another one is not the user's machine, tag or not), and the host to ssh to is never typed by the
 // user at the command line: it comes from here.
 package discovery
 
@@ -117,6 +118,8 @@ type tsNode struct {
 	DNSName  string
 	Online   bool
 	Tags     []string
+	// ShareeNode is true for a node that another tailnet shared into this one.
+	ShareeNode bool
 }
 
 type tsStatus struct {
@@ -142,6 +145,10 @@ func (r *Result) addTailscale(raw []byte) error {
 		if !hasTag(n.Tags) || (n.ID != "" && n.ID == st.Self.ID) {
 			continue
 		}
+		if !ownNode(st.Self, n) {
+			r.Warnings = append(r.Warnings, fmt.Sprintf("tailscale: node %q is not a node of this tailnet; skipped", n.HostName))
+			continue
+		}
 		p, ok := peerOf(n)
 		if !ok {
 			r.Warnings = append(r.Warnings, fmt.Sprintf("tailscale: node %q has no usable name; skipped", n.HostName))
@@ -150,6 +157,24 @@ func (r *Result) addTailscale(raw []byte) error {
 		r.Peers = append(r.Peers, p)
 	}
 	return nil
+}
+
+// ownNode says whether n is a node of the tailnet of self. A tag proves nothing
+// about whose machine it is: a node shared in from another tailnet, or one whose
+// name is in another tailnet's domain, is somebody else's. When this node's own
+// name is unknown the domain cannot be compared, and only the sharee mark counts.
+func ownNode(self, n tsNode) bool {
+	if n.ShareeNode {
+		return false
+	}
+	mine := tailnetOf(self.DNSName)
+	return mine == "" || tailnetOf(n.DNSName) == mine
+}
+
+// tailnetOf is the domain of a MagicDNS name: what follows its first label.
+func tailnetOf(dnsName string) string {
+	_, domain, _ := strings.Cut(strings.TrimSuffix(dnsName, "."), ".")
+	return domain
 }
 
 func hasTag(tags []string) bool {

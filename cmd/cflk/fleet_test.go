@@ -3,7 +3,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -15,8 +17,10 @@ import (
 	"github.com/Autarquico/codeflock/internal/cli"
 	"github.com/Autarquico/codeflock/internal/domain"
 	"github.com/Autarquico/codeflock/internal/peer/discovery"
+	"github.com/Autarquico/codeflock/internal/peer/job"
 	"github.com/Autarquico/codeflock/internal/peer/remote"
 	"github.com/Autarquico/codeflock/internal/peer/remote/remotetest"
+	"github.com/Autarquico/codeflock/internal/peer/wire"
 	"github.com/Autarquico/codeflock/internal/testutil/fakeharness"
 )
 
@@ -105,35 +109,53 @@ func TestPsShowsTheJobsOfThePeersThatAnswerAndMarksTheRestUnreachableInTime(t *t
 	}
 
 	start := time.Now()
-	views, err := tf.List(t.Context(), "")
+	list, err := tf.List(t.Context(), "")
 	if err != nil || time.Since(start) > 5*time.Second {
 		t.Fatalf("ps took %v: %v", time.Since(start), err)
 	}
 	got := map[string]cli.JobView{}
-	for _, v := range views {
+	for _, v := range list.Jobs {
 		got[v.Peer+"/"+v.State] = v
 	}
-	if len(views) != 4 || got["laptop/running"].ID != here.ID || got["mac-mini/running"].ID != there.ID {
-		t.Fatalf("views = %+v", views)
+	if len(list.Jobs) != 2 || got["laptop/running"].ID != here.ID || got["mac-mini/running"].ID != there.ID {
+		t.Fatalf("jobs = %+v", list.Jobs)
 	}
-	for _, name := range []string{"hung", "off"} {
-		if v := got[name+"/unreachable"]; v.ID != "" || v.Problem == "" {
-			t.Errorf("%s: %+v", name, v)
-		}
+	problems := map[string]string{}
+	for _, u := range list.Unreachable {
+		problems[u.Peer] = u.Problem
+	}
+	if len(problems) != 2 || problems["hung"] == "" || problems["off"] == "" {
+		t.Errorf("unreachable = %+v", list.Unreachable)
 	}
 	if v := got["mac-mini/running"]; v.Repo != "example.com/o/r" || v.Branch != "cflk/"+v.ID || v.Harness == "" {
 		t.Errorf("a remote row lacks its fields: %+v", v)
 	}
 
 	only, err := tf.List(t.Context(), "mac-mini")
-	if err != nil || len(only) != 1 || only[0].ID != there.ID {
+	if err != nil || len(only.Jobs) != 1 || only.Jobs[0].ID != there.ID || len(only.Unreachable) != 0 {
 		t.Errorf("--peer mac-mini = %+v, %v", only, err)
 	}
-	if only, err := tf.List(t.Context(), "laptop"); err != nil || len(only) != 1 || only[0].ID != here.ID {
+	if only, err := tf.List(t.Context(), "laptop"); err != nil || len(only.Jobs) != 1 || only.Jobs[0].ID != here.ID {
 		t.Errorf("--peer laptop = %+v, %v", only, err)
 	}
 	if _, err := tf.List(t.Context(), "nope"); codeOf(err) != domain.CodeInvalidRequest {
 		t.Errorf("--peer nope: %v", err)
+	}
+}
+
+func TestPsKeepsToItsBudgetWhenDiscoveryAndAPeerAreBothSlow(t *testing.T) {
+	tf := newTestFleet(t, []fakeharness.Step{neverEnds}, "hung")
+	tf.budget = 600 * time.Millisecond
+	tf.timeout = time.Minute
+	slow := tf.discover
+	tf.discover = func(ctx context.Context) (discovery.Result, error) {
+		time.Sleep(300 * time.Millisecond)
+		return slow(ctx)
+	}
+	start := time.Now()
+	list, err := tf.List(t.Context(), "")
+	if took := time.Since(start); err != nil || took > 1200*time.Millisecond || len(list.Unreachable) != 1 {
+		t.Fatalf("ps took %v with %+v: %v", took, list, err)
 	}
 }
 
@@ -235,7 +257,7 @@ func TestRunOnAnyTakesTheReachablePeerWithFewestJobs(t *testing.T) {
 	if v, err = tf.Run(t.Context(), cli.RunRequest{On: "any", Prompt: "again"}); err != nil || v.Peer != "laptop" {
 		t.Fatalf("any on a tie = %+v, %v", v, err)
 	}
-	if _, err := tf.Run(t.Context(), cli.RunRequest{On: "off", Prompt: "x"}); codeOf(err) != domain.CodeWorkerOffline {
+	if _, err := tf.Run(t.Context(), cli.RunRequest{On: "off", Prompt: "x"}); codeOf(err) != domain.CodePeerUnreachable {
 		t.Errorf("an offline peer: %v", err)
 	}
 	if _, err := tf.Run(t.Context(), cli.RunRequest{On: "nobody", Prompt: "x"}); codeOf(err) != domain.CodeInvalidRequest {
@@ -291,7 +313,174 @@ func TestAJobIsFoundOnThePeerThatHasItAndAMissingOneSaysWhoDidNotAnswer(t *testi
 		t.Errorf("a bad id: %v", err)
 	}
 	_, err := tf.Show(t.Context(), "job-aaaaaaaaaa")
-	if codeOf(err) != domain.CodeNotFound || !strings.Contains(err.Error(), "hung") || strings.Contains(err.Error(), "mac-mini") {
-		t.Errorf("a missing Job: %v", err)
+	if codeOf(err) != domain.CodePeerNoAnswer || !strings.Contains(err.Error(), "hung") || strings.Contains(err.Error(), "mac-mini") {
+		t.Errorf("a Job that may be on a peer that did not answer: %v", err)
+	}
+	answering := newTestFleet(t, []fakeharness.Step{neverEnds}, "mac-mini")
+	if _, err := answering.Show(t.Context(), "job-aaaaaaaaaa"); codeOf(err) != domain.CodeNotFound {
+		t.Errorf("a Job that no peer has, every peer having answered: %v", err)
+	}
+}
+
+// replying makes a peer that answers every request with resp.
+func replying(resp wire.Response) remotetest.ServeFunc {
+	return func(_ context.Context, in io.Reader, out io.Writer) error {
+		if _, _, err := wire.ReadRequest(in); err != nil {
+			return err
+		}
+		return wire.WriteResponse(out, resp, nil)
+	}
+}
+
+func TestAPeerThatAnswersForAnotherJobIsNotTheOwner(t *testing.T) {
+	tf := newTestFleet(t, []fakeharness.Step{neverEnds}, "liar")
+	tf.dialer.Peers["liar"] = replying(wire.Response{Job: &wire.JobView{ID: "job-bbbbbbbbbb", State: "running", Gen: 9}})
+	if _, err := tf.Show(t.Context(), "job-aaaaaaaaaa"); codeOf(err) != domain.CodePeerNoAnswer {
+		t.Errorf("a peer that showed another Job: %v", err)
+	}
+}
+
+func TestADeadPeerIsUnreachableAndSaysWhatSSHSaid(t *testing.T) {
+	tf := newTestFleet(t, []fakeharness.Step{neverEnds}, "dead")
+	tf.dialer.Peers["dead"] = func(context.Context, io.Reader, io.Writer) error {
+		return errors.New("exit status 255: ssh: connect to host dead.ts.net port 22: Connection refused")
+	}
+	_, err := tf.Run(t.Context(), cli.RunRequest{On: "dead", Prompt: "x"})
+	if codeOf(err) != domain.CodePeerUnreachable || !strings.Contains(err.Error(), "Connection refused") || !strings.Contains(err.Error(), "dead") {
+		t.Errorf("run on a dead peer: %v", err)
+	}
+	if strings.Contains(err.Error(), "protocol") {
+		t.Errorf("an unreachable peer reads as a protocol error: %v", err)
+	}
+	list, _ := tf.List(t.Context(), "dead")
+	if len(list.Unreachable) != 1 || !strings.Contains(list.Unreachable[0].Problem, "Connection refused") {
+		t.Errorf("ps: %+v", list)
+	}
+}
+
+func TestAPeerThatNeverAnswersAnOrderIsGivenUpOnWithItsOwnCode(t *testing.T) {
+	tf := newTestFleet(t, []fakeharness.Step{neverEnds}, "mac-mini")
+	v, err := tf.Run(t.Context(), cli.RunRequest{On: "mac-mini", Prompt: "there"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serves := tf.dialer.Peers["mac-mini"]
+	tf.dialer.Peers["mac-mini"] = func(ctx context.Context, in io.Reader, out io.Writer) error {
+		req, _, err := wire.ReadRequest(in)
+		if err == nil && req.Op == wire.OpStop {
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return serves(ctx, replay(t, req), out)
+	}
+	tf.orderTimeout = 300 * time.Millisecond
+	start := time.Now()
+	if _, err := tf.Stop(t.Context(), v.ID); codeOf(err) != domain.CodePeerNoAnswer || time.Since(start) > 5*time.Second {
+		t.Errorf("stop on a peer that hangs: %v after %v", err, time.Since(start))
+	}
+}
+
+// replay is the stream of a request that was already read.
+func replay(t *testing.T, req wire.Request, body ...byte) io.Reader {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := wire.WriteRequest(&buf, req, body); err != nil {
+		t.Fatal(err)
+	}
+	return &buf
+}
+
+func TestARunIsRefusedBeforeDialingForWhatTheWireWouldRefuse(t *testing.T) {
+	tf := newTestFleet(t, []fakeharness.Step{neverEnds}, "mac-mini")
+	if _, err := tf.Run(t.Context(), cli.RunRequest{On: "mac-mini", Prompt: ""}); codeOf(err) != domain.CodeInvalidRequest || !strings.Contains(err.Error(), "prompt") {
+		t.Errorf("an empty prompt: %v", err)
+	}
+	if _, err := tf.Run(t.Context(), cli.RunRequest{Prompt: ""}); codeOf(err) != domain.CodeInvalidRequest {
+		t.Errorf("an empty prompt here: %v", err)
+	}
+	tooLong := strings.Repeat("x", wire.MaxBody+1)
+	if _, err := tf.Run(t.Context(), cli.RunRequest{On: "mac-mini", Prompt: tooLong}); codeOf(err) != domain.CodeInvalidRequest {
+		t.Errorf("a prompt over the limit: %v", err)
+	}
+	tf.local = peerNamed(t, "mi máquina", fake, neverEnds)
+	_, err := tf.Run(t.Context(), cli.RunRequest{On: "mac-mini", Prompt: "x"})
+	if codeOf(err) != domain.CodeInvalidRequest || !strings.Contains(err.Error(), "mi máquina") {
+		t.Errorf("a machine name the wire refuses: %v", err)
+	}
+	if len(tf.dialer.Dialed) != 0 {
+		t.Errorf("a refused run dialed: %+v", tf.dialer.Dialed)
+	}
+}
+
+func delegation(t *testing.T, id string) remote.Delegation {
+	t.Helper()
+	src, err := sourceOf(t.Context(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return remote.Delegation{RepoDir: src.dir, Repo: src.repo, Commit: src.commit, Harness: "claude", CreatedBy: "laptop", Prompt: "work", ID: id}
+}
+
+func TestADelegationWhoseAnswerIsLostNamesTheJobAndAskingAgainDoesNotDuplicateIt(t *testing.T) {
+	tf := newTestFleet(t, []fakeharness.Step{neverEnds}, "mac-mini")
+	serves := tf.dialer.Peers["mac-mini"]
+	lose := true
+	tf.dialer.Peers["mac-mini"] = func(ctx context.Context, in io.Reader, out io.Writer) error {
+		req, body, err := wire.ReadRequest(in)
+		if err != nil || req.Op != wire.OpRun || !lose {
+			return serves(ctx, replay(t, req, body...), out)
+		}
+		_ = serves(ctx, replay(t, req, body...), io.Discard) // the agent starts; the answer never arrives
+		return errors.New("exit status 255: Connection to mac-mini.ts.net closed by remote host")
+	}
+	id := job.NewID()
+	peer := discovery.Peer{ID: "nmac-mini", Name: "mac-mini", Host: "mac-mini.ts.net", Online: true}
+
+	_, err := remote.Delegate(t.Context(), tf.transport, peer, delegation(t, id))
+	if codeOf(err) != domain.CodePeerUnreachable || !strings.Contains(err.Error(), id) || !strings.Contains(err.Error(), "mac-mini") || !strings.Contains(err.Error(), "cflk show "+id) {
+		t.Fatalf("a lost answer: %v", err)
+	}
+	lose = false
+	v, err := remote.Delegate(t.Context(), tf.transport, peer, delegation(t, id))
+	if err != nil || v.ID != id {
+		t.Fatalf("asking again: %+v, %v", v, err)
+	}
+	if jobs, _ := tf.peers["mac-mini"].List(t.Context()); len(jobs) != 1 {
+		t.Errorf("asking again started another agent: %+v", jobs)
+	}
+}
+
+func TestADelegationThePeerRefusesNamesTheJobAndKeepsTheCodeOfTheRefusal(t *testing.T) {
+	tf := newTestFleet(t, []fakeharness.Step{neverEnds}, "mac-mini")
+	tf.dialer.Peers["mac-mini"] = func(ctx context.Context, in io.Reader, out io.Writer) error {
+		req, _, err := wire.ReadRequest(in)
+		if err != nil {
+			return err
+		}
+		if req.Op == wire.OpRun {
+			return wire.WriteResponse(out, wire.Response{Error: &wire.Error{Code: "CF_HARNESS_UNAVAILABLE", Message: "no codex here\x1b[2J"}}, nil)
+		}
+		return tf.peers["mac-mini"].servePeer(ctx, replay(t, req), out)
+	}
+	id := job.NewID()
+	_, err := remote.Delegate(t.Context(), tf.transport, discovery.Peer{ID: "n", Name: "mac-mini", Host: "mac-mini.ts.net", Online: true}, delegation(t, id))
+	if codeOf(err) != domain.CodeHarnessUnavailable || !strings.Contains(err.Error(), id) || !strings.Contains(err.Error(), "no codex here") || strings.Contains(err.Error(), "\x1b") {
+		t.Errorf("a refused run: %v", err)
+	}
+}
+
+func TestAnErrorFromAPeerCarriesNoControlCharactersAndAnOddCodeIsAProtocolError(t *testing.T) {
+	tf := newTestFleet(t, []fakeharness.Step{neverEnds}, "odd")
+	odd := func(code, msg string) remotetest.ServeFunc {
+		return replying(wire.Response{Error: &wire.Error{Code: code, Message: msg}})
+	}
+	tf.dialer.Peers["odd"] = odd("CF_STALE_LEASE", "line one\n\x1b]0;title\x07"+strings.Repeat("y", 3000))
+	_, err := tf.Run(t.Context(), cli.RunRequest{On: "odd", Prompt: "x"})
+	if codeOf(err) != domain.CodeStaleLease || strings.ContainsAny(err.Error(), "\n\x1b\x07") || len(err.Error()) > 1200 {
+		t.Errorf("an error from a peer: %q", err)
+	}
+	tf.dialer.Peers["odd"] = odd("not a code\x1b", "m")
+	if _, err := tf.Run(t.Context(), cli.RunRequest{On: "odd", Prompt: "x"}); err == nil || !errors.Is(err, wire.ErrProtocol) {
+		t.Errorf("a code of no shape: %v", err)
 	}
 }

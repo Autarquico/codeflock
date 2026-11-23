@@ -34,6 +34,9 @@ func TestScenario_DomainCore_ExitCodes(t *testing.T) {
 		{"CF_SECRET_UNAVAILABLE", 5},
 		{"CF_CONTROLLER_UNREACHABLE", 6},
 		{"CF_UNAUTHENTICATED", 6},
+		{"CF_PEER_UNREACHABLE", 6},
+		{"CF_PEER_NO_ANSWER", 6},
+		{"CF_NO_CANDIDATE_PEER", 8},
 		{"CF_CONFIRMATION_REQUIRED", 7},
 		{"CF_NO_ELIGIBLE_WORKER", 8},
 		{"CF_HARNESS_UNAVAILABLE", 8},
@@ -76,8 +79,10 @@ func TestScenario_DomainCore_ExitCodes_ConstantsMatchSpecNames(t *testing.T) {
 		CodeInProgress: "CF_IN_PROGRESS", CodeCursorExpired: "CF_CURSOR_EXPIRED",
 		CodeConfirmationStale: "CF_CONFIRMATION_STALE", CodeNotImplemented: "CF_NOT_IMPLEMENTED",
 		CodeInvalidRequest: "CF_INVALID_REQUEST", CodeInternal: "CF_INTERNAL",
+		CodePeerUnreachable: "CF_PEER_UNREACHABLE", CodePeerNoAnswer: "CF_PEER_NO_ANSWER",
+		CodeNoCandidatePeer: "CF_NO_CANDIDATE_PEER",
 	}
-	const specCodeCount = 30
+	const specCodeCount = 33
 	if len(constants) != specCodeCount {
 		t.Fatalf("%d codes checked, §40 and Appendix B5 list %d", len(constants), specCodeCount)
 	}
