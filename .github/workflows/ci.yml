@@ -95,9 +95,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The update of a real beta.6 (transition_test.sh) builds it from its tag.
-      - name: Fetch the beta.6 tag
-        run: git fetch --no-tags --depth=1 origin +refs/tags/v0.4.0-beta.6:refs/tags/v0.4.0-beta.6
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.27.x"
