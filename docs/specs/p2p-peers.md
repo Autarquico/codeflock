@@ -63,18 +63,20 @@ tmux sesiones que sobreviven y en las que se puede entrar, y git el transporte d
   `bypassPermissions`, `internal/adapters/harness/claude/start.go:126`). Admitir un peer es darle la tag y acceso
   ssh; no hay otra autorización. El perfil `read` del MCP limita solo al modelo local, no a los peers.
 - **Job:** un agente trabajando en una rama de un repo en un peer. Sustituye a Task y Run.
-  - `id`: `job-<10 caracteres base32 aleatorios>`, generado por quien lo crea; sin contador ni nombre de peer.
-  - `repo`: la URL del origin normalizada; su identidad es el SHA-256 de esa URL (los mirrors se guardan por él).
+  - `id`: `job-<10 caracteres base32 aleatorios>`, generado por quien lo crea; sin contador ni nombre de peer. Crear
+    su directorio es exclusivo: si ya existe, se genera otro.
+  - `repo`: la URL del origin normalizada a `host/dueño/repo` (minúsculas en el host, sin `.git` ni `/` final; ssh y
+    https dan lo mismo); su identidad es el SHA-256 de eso (los mirrors se guardan por él).
   - `branch`: `cflk/<id>`.
-  - `harness`, `session_id` (fijado al lanzar: Claude con `--session-id`, `internal/adapters/harness/claude/sessionid.go:28`;
-    Codex según «Preguntas abiertas»).
+  - `harness`, `session_id` (ver «Ejecución sin daemon»).
   - `gen`: la generación de propiedad, que sube en cada movimiento.
   - `peer`, `state`, `created_by`, `history` (lista de `{gen, peer, commit}`).
-- **Estados:** `running` · `waiting` (espera a una persona) · `stopped` · `done` · `failed` · `lost` (sin proceso
-  ni registro de salida, p. ej. tras un reinicio) · `moving` (transferencia en curso o sin confirmar) · `moved`
-  (vive en otro peer; guarda cuál y con qué `gen`).
+- **Estados:** `running` · `waiting` (espera a una persona) · `stopping` (parándose; aún puede quedar algún
+  proceso) · `stopped` · `done` · `failed` · `lost` (sin proceso ni registro de salida, p. ej. tras un reinicio) ·
+  `moving` (transferencia en curso o sin confirmar) · `finishing` (un `pull --finish` en curso) · `moved` (vive en
+  otro peer; guarda cuál y con qué `gen`).
 - **Estado local:** `~/.local/state/cflk/jobs/<id>/` con `job.json` (escrito con `support/atomicfile`), el worktree,
-  los registros del wrapper y la sesión tmux `cflk-<id>-g<gen>`. Es la única fuente de verdad del Job en ese peer.
+  los registros de cada launch y su sesión tmux. Es la única fuente de verdad del Job en ese peer.
   Un Job lo posee el peer cuyo registro tiene la `gen` más alta y no está `moved`.
 
 ## Ejecución sin daemon
@@ -84,12 +86,13 @@ tmux sesiones que sobreviven y en las que se puede entrar, y git el transporte d
   `started` (pid, grupo de procesos e identidad, `worker/procident`) y, al terminar, `exit`. `job.json` apunta al
   launch actual; los registros de launches anteriores no se leen.
 - Cualquier comando que lea un Job lo reconcilia en el momento, **solo si está en `running`, `waiting` o `lost`**:
-  sesión viva → `running`/`waiting`; `exit` → `done` o `failed`; ni sesión ni `exit` → `lost`. `stopped`, `moving`,
-  `moved`, `done` y `failed` no los cambia la reconciliación. Nada se reinicia solo: `lost` se reanuda con
+  sesión viva → `running`/`waiting`; `exit` → `done` o `failed`; ni sesión ni `exit` → `lost`. Los demás estados no
+  los cambia la reconciliación. Nada se reinicia solo: `lost` se reanuda con
   `cflk resume`.
 - **`waiting`:** Claude, con hooks instalados solo para el Job: `Notification` pone el marcador `waiting` en el
-  directorio del launch y `UserPromptSubmit` lo quita. Codex, con su programa `notify` (fin de turno) para ponerlo; lo
-  quitan `cflk send`, un attach o que el rollout crezca después del marcador. Se valida contra los CLIs reales en la
+  directorio del launch y `UserPromptSubmit` lo quita. Codex, con su programa `notify` al acabar cada turno (en modo
+  interactivo, acabar el turno es esperar a la persona); lo quitan `cflk send` o que el rollout crezca después del
+  marcador. Se valida contra los CLIs reales en la
   primera fase; si un harness no lo permite, ese harness no muestra `waiting`.
 - **Session ID:** Claude lo fija al lanzar con `--session-id` (`internal/adapters/harness/claude/sessionid.go:28`).
   Codex no: tras lanzar, se toma el único rollout de `CODEX_HOME/sessions` cuyo cwd es el worktree del Job y que es
@@ -98,7 +101,7 @@ tmux sesiones que sobreviven y en las que se puede entrar, y git el transporte d
 ## Transporte
 
 - Lo remoto es `ssh <peer> cflk peer` con argv fijo: la operación y los datos van en stdin. La única excepción es el
-  attach, que necesita la terminal en stdin: `ssh -t <peer> cflk peer attach <job>`, con el id validado contra
+  attach, que necesita la terminal en stdin: `ssh -t <peer> cflk peer attach [--read-only] <job>`, con el id validado contra
   `^job-[a-z2-7]{10}$` en los dos extremos. El host sale de la lista de peers descubiertos, nunca de lo que escribe el
   usuario ni de lo que devuelve otro peer.
 - El stream es una línea JSON de cabecera (máx. 64 KiB; `op` de una lista cerrada; `job`, `gen`, `transfer`,
@@ -115,21 +118,26 @@ La regla es una: **el origen A conserva el Job hasta que B confirma que lo ha ar
 se queda en `moving` hasta que yo lo resuelva.** Nada se resuelve solo. Un candado por Job (`support/flock`) cubre en
 cada peer lo que ese peer hace; `resume`, `stop`, `send`, `move` y `pull` lo comparten.
 
-1. **Parar.** A escribe `stopped`, pide al harness que pare (`Adapter.Stop`) y espera a que **el grupo de procesos
-   entero** haya desaparecido (no basta el `exit` del wrapper). Si a los 30 s sigue, lo mata y espera otros 10 s; si
-   aun así queda algo, aborta: el Job queda `stopped` y A lo dice.
+1. **Parar.** A escribe `stopping`, manda la señal de parada al grupo de procesos del launch (como hoy el executor,
+   comprobando la identidad del wrapper; `Adapter.Stop` no lo implementa ningún adapter) y espera a que **el grupo
+   entero** haya desaparecido (no basta el `exit` del wrapper). Si a los 30 s sigue, lo mata y espera otros 10 s.
+   Solo con el grupo vacío escribe `stopped`. Si queda algo, aborta y el Job se queda en `stopping`: no se reanuda ni
+   se mueve hasta que un `cflk stop` (que repite la parada) lo deje `stopped`. Lo mismo vale para `cflk stop` solo.
 2. **Sellar.** A hace commit de lo rastreado y lo no rastreado que no esté ignorado (con las guardas de
    `internal/worker/gitops/seal.go`), anota el `commit` exacto y exporta la sesión.
 3. **Reservar.** A escribe `moving` con `{to: B, gen: n+1, transfer: <aleatorio>, commit}`.
-4. **Preparar.** A empuja `refs/cflk/<job>/g<n+1>` y manda `prepare` con la sesión. B, bajo su candado, escribe
-   `prepared {transfer, gen, commit}`, crea el worktree en ese commit exacto y deja la sesión en un directorio de
-   espera. **No arranca nada.** Repetir `prepare` con el mismo `transfer` no cambia nada.
-5. **Activar.** A manda `activate {transfer}`. B solo acepta si tiene ese `transfer` en `prepared`: importa la sesión
-   con un `session_id` nuevo, escribe el Job (`gen: n+1`, `running`, launch nuevo) **antes** de arrancar, arranca, y
-   da el arranque por bueno si el agente sigue vivo a los 10 s (un `--resume` de una sesión que no existe hace salir
-   al CLI). Si no arranca, B borra el Job, marca el `transfer` como abortado y responde error; A, al recibir ese
-   error, vuelve a `stopped`. Repetir `activate` devuelve el mismo resultado sin arrancar dos veces.
-6. **Confirmar.** Con el ok de B, A escribe `moved` → `{B, n+1}` y borra su worktree.
+4. **Preparar.** A empuja `refs/cflk/<job>/g<n+1>` y manda `prepare` con la sesión. B, bajo su candado, rechaza si
+   ya tiene ese Job con `gen ≥ n+1`; crea el worktree en ese commit exacto, deja la sesión en un directorio de espera
+   y, **al final**, escribe `prepared {transfer, gen, commit}`. **No arranca nada.** Repetir `prepare` con un
+   `prepared` ya escrito no cambia nada; restos sin `prepared` (una caída a medias) se borran y se rehace.
+5. **Activar.** A manda `activate {transfer, gen}`. B solo acepta si tiene ese `transfer` en `prepared`. Si falla
+   algo **antes de arrancar** (que el harness esté instalado, importar la sesión), B marca el `transfer` como abortado y responde error; A, al
+   recibirlo, vuelve a `stopped`. Si no, B importa la sesión con un `session_id` nuevo, escribe el Job (`gen: n+1`,
+   launch nuevo) y arranca. **Desde que B escribe el Job, el Job es de B**, arranque bien o mal: si el agente sale en
+   seguida, el Job queda `failed` en B (con su worktree y su sesión, que pudo haber tocado) y B responde ok con ese
+   estado. Repetir `activate` devuelve el mismo resultado sin arrancar dos veces.
+6. **Confirmar.** Con el ok de B, A escribe `moved` → `{B, n+1}`. A **conserva** su worktree (puede tener ficheros
+   ignorados que no viajaron) hasta que lo borre `cflk clean <job>`.
 
 Cualquier otro error, o la falta de respuesta, desde el paso 3 deja el Job en A como `moving`, sin proceso. Lo resuelvo yo:
 
@@ -137,6 +145,12 @@ Cualquier otro error, o la falta de respuesta, desde el paso 3 deja el Job en A 
 - `cflk move --abort <job>`: B marca el `transfer` como abortado (un `activate` que llegue tarde se rechaza) y A
   vuelve a `stopped`. Si B ya lo activó, el abort falla y A pasa a `moved`. Si B no contesta, el abort se niega.
 - `cflk resume --force <job>`: reanuda en A aunque esté `moving`, avisando de que puede haber dos copias.
+
+Las órdenes a un Job remoto (`stop`, `resume`, `send`, `move`, `pull`) llevan la `gen` que espera quien las manda;
+el peer las rechaza si su Job no tiene esa `gen` o está `moved`.
+
+Que el agente abra de verdad la sesión importada no se comprueba más allá de que arranque: si no la abre, el Job está
+en B y la conversación sigue en el transcript importado, y `cflk resume` en B la reintenta. No se pierde nada.
 
 Al importar siempre con un `session_id` nuevo no hay colisiones: un Job que vuelve a un peer donde ya estuvo
 (A→B→A) no toca su transcript viejo. Un import a medias (caída entre instalar y escribir el Job) deja un transcript
@@ -148,10 +162,14 @@ cadena muestra el Job como «en `<peer>`, sin confirmar».
 ## Recuperar el trabajo aquí
 
 - `cflk pull <job>` es mover el Job a este peer: sigue vivo aquí, en su worktree de `cflk`.
-- `cflk pull <job> --finish` lo para y sella en el peer que lo tiene (pasos 1 y 2), trae ese commit exacto como rama
-  `cflk/<id>` al repo del directorio actual (`git fetch`), y solo entonces el dueño lo marca `done`. No cambia mi
-  checkout: dice cómo hacerlo. Rechaza si el repo del directorio no es el del Job o si `cflk/<id>` ya existe aquí con
-  otro commit. Si el fetch falla, el Job queda `stopped` en su peer. Con `--push`, también empuja la rama al origin.
+- `cflk pull <job> --finish` lo para y sella en el peer que lo tiene (pasos 1 y 2), que escribe `finishing {commit}`:
+  mientras dure, ese Job no se reanuda ni se mueve. Este peer trae ese commit exacto como rama `cflk/<id>` al repo del
+  directorio actual (`git fetch`) y avisa al dueño, que solo entonces lo marca `done`. No cambia mi checkout: dice
+  cómo hacerlo. Rechaza si el repo del directorio no es el del Job o si `cflk/<id>` ya existe aquí con otro commit.
+  Si algo falla o no hay respuesta, el Job se queda en `finishing`: `pull --finish` lo reintenta y
+  `pull --finish --abort` lo devuelve a `stopped`.
+- Con `--push`, además empuja `cflk/<id>` al origin con las guardas de `internal/worker/gitops/push.go`: publica la
+  historia de esa rama (los commits del agente y los de sellado), nunca la sesión.
 
 ## Comandos
 
@@ -165,6 +183,7 @@ cadena muestra el Job como «en `<peer>`, sin confirmar».
 | `cflk send <job> "texto"` | `jobs_send` | Escribe en el agente (`Adapter.SendInput`) |
 | `cflk attach <job> [--read-only]` | `jobs_attach` | Entra (local: `tmux attach`; remoto: `ssh -t`) |
 | `cflk stop <job>` / `cflk resume <job>` | `jobs_stop` / `jobs_resume` | Para / reanuda en el mismo peer |
+| `cflk clean <job>` | `jobs_clean` | Borra lo que queda de un Job `moved` o `done` en este peer |
 | `cflk move <job> --to p` | `jobs_move` | Mueve y reanuda en otro peer |
 | `cflk pull <job> [--finish] [--push]` | `jobs_pull` | Lo trae a este peer |
 
