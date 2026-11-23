@@ -66,7 +66,8 @@ tmux sesiones que sobreviven y en las que se puede entrar, y git el transporte d
   - `id`: `job-<10 caracteres base32 aleatorios>`, generado por quien lo crea; sin contador ni nombre de peer. Crear
     su directorio es exclusivo: si ya existe, se genera otro.
   - `repo`: la URL del origin normalizada a `host/dueño/repo` (minúsculas en el host, sin `.git` ni `/` final; ssh y
-    https dan lo mismo); su identidad es el SHA-256 de eso (los mirrors se guardan por él).
+    https dan lo mismo, también la forma `git@host:dueño/repo`; un puerto que no es el de por defecto forma parte del
+    host); su identidad es el SHA-256 de eso (los mirrors se guardan por él).
   - `branch`: `cflk/<id>`.
   - `harness`, `session_id` (ver «Ejecución sin daemon»).
   - `gen`: la generación de propiedad, que sube en cada movimiento.
@@ -75,7 +76,8 @@ tmux sesiones que sobreviven y en las que se puede entrar, y git el transporte d
   proceso) · `stopped` · `done` · `failed` · `lost` (sin proceso ni registro de salida, p. ej. tras un reinicio) ·
   `moving` (transferencia en curso o sin confirmar) · `finishing` (un `pull --finish` en curso) · `moved` (vive en
   otro peer; guarda cuál y con qué `gen`).
-- **Estado local:** `~/.local/state/cflk/jobs/<id>/` con `job.json` (escrito con `support/atomicfile`), el worktree,
+- **Estado local:** `~/.local/state/cflk/jobs/<id>/` con `job.json` (escrito con `support/atomicfile`), un worktree
+  por generación (`g<gen>/`, así un Job que vuelve no pisa el que se conservó),
   los registros de cada launch y su sesión tmux. Es la única fuente de verdad del Job en ese peer.
   Un Job lo posee el peer cuyo registro tiene la `gen` más alta y no está `moved`.
 
@@ -86,10 +88,12 @@ tmux sesiones que sobreviven y en las que se puede entrar, y git el transporte d
   `started` (pid, grupo de procesos e identidad, `worker/procident`) y, al terminar, `exit`. `job.json` apunta al
   launch actual; los registros de launches anteriores no se leen.
 - Cualquier comando que lea un Job lo reconcilia en el momento, **solo si está en `running`, `waiting` o `lost`**:
-  sesión viva → `running`/`waiting`; `exit` → `done` o `failed`; ni sesión ni `exit` → `lost`. Los demás estados no
+  sesión viva → `running`/`waiting`; `exit` → `done` o `failed`; ni sesión ni `exit` → `lost`. Cualquiera de los tres
+  últimos solo si el grupo de procesos del launch está vacío; si queda algún proceso, el Job pasa a `stopping` y
+  necesita `cflk stop`. Los demás estados no
   los cambia la reconciliación. Nada se reinicia solo: `lost` se reanuda con
   `cflk resume`.
-- **`waiting`:** Claude, con hooks instalados solo para el Job: `Notification` pone el marcador `waiting` en el
+- **`waiting`:** Claude, con hooks instalados solo para el Job: `Notification` de tipo `permission_prompt` o `idle_prompt` pone el marcador `waiting` en el
   directorio del launch y `UserPromptSubmit` lo quita. Codex, con su programa `notify` al acabar cada turno (en modo
   interactivo, acabar el turno es esperar a la persona); lo quitan `cflk send` o que el rollout crezca después del
   marcador. Se valida contra los CLIs reales en la
@@ -116,7 +120,10 @@ tmux sesiones que sobreviven y en las que se puede entrar, y git el transporte d
 
 La regla es una: **el origen A conserva el Job hasta que B confirma que lo ha arrancado, y ante cualquier duda el Job
 se queda en `moving` hasta que yo lo resuelva.** Nada se resuelve solo. Un candado por Job (`support/flock`) cubre en
-cada peer lo que ese peer hace; `resume`, `stop`, `send`, `move` y `pull` lo comparten.
+cada peer lo que ese peer hace; `resume`, `stop`, `send`, `move`, `pull`, `prepare`, `activate` y los abortos lo
+comparten, y **cada comprobación (dueño, `gen`, estado, `transfer`) se hace bajo el mismo candado que el cambio**.
+Un peer guarda el resultado de cada `transfer` y cada `finish` que ha recibido; una orden repetida con el mismo id
+devuelve ese resultado antes de aplicar cualquier otra regla.
 
 1. **Parar.** A escribe `stopping`, manda la señal de parada al grupo de procesos del launch (como hoy el executor,
    comprobando la identidad del wrapper; `Adapter.Stop` no lo implementa ningún adapter) y espera a que **el grupo
@@ -127,14 +134,15 @@ cada peer lo que ese peer hace; `resume`, `stop`, `send`, `move` y `pull` lo com
    `internal/worker/gitops/seal.go`), anota el `commit` exacto y exporta la sesión.
 3. **Reservar.** A escribe `moving` con `{to: B, gen: n+1, transfer: <aleatorio>, commit}`.
 4. **Preparar.** A empuja `refs/cflk/<job>/g<n+1>` y manda `prepare` con la sesión. B, bajo su candado, rechaza si
-   ya tiene ese Job con `gen ≥ n+1`; crea el worktree en ese commit exacto, deja la sesión en un directorio de espera
+   ya tiene ese Job con `gen ≥ n+1` en otro `transfer`, o si tiene otro Job distinto con el mismo id; crea el worktree
+   `g<n+1>/` en ese commit exacto, deja la sesión en un directorio de espera
    y, **al final**, escribe `prepared {transfer, gen, commit}`. **No arranca nada.** Repetir `prepare` con un
-   `prepared` ya escrito no cambia nada; restos sin `prepared` (una caída a medias) se borran y se rehace.
+   `prepared` ya escrito no cambia nada; restos de `g<n+1>/` sin `prepared` (una caída a medias) se borran y se rehace.
 5. **Activar.** A manda `activate {transfer, gen}`. B solo acepta si tiene ese `transfer` en `prepared`. Si falla
    algo **antes de arrancar** (que el harness esté instalado, importar la sesión), B marca el `transfer` como abortado y responde error; A, al
    recibirlo, vuelve a `stopped`. Si no, B importa la sesión con un `session_id` nuevo, escribe el Job (`gen: n+1`,
    launch nuevo) y arranca. **Desde que B escribe el Job, el Job es de B**, arranque bien o mal: si el agente sale en
-   seguida, el Job queda `failed` en B (con su worktree y su sesión, que pudo haber tocado) y B responde ok con ese
+   seguida, el Job queda `failed` en B, guardando su worktree y el `session_id` importado, que `cflk resume` reutiliza y B responde ok con ese
    estado. Repetir `activate` devuelve el mismo resultado sin arrancar dos veces.
 6. **Confirmar.** Con el ok de B, A escribe `moved` → `{B, n+1}`. A **conserva** su worktree (puede tener ficheros
    ignorados que no viajaron) hasta que lo borre `cflk clean <job>`.
@@ -162,9 +170,10 @@ cadena muestra el Job como «en `<peer>`, sin confirmar».
 ## Recuperar el trabajo aquí
 
 - `cflk pull <job>` es mover el Job a este peer: sigue vivo aquí, en su worktree de `cflk`.
-- `cflk pull <job> --finish` lo para y sella en el peer que lo tiene (pasos 1 y 2), que escribe `finishing {commit}`:
+- `cflk pull <job> --finish` lo para y sella en el peer que lo tiene (pasos 1 y 2), que escribe `finishing {finish: <aleatorio>, commit}`:
   mientras dure, ese Job no se reanuda ni se mueve. Este peer trae ese commit exacto como rama `cflk/<id>` al repo del
-  directorio actual (`git fetch`) y avisa al dueño, que solo entonces lo marca `done`. No cambia mi checkout: dice
+  directorio actual (`git fetch`) y avisa al dueño con ese `finish`, que solo entonces lo marca `done`; un aviso o un abort con otro `finish` se
+  rechaza. No cambia mi checkout: dice
   cómo hacerlo. Rechaza si el repo del directorio no es el del Job o si `cflk/<id>` ya existe aquí con otro commit.
   Si algo falla o no hay respuesta, el Job se queda en `finishing`: `pull --finish` lo reintenta y
   `pull --finish --abort` lo devuelve a `stopped`.
