@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Autarquico/codeflock/internal/worker/execwrap"
 	"github.com/Autarquico/codeflock/internal/worker/procident"
 )
 
@@ -38,7 +39,7 @@ const (
 const (
 	// WrapperGrace is how long the wrapper itself gives the harness after a SIGTERM before
 	// it escalates; it writes the exit record and the final output when that is over.
-	WrapperGrace = 30 * time.Second
+	WrapperGrace = execwrap.DefaultGrace
 	// GraceMargin is what the stopper waits beyond WrapperGrace, so that a wrapper that
 	// cooperates is always done before the stopper kills the group under it.
 	GraceMargin     = 10 * time.Second
