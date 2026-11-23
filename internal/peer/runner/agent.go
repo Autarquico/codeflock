@@ -30,6 +30,8 @@ type Input struct {
 type Plan struct {
 	Argv []string
 	Env  []string
+	// UnsetEnv are variables the harness must not inherit from the tmux server.
+	UnsetEnv []string
 	// SessionID is the session the process runs; empty if the harness picks its
 	// own, which Discover then finds.
 	SessionID string

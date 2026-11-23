@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -213,5 +214,27 @@ func TestGivenAHostWithoutClaudeConfigDirThenTheHarnessIsNotGivenOne(t *testing.
 		if strings.HasPrefix(e, claude.ConfigHomeEnv+"=") {
 			t.Errorf("env %v sets CLAUDE_CONFIG_DIR", plan.Env)
 		}
+	}
+	if !slices.Contains(plan.UnsetEnv, claude.ConfigHomeEnv) {
+		t.Errorf("unset %v: the harness would inherit CLAUDE_CONFIG_DIR from the tmux server", plan.UnsetEnv)
+	}
+}
+
+func TestGivenARelativeCodexHomeThenThePlanAndDiscoveryUseItAbsolute(t *testing.T) {
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("#!/bin/sh\n"), 0o700); err != nil { //nolint:gosec // a stub binary
+		t.Fatal(err)
+	}
+	host, err := localhost.New(localhost.Options{Home: t.TempDir(), Env: []string{"PATH=" + bin, codex.ConfigHomeEnv + "=rel/codex"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := runner.PrepareFor(runner.New(runner.Config{Host: host}), codex.ID, runner.Input{Worktree: t.TempDir(), LaunchDir: t.TempDir(), Waiting: "w", NotifyCmd: []string{"n"}, Prompt: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	abs, _ := filepath.Abs("rel/codex")
+	if !slices.Contains(plan.Env, codex.ConfigHomeEnv+"="+abs) {
+		t.Errorf("env %v, want CODEX_HOME=%s", plan.Env, abs)
 	}
 }

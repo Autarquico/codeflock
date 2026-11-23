@@ -158,16 +158,26 @@ func (l *localJobs) Run(ctx context.Context, req cli.RunRequest) (cli.JobView, e
 	}
 	launched, err := p.runner.Launch(ctx, j.ID, req.Prompt)
 	if err != nil {
-		if left, getErr := p.store.Get(j.ID); getErr != nil || left.State != job.Stopped || left.Launch != nil {
+		// A launch is recorded before anything starts, so a Job that is stopped
+		// with none recorded ran nothing and was told nothing. That is decided
+		// and acted on under the Job's lock: a `resume` that got in between has
+		// recorded a launch, and its Job is not ours to delete.
+		bg := context.WithoutCancel(ctx)
+		removed := false
+		_ = p.store.WithLock(j.ID, func(left *job.Job) error {
+			if left.State != job.Stopped || left.Launch != nil {
+				return nil
+			}
+			_, _ = git(bg, top, "worktree", "remove", "--force", worktree)
+			_, _ = git(bg, top, "branch", "-D", j.Branch)
+			removed = os.RemoveAll(p.store.Dir(j.ID)) == nil
+			return nil
+		})
+		if !removed {
 			// The launch is recorded: its agent may still run, and the Job and
 			// its worktree are what `cflk stop` needs to end it.
 			return cli.JobView{}, fmt.Errorf("%w (job %s is kept)", err, j.ID)
 		}
-		// Nothing runs and nothing was said to the agent: leave no Job behind.
-		bg := context.WithoutCancel(ctx)
-		_, _ = git(bg, top, "worktree", "remove", "--force", worktree)
-		_, _ = git(bg, top, "branch", "-D", j.Branch)
-		_ = os.RemoveAll(p.store.Dir(j.ID))
 		return cli.JobView{}, err
 	}
 	return view(launched, ""), nil

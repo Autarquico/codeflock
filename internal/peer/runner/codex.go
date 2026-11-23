@@ -39,7 +39,7 @@ func (a codexAgent) Prepare(ctx context.Context, in Input) (Plan, error) {
 		return Plan{}, err
 	}
 	run := interactive(in)
-	configDir := codex.ConfigDir(a.host)
+	configDir := codexConfigDir(a.host)
 	run.ConfigDir = configDir
 	l, err := codex.Adapter{}.StartSession(ctx, a.host, run, in.SessionID)
 	if err != nil {
@@ -52,14 +52,24 @@ func (a codexAgent) Prepare(ctx context.Context, in Input) (Plan, error) {
 	return Plan{Argv: argv, Env: harnessEnv(a.host, codex.ConfigHomeEnv+"="+configDir), SessionID: in.SessionID}, nil
 }
 
+// codexConfigDir is CODEX_HOME made absolute: the harness runs in the worktree and
+// discovery in the caller's directory, and both must mean the same directory.
+func codexConfigDir(host harness.Host) string {
+	dir := codex.ConfigDir(host)
+	if abs, err := filepath.Abs(dir); err == nil {
+		return abs
+	}
+	return dir
+}
+
 func (a codexAgent) Discover(ctx context.Context, in Input, after time.Time) ([]string, error) {
-	return codex.DiscoverSessions(ctx, codex.ConfigDir(a.host), in.Worktree, after)
+	return codex.DiscoverSessions(ctx, codexConfigDir(a.host), in.Worktree, after)
 }
 
 // WaitingStale: the notification comes at the end of a turn, so a rollout that
 // grew after it is a turn that went on.
 func (a codexAgent) WaitingStale(sessionID string, marker time.Time) bool {
-	path, err := codex.Rollout(codex.ConfigDir(a.host), sessionID)
+	path, err := codex.Rollout(codexConfigDir(a.host), sessionID)
 	if err != nil {
 		return false
 	}

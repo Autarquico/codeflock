@@ -5,7 +5,7 @@ package job
 var transitions = map[State][]State{
 	Running:   {Waiting, Stopping, Done, Failed, Lost},
 	Waiting:   {Running, Stopping, Done, Failed, Lost},
-	Stopping:  {Stopping, Stopped},
+	Stopping:  {Stopping, Stopped, Done, Failed}, // Done and Failed: the agent ended by itself as a Stop began
 	Stopped:   {Running, Moving, Finishing},
 	Done:      {},
 	Failed:    {Running, Stopping},

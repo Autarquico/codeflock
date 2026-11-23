@@ -43,11 +43,12 @@ func (a claudeAgent) Prepare(ctx context.Context, in Input) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
-	return Plan{
-		Argv:      withFlags(l.Argv, "--settings", settings),
-		Env:       harnessEnv(a.host, claudeEnv(a.host)...),
-		SessionID: id,
-	}, nil
+	env := claudeEnv(a.host)
+	plan := Plan{Argv: withFlags(l.Argv, "--settings", settings), Env: harnessEnv(a.host, env...), SessionID: id}
+	if len(env) == 0 { // the caller has none: neither may the harness inherit one
+		plan.UnsetEnv = []string{claude.ConfigHomeEnv}
+	}
+	return plan, nil
 }
 
 // claudeEnv is CLAUDE_CONFIG_DIR as the caller has it, if it has it: set, even to

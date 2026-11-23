@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/Autarquico/codeflock/internal/adapters/harness"
@@ -109,6 +110,7 @@ func (r *Runner) Launch(ctx context.Context, id, prompt string) (job.Job, error)
 		if !ok {
 			return fmt.Errorf("runner: job %s: unknown harness %q", j.ID, j.Harness)
 		}
+		r.importSession(j)
 		before := *j
 		l := job.NewLaunch(j.ID)
 		if err := j.Transition(job.Running); err != nil {
@@ -128,7 +130,16 @@ func (r *Runner) Launch(ctx context.Context, id, prompt string) (job.Job, error)
 			NotifyCmd: r.cfg.NotifyCmd,
 		}
 		in.SessionFile = filepath.Join(in.LaunchDir, SessionFile)
-		session, err := r.start(ctx, agent, in, l)
+		// A session known before the start (Claude names it) is on disk with the
+		// launch, so that a launch cut short can still be resumed.
+		known := func(session string) error {
+			if j.SessionID == session {
+				return nil
+			}
+			j.SessionID = session
+			return save()
+		}
+		session, err := r.start(ctx, agent, in, l, known)
 		if err != nil {
 			return r.failLaunch(j, before, in, save, err)
 		}
@@ -165,7 +176,7 @@ func (r *Runner) failLaunch(j *job.Job, before job.Job, in Input, save func() er
 	return fmt.Errorf("%w; its agent may still run (%w), so job %s is stopping: stop it before launching again", cause, left, j.ID)
 }
 
-func (r *Runner) start(ctx context.Context, agent Agent, in Input, l job.Launch) (string, error) {
+func (r *Runner) start(ctx context.Context, agent Agent, in Input, l job.Launch, known func(session string) error) (string, error) {
 	if info, err := os.Stat(in.Worktree); err != nil || !info.IsDir() {
 		return "", fmt.Errorf("runner: job %s has no worktree at %s", in.Job.ID, in.Worktree)
 	}
@@ -180,9 +191,12 @@ func (r *Runner) start(ctx context.Context, agent Agent, in Input, l job.Launch)
 		if err := writeSession(in.SessionFile, plan.SessionID); err != nil {
 			return "", err
 		}
+		if err := known(plan.SessionID); err != nil {
+			return "", err
+		}
 	}
 	ready := filepath.Join(in.LaunchDir, PaneReadyFile)
-	launch := execwrap.Launch{Argv: plan.Argv, Env: plan.Env, Dir: in.Worktree, Mode: execwrap.ModeInteractive, Grace: execwrap.DefaultGrace, Gate: ready}
+	launch := execwrap.Launch{Argv: plan.Argv, Env: plan.Env, UnsetEnv: plan.UnsetEnv, Dir: in.Worktree, Mode: execwrap.ModeInteractive, Grace: execwrap.DefaultGrace, Gate: ready}
 	if err := execwrap.Write(in.LaunchDir, execwrap.LaunchFile, launch); err != nil {
 		return "", err
 	}
@@ -237,6 +251,18 @@ func (r *Runner) settle(ctx context.Context, agent Agent, in Input, l job.Launch
 		return "", err
 	}
 	return session, markTurnsEndedBefore(in.Waiting, in.SessionFile, session)
+}
+
+// importSession gives a Job that lacks a session the one its current launch
+// discovered and wrote to its session file, if it got that far.
+func (r *Runner) importSession(j *job.Job) {
+	if j.SessionID != "" || j.Launch == nil {
+		return
+	}
+	raw, err := os.ReadFile(filepath.Join(r.cfg.Store.LaunchDir(j.ID, j.Launch.ID), SessionFile)) //nolint:gosec // a file of the launch
+	if err == nil {
+		j.SessionID = strings.TrimSpace(string(raw))
+	}
 }
 
 func writeSession(path, id string) error {

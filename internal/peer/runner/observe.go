@@ -84,6 +84,7 @@ func (r *Runner) Reconcile(ctx context.Context, id string) (job.Job, error) {
 
 // reconcile is Reconcile on a Job whose lock the caller holds.
 func (r *Runner) reconcile(ctx context.Context, j *job.Job) error {
+	r.importSession(j)
 	switch j.State {
 	case job.Running, job.Waiting, job.Lost:
 	default:
@@ -126,16 +127,12 @@ func (r *Runner) Send(ctx context.Context, id, text string) error {
 		// The marker goes before the text does: a turn that ends quickly writes the
 		// next marker, which clearing it afterwards would delete.
 		marker := r.cfg.Store.WaitingPath(j.ID, j.Launch.ID)
-		cleared := true
-		if err := os.Remove(marker); errors.Is(err, fs.ErrNotExist) {
-			cleared = false
-		} else if err != nil {
+		if err := os.Remove(marker); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("runner: clearing the waiting marker: %w", err)
 		}
+		// On failure the marker is not restored: the Enter may have been processed, and
+		// a marker lost for nothing only shows running until the next turn ends.
 		if err := r.cfg.Tmux.SendText(ctx, r.cfg.Tmux.HandleFor(j.Launch.Session), text); err != nil {
-			if cleared { // nothing was sent: the agent still waits
-				_ = os.WriteFile(marker, nil, 0o600)
-			}
 			return err
 		}
 		if j.State == job.Waiting {
@@ -155,7 +152,7 @@ func (r *Runner) Send(ctx context.Context, id, text string) error {
 // already stopped is left alone.
 func (r *Runner) Stop(ctx context.Context, id string) error {
 	var launch job.Job
-	var already bool
+	var already, wasFailed bool
 	err := r.cfg.Store.WithLockSave(id, func(j *job.Job, save func() error) error {
 		if err := r.reconcile(ctx, j); err != nil {
 			return err
@@ -167,6 +164,7 @@ func (r *Runner) Stop(ctx context.Context, id string) error {
 			return nil
 		}
 		launch = *j
+		wasFailed = j.State == job.Failed
 		return j.Transition(job.Stopping)
 	})
 	if err != nil || already {
@@ -180,6 +178,22 @@ func (r *Runner) Stop(ctx context.Context, id string) error {
 	return r.cfg.Store.WithLock(id, func(j *job.Job) error {
 		if j.State != job.Stopping || !sameLaunch(j.Launch, launch.Launch) { // another Stop, or a later launch, got here first
 			return nil
+		}
+		if wasFailed || launch.Launch == nil {
+			return j.Transition(job.Stopped)
+		}
+		// The group is empty: if the wrapper recorded that the harness ended by itself
+		// while this Stop began, that is how the Job ended, not by this Stop.
+		var exit execwrap.Exit
+		ok, err := readRecord(r.cfg.Store.ExitPath(id, launch.Launch.ID), &exit)
+		if err != nil {
+			return fmt.Errorf("runner: job %s stays stopping: %w", id, err)
+		}
+		if ok && exit.Cause == execwrap.CauseExit && exit.Error == "" {
+			if exit.ExitCode != nil && *exit.ExitCode == 0 {
+				return j.Transition(job.Done)
+			}
+			return j.Transition(job.Failed)
 		}
 		return j.Transition(job.Stopped)
 	})

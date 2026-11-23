@@ -163,3 +163,19 @@ func TestTrustFolderWritesTheStateOfCLAUDE_CONFIG_DIRWhenTheHostSetsIt(t *testin
 		t.Error("~/.claude.json was written although the host sets CLAUDE_CONFIG_DIR")
 	}
 }
+
+func TestTheTrustLockSitsNextToTheStateFileSoHomesSharingItShareTheLock(t *testing.T) {
+	cfg := t.TempDir()
+	for range 2 { // two homes, one state file
+		h, err := localhost.New(localhost.Options{Home: t.TempDir(), Env: []string{claude.ConfigHomeEnv + "=" + cfg}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := (claude.Adapter{}).TrustFolder(h, t.TempDir()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(cfg, claude.StateFile+".cflk.lock")); err != nil {
+			t.Fatalf("no lock next to the state file: %v", err)
+		}
+	}
+}

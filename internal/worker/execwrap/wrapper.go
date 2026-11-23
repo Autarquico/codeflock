@@ -177,7 +177,7 @@ func (w *wrapper) run() error {
 
 	cmd := exec.Command(w.launch.Argv[0], w.launch.Argv[1:]...) //nolint:gosec,noctx // the argv is what the Run asked for; nothing ends the harness but the wrapper
 	cmd.Dir = w.launch.Dir
-	cmd.Env = append(append(envutil.WithoutTmux(os.Environ()), w.launch.Env...), secrets...)
+	cmd.Env = append(append(envutil.Without(envutil.WithoutTmux(os.Environ()), w.launch.UnsetEnv...), w.launch.Env...), secrets...)
 	copied, parentEnds, err := w.wire(cmd, log, set)
 	if err != nil {
 		return w.fail("wiring the output: %v", err)

@@ -70,10 +70,11 @@ func stateFilePath(host harness.Host) string {
 	return filepath.Join(host.Home(), StateFile)
 }
 
-// stateLockPath is the lock every cflk write of ~/.claude.json holds, whichever Job
-// or state root it works for: they share the file, so they share the lock.
+// stateLockPath is the lock every cflk write of the state file holds, whichever
+// Job, state root or HOME it works for: it sits next to the file, so whoever
+// shares the file shares the lock.
 func stateLockPath(host harness.Host) string {
-	return filepath.Join(host.Home(), ".local", "state", "cflk", "claude-json.lock")
+	return stateFilePath(host) + ".cflk.lock"
 }
 
 // editProject applies change to the projects of ~/.claude.json under the key of the
