@@ -8,15 +8,62 @@ export const LANGUAGES = ['en', 'es'];
 // The landing of a language: English at the root, the others under their code.
 export const home = (lang) => (lang === 'en' ? BASE : `${BASE}${lang}/`);
 
-// The same drawing in both languages: it only has machine names and commands.
-export const network = [
-	'  laptop            mac-mini           omarch01',
-	'  cflk              cflk               cflk',
-	'    \\                |                 /',
-	'     +---- Tailscale + ssh + tmux + git ----+',
-	'',
-	'  no Controller, no daemon: every machine is a peer',
-].join('\n');
+// The words of the two diagrams (src/diagrams.mjs). Machine names, commands and refs are not translated.
+const REF = 'refs/cflk/<job>/g<gen>';
+export const diagrams = {
+	en: {
+		network: {
+			alt: 'Three machines, each running cflk, connected to each other through Tailscale, ssh, tmux and git. There is no central server.',
+			tailnet: 'tailnet (Tailscale)',
+			link: 'ssh + git',
+			job: 'Job',
+			jobSub: 'agent in tmux',
+			note: 'No Controller, no daemon: every machine is a peer.',
+		},
+		move: {
+			alt: 'A Job moves from machine A to machine B in five steps: A stops the agent, commits and pushes the branch to B, exports the session over ssh, B imports it with a new session id and resumes the agent. cflk pull brings it back to A.',
+			move: 'cflk move <job> --to B',
+			origin: 'A · origin',
+			destination: 'B · destination',
+			steps: [
+				{ title: 'Stop', text: 'the agent' },
+				{ title: 'Commit + push', text: 'the branch to B', code: REF },
+				{ title: 'Export session', text: 'over ssh, never in git' },
+				{ title: 'Import', text: 'with a new session id' },
+				{ title: 'Resume', text: 'the same conversation' },
+			],
+			back: 'and back',
+			backCommand: 'cflk pull <job>',
+			backText: 'The Job moves to A and keeps running.',
+		},
+	},
+	es: {
+		network: {
+			alt: 'Tres máquinas, cada una con cflk, conectadas entre sí por Tailscale, ssh, tmux y git. No hay servidor central.',
+			tailnet: 'tailnet (Tailscale)',
+			link: 'ssh + git',
+			job: 'Job',
+			jobSub: 'agente en tmux',
+			note: 'Sin Controller, sin daemon: cada máquina es un peer.',
+		},
+		move: {
+			alt: 'Un Job pasa de la máquina A a la B en cinco pasos: A para el agente, guarda un commit y envía la rama a B, exporta la sesión por ssh, y B la importa con un id de sesión nuevo y reanuda el agente. cflk pull lo trae de vuelta a A.',
+			move: 'cflk move <job> --to B',
+			origin: 'A · origen',
+			destination: 'B · destino',
+			steps: [
+				{ title: 'Parar', text: 'el agente' },
+				{ title: 'Commit + push', text: 'de la rama a B', code: REF },
+				{ title: 'Exportar sesión', text: 'por ssh, nunca en git' },
+				{ title: 'Importar', text: 'con un id de sesión nuevo' },
+				{ title: 'Reanudar', text: 'la misma conversación' },
+			],
+			back: 'y de vuelta',
+			backCommand: 'cflk pull <job>',
+			backText: 'El Job pasa a A y sigue corriendo.',
+		},
+	},
+};
 
 export const landing = {
 	en: {
@@ -32,7 +79,6 @@ export const landing = {
 		lead: 'Keep Claude Code and Codex working on another machine of your network. Enter them, move them, bring the work back. All from Claude Code, over Tailscale, ssh, tmux and git.',
 		readDocs: 'Read the docs',
 		viewGithub: 'View on GitHub',
-		networkAlt: 'Three machines, each running cflk, connected to each other through Tailscale, ssh, tmux and git. There is no central server.',
 		how: 'How it works',
 		intro: 'This is what the 0.5.0 betas are built to do. How much of it has been checked on real machines is listed under "What is verified, and what is not".',
 		steps: [
@@ -94,7 +140,6 @@ export const landing = {
 		lead: 'Mantén Claude Code y Codex trabajando en otra máquina de tu red. Entra en ellos, muévelos, trae el trabajo de vuelta. Todo desde Claude Code, con Tailscale, ssh, tmux y git.',
 		readDocs: 'Leer la documentación (en inglés)',
 		viewGithub: 'Ver en GitHub',
-		networkAlt: 'Tres máquinas, cada una con cflk, conectadas entre sí por Tailscale, ssh, tmux y git. No hay servidor central.',
 		how: 'Cómo funciona',
 		intro: 'Esto es lo que las betas 0.5.0 están hechas para hacer. Cuánto se ha comprobado en máquinas reales está en «Qué está verificado y qué no».',
 		steps: [

@@ -7,6 +7,8 @@ Code Flock home: [autarquico.github.io/codeflock](https://autarquico.github.io/c
 
 Code Flock has no server. Each machine runs `cflk`, and the network is what Tailscale, ssh, tmux and git already give you.
 
+![Three peers, each running cflk, connected to each other over the tailnet with ssh and git. One of them runs a Job: an agent in tmux. There is no central server.](img/network.svg)
+
 ## Peer
 
 A machine of your tailnet with `cflk`, `git`, `tmux` and at least one harness (`claude`, `codex`). Its identity is its stable Tailscale node ID; the hostname is only for display. Every peer is equal: any of them can launch a Job, hand it to another, receive one, and list the Jobs of all.
@@ -53,6 +55,8 @@ The rule is one: the origin keeps the Job until the destination confirms it has 
 6. The origin marks it `moved`.
 
 The code travels with git and the conversation with an export of the session. The conversation never goes into git, so neither your origin nor any branch you push has it.
+
+![A Job moves from A to B: stop, commit and push the branch to refs/cflk/<job>/g<gen> on B, export the session over ssh, import it with a new session id and resume. cflk pull brings it back.](img/move-a-job.svg)
 
 ## Out of scope
 

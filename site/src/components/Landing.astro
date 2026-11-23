@@ -3,13 +3,15 @@ import '../styles/fonts.css';
 import '../styles/theme.css';
 import { BASE, REPO_URL, repoRef, routeFor } from '../../scripts/sync-docs.mjs';
 import { installCommands, siteVersion } from '../../scripts/version.mjs';
-import { LANGUAGES, home, landing, network } from '../i18n/landing.mjs';
+import { LANGUAGES, diagrams, home, landing } from '../i18n/landing.mjs';
+import { moveNarrow, moveWide, networkNarrow, networkWide } from '../diagrams.mjs';
 
 interface Props {
 	lang: keyof typeof landing;
 }
 const { lang } = Astro.props;
 const t = landing[lang];
+const { network, move } = diagrams[lang];
 const version = siteVersion();
 const commands = installCommands(version);
 const docs = routeFor('getting-started');
@@ -61,7 +63,10 @@ const retire = `${REPO_URL}/blob/${repoRef()}/docs/runbooks/retire-controller.md
 					<a class="button primary" href={docs} hreflang="en">{t.readDocs}</a>
 					<a class="button" href={REPO_URL}>{t.viewGithub}</a>
 				</div>
-				<div class="scroll network" role="region" aria-label={t.networkAlt} tabindex="0"><pre>{network}</pre></div>
+				<figure class="diagram network">
+					<div class="wide" set:html={networkWide(network, network.alt)} />
+					<div class="narrow" set:html={networkNarrow(network, network.alt)} />
+				</figure>
 			</section>
 
 			<section aria-labelledby="how-title">
@@ -81,6 +86,10 @@ const retire = `${REPO_URL}/blob/${repoRef()}/docs/runbooks/retire-controller.md
 			<section aria-labelledby="journey-title">
 				<h2 id="journey-title">{t.journeyTitle}</h2>
 				<p class="intro">{t.journeyIntro}</p>
+				<figure class="diagram">
+					<div class="wide" set:html={moveWide(move, move.alt)} />
+					<div class="narrow" set:html={moveNarrow(move, move.alt)} />
+				</figure>
 				<ol class="steps">
 					{t.journey.map(({ title, command, text }) => (
 						<li>
@@ -145,6 +154,81 @@ const retire = `${REPO_URL}/blob/${repoRef()}/docs/runbooks/retire-controller.md
 	body {
 		margin: 0;
 		background: var(--cf-bg);
+	}
+	/* The diagrams (src/diagrams.mjs) are injected as markup, so their classes are styled here with the site tokens. */
+	.diagram {
+		margin: 0 0 var(--cf-space-5);
+	}
+	.diagram svg {
+		display: block;
+		width: 100%;
+		height: auto;
+		font-family: var(--cf-font-body);
+		font-size: 13px;
+	}
+	.diagram .narrow svg {
+		max-width: 26rem;
+		margin-inline: auto;
+	}
+	.diagram .narrow {
+		display: none;
+	}
+	@media (max-width: 44rem) {
+		.diagram .wide {
+			display: none;
+		}
+		.diagram .narrow {
+			display: block;
+		}
+	}
+	.diagram .bg {
+		fill: var(--cf-surface);
+		stroke: var(--cf-border);
+	}
+	.diagram .lane {
+		fill: none;
+		stroke: var(--cf-border);
+	}
+	.diagram .card,
+	.diagram .box {
+		fill: var(--cf-bg);
+		stroke: var(--cf-neutral-500);
+	}
+	.diagram .line {
+		fill: none;
+		stroke: var(--cf-text-muted);
+		stroke-width: 1.5;
+	}
+	.diagram .accent-line {
+		stroke: var(--cf-accent);
+	}
+	.diagram .dash {
+		stroke-dasharray: 5 4;
+	}
+	.diagram .head {
+		fill: var(--cf-text-muted);
+	}
+	.diagram text {
+		fill: var(--cf-text);
+	}
+	.diagram .strong {
+		font-weight: 600;
+		fill: var(--cf-text-strong);
+	}
+	.diagram .muted {
+		fill: var(--cf-text-muted);
+	}
+	.diagram .accent {
+		fill: var(--cf-accent);
+	}
+	.diagram .small {
+		font-size: 12px;
+	}
+	.diagram .mono {
+		font-family: var(--cf-font-mono);
+	}
+	.diagram .code {
+		font-size: 11px;
 	}
 </style>
 
