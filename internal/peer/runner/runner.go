@@ -110,7 +110,9 @@ func (r *Runner) Launch(ctx context.Context, id, prompt string) (job.Job, error)
 		if !ok {
 			return fmt.Errorf("runner: job %s: unknown harness %q", j.ID, j.Harness)
 		}
-		r.importSession(j)
+		if err := r.importSession(ctx, j); err != nil && prompt == "" {
+			return fmt.Errorf("runner: job %s cannot be resumed: %w", j.ID, err)
+		}
 		before := *j
 		l := job.NewLaunch(j.ID)
 		if err := j.Transition(job.Running); err != nil {
@@ -254,15 +256,42 @@ func (r *Runner) settle(ctx context.Context, agent Agent, in Input, l job.Launch
 }
 
 // importSession gives a Job that lacks a session the one its current launch
-// discovered and wrote to its session file, if it got that far.
-func (r *Runner) importSession(j *job.Job) {
+// discovered and wrote to its session file or, if the launch was cut short before
+// writing it, the one the harness created since the launch started (found as
+// settle would, and then written). Several candidates are an error and leave the
+// Job without a session.
+func (r *Runner) importSession(ctx context.Context, j *job.Job) error {
 	if j.SessionID != "" || j.Launch == nil {
-		return
+		return nil
 	}
-	raw, err := os.ReadFile(filepath.Join(r.cfg.Store.LaunchDir(j.ID, j.Launch.ID), SessionFile)) //nolint:gosec // a file of the launch
-	if err == nil {
+	launchDir := r.cfg.Store.LaunchDir(j.ID, j.Launch.ID)
+	file := filepath.Join(launchDir, SessionFile)
+	if raw, err := os.ReadFile(file); err == nil { //nolint:gosec // a file of the launch
 		j.SessionID = strings.TrimSpace(string(raw))
+		return nil
 	}
+	agent, ok := r.agents[j.Harness]
+	if !ok {
+		return nil
+	}
+	var started execwrap.Started
+	if ok, err := readRecord(r.cfg.Store.StartedPath(j.ID, j.Launch.ID), &started); err != nil || !ok {
+		return err
+	}
+	in := Input{Job: *j, Worktree: r.cfg.Store.WorktreeDir(j.ID, j.Gen), LaunchDir: launchDir}
+	ids, err := agent.Discover(ctx, in, started.StartedAt)
+	switch {
+	case err != nil:
+		return err
+	case len(ids) > 1:
+		return fmt.Errorf("%d sessions of the harness were created in %s since the launch started: %v; the session of job %s is not known", len(ids), in.Worktree, ids, j.ID)
+	case len(ids) == 1:
+		if err := writeSession(file, ids[0]); err != nil {
+			return err
+		}
+		j.SessionID = ids[0]
+	}
+	return nil
 }
 
 func writeSession(path, id string) error {

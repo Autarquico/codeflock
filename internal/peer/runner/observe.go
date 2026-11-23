@@ -84,7 +84,7 @@ func (r *Runner) Reconcile(ctx context.Context, id string) (job.Job, error) {
 
 // reconcile is Reconcile on a Job whose lock the caller holds.
 func (r *Runner) reconcile(ctx context.Context, j *job.Job) error {
-	r.importSession(j)
+	_ = r.importSession(ctx, j) // an ambiguous session is Launch's to report
 	switch j.State {
 	case job.Running, job.Waiting, job.Lost:
 	default:
@@ -124,17 +124,24 @@ func (r *Runner) Send(ctx context.Context, id, text string) error {
 		if j.Launch == nil || (j.State != job.Running && j.State != job.Waiting) {
 			return fmt.Errorf("runner: job %s is %s: there is no agent to send to", id, j.State)
 		}
-		// The marker goes before the text does: a turn that ends quickly writes the
-		// next marker, which clearing it afterwards would delete.
+		// The marker is set aside while the text goes in: a turn that ends quickly
+		// writes the next marker, which clearing it afterwards would delete. If the
+		// send fails the agent may still be waiting, so the marker comes back (unless
+		// a newer one was written meanwhile): a marker restored for an Enter that did
+		// get through is rewritten or superseded by the next turn, one lost for good
+		// is not.
 		marker := r.cfg.Store.WaitingPath(j.ID, j.Launch.ID)
-		if err := os.Remove(marker); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		aside := marker + ".sending"
+		if err := os.Rename(marker, aside); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("runner: clearing the waiting marker: %w", err)
 		}
-		// On failure the marker is not restored: the Enter may have been processed, and
-		// a marker lost for nothing only shows running until the next turn ends.
 		if err := r.cfg.Tmux.SendText(ctx, r.cfg.Tmux.HandleFor(j.Launch.Session), text); err != nil {
+			if _, statErr := os.Stat(marker); errors.Is(statErr, fs.ErrNotExist) {
+				_ = os.Rename(aside, marker)
+			}
 			return err
 		}
+		_ = os.Remove(aside)
 		if j.State == job.Waiting {
 			return j.Transition(job.Running)
 		}
@@ -152,7 +159,7 @@ func (r *Runner) Send(ctx context.Context, id, text string) error {
 // already stopped is left alone.
 func (r *Runner) Stop(ctx context.Context, id string) error {
 	var launch job.Job
-	var already, wasFailed bool
+	var already bool
 	err := r.cfg.Store.WithLockSave(id, func(j *job.Job, save func() error) error {
 		if err := r.reconcile(ctx, j); err != nil {
 			return err
@@ -163,8 +170,10 @@ func (r *Runner) Stop(ctx context.Context, id string) error {
 		if already = j.State == job.Stopped; already {
 			return nil
 		}
+		if j.State != job.Stopping { // a retry keeps what the first Stop began from
+			j.StoppingFrom = j.State
+		}
 		launch = *j
-		wasFailed = j.State == job.Failed
 		return j.Transition(job.Stopping)
 	})
 	if err != nil || already {
@@ -179,11 +188,13 @@ func (r *Runner) Stop(ctx context.Context, id string) error {
 		if j.State != job.Stopping || !sameLaunch(j.Launch, launch.Launch) { // another Stop, or a later launch, got here first
 			return nil
 		}
-		if wasFailed || launch.Launch == nil {
-			return j.Transition(job.Stopped)
+		from := j.StoppingFrom
+		j.StoppingFrom = ""
+		if from == job.Failed || launch.Launch == nil {
+			return j.Transition(job.Stopped) // it had failed already: its exit is not a new outcome
 		}
 		// The group is empty: if the wrapper recorded that the harness ended by itself
-		// while this Stop began, that is how the Job ended, not by this Stop.
+		// while a Stop began, that is how the Job ended, not by this Stop.
 		var exit execwrap.Exit
 		ok, err := readRecord(r.cfg.Store.ExitPath(id, launch.Launch.ID), &exit)
 		if err != nil {

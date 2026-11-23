@@ -43,6 +43,10 @@ type Job struct {
 	CreatedBy string  `json:"created_by"`
 	History   []Entry `json:"history,omitempty"`
 
+	// StoppingFrom is the state the Job was in when the Stop that is under way
+	// began, so that a retry of it knows what it was cutting short.
+	StoppingFrom State `json:"stopping_from,omitempty"`
+
 	Launch  *Launch   `json:"launch,omitempty"`   // the current launch
 	Move    *Move     `json:"move,omitempty"`     // set while Moving
 	Finish  *Finish   `json:"finish,omitempty"`   // set while Finishing
