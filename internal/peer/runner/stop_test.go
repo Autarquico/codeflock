@@ -286,7 +286,7 @@ func TestAFailedReverifySignalsNothing(t *testing.T) {
 // was lost: an empty group is stopped, survivors are killed.
 func TestAWrapperThatExitsBetweenTheLooksIsGone(t *testing.T) {
 	t.Run("at the check before the first signal, group empty", func(t *testing.T) {
-		w := newWrapperProcess(t, "sleep 300")
+		w := newWrapperProcess(t, "exec sleep 300")
 		sg := &signals{}
 		var calls atomic.Int32
 		s := stopper(sg, time.Second, time.Second)
