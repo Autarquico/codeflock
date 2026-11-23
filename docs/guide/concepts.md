@@ -1,63 +1,63 @@
 ---
 title: Concepts
-description: The parts of Code Flock and how they relate, in the words the CLI and the TUI use.
+description: Peers, Jobs, states and how a Job moves between machines.
 ---
 
-Code Flock runs coding agents across a pool of machines you own. You say what you want done; it finds a machine, runs an agent there, and keeps the record.
+Code Flock home: [autarquico.github.io/codeflock](https://autarquico.github.io/codeflock/).
 
-![The local Controller holds Projects, Tasks and Runs, and schedules each Run on a Worker: a Mac, a Linux machine or a Mac mini. On each Worker the Run gets an isolated worktree and a tmux session where Claude Code or Codex CLI works, with its logs and checkpoints. The result is a branch, and the Controller records it in the Task's history.](img/architecture.webp)
+Code Flock has no server. Each machine runs `cflk`, and the network is what Tailscale, ssh, tmux and git already give you.
 
-## Machines
+![Three peers, each running cflk, connected to each other over the tailnet with ssh and git. One of them runs a Job: an agent in tmux. There is no central server.](img/network.svg)
 
-**Controller.** The one process that holds the state: Projects, Tasks, Runs, events and the scheduler. It has a database, its own certificate authority and an API. Workers and clients talk to it over mutually authenticated TLS. There is one per installation (`cflk controller init`, `cflk controller run`).
+## Peer
 
-**Worker.** A machine that runs Runs. It runs a daemon (`cflk worker run`), announces which harnesses it has, keeps a clone of each repository it has worked on and does the work in isolated Git worktrees. You choose how much of the machine it contributes (CPUs, memory, disk, concurrent Runs) and when it accepts work (`always`, `idle` or `manual`). A Worker can be drained so that it takes no new Runs and the ones it has go on.
+A machine of your tailnet with `cflk`, `git`, `tmux` and at least one harness (`claude`, `codex`). Its identity is its stable Tailscale node ID; the hostname is only for display. Every peer is equal: any of them can launch a Job, hand it to another, receive one, and list the Jobs of all.
 
-**Client.** A machine from which you use Code Flock: the `cflk` commands and the TUI. Clients enrol with an invitation (`cflk connect`). One machine can be a client, a Worker, or both, with separate credentials for each.
+Peers trust each other fully. They are all machines of the same person, and what a peer can do on another is what you could do by ssh. The `read` profile of the MCP server limits only the local model, not the peers.
 
-Invitations are single-use and short-lived: `cflk controller token create --client` or `--worker`.
+## Job
 
-## Work
+An agent working on a branch of a repo, on one peer. It has:
 
-**Project.** A repository plus the defaults for work on it: the default branch, completion policy and so on. A Project's configuration can come from several layers, and `cflk project explain` shows the effective value of each field and where it came from.
+- an `id`, `job-` plus ten random characters;
+- the `repo` (its origin, so ssh and https give the same one) and the branch `cflk/<id>`;
+- the `harness` and the agent's `session_id`;
+- a generation, `gen`, that goes up each time the Job moves;
+- the `peer` that owns it, and a `state`.
 
-**Task.** What you want achieved, independent of where it runs: a name, a prompt, a Project and a starting ref. A Task has a state (`queued`, `running`, `waiting`, `completed`, `failed`, `cancelled`, `archived`). A waiting Task says why: it has not started, it needs input, it was deferred, it needs a decision, or it needs review. Its completion policy says what makes it done: `first_success`, `promote` or `manual`.
+The Job lives in `~/.local/state/cflk/jobs/<id>/` on its peer, with a worktree per generation. That directory is the only truth about the Job on that peer.
 
-**Run.** One attempt at a Task, on one Worker, in one worktree, with one harness. A Task can have several Runs, for example when a Run fails and is retried. A Run's state includes `queued`, `preparing`, `running`, `waiting_input`, `completed`, `failed`, `cancelled` and `lost`. The result of a Run is published as a branch. If publication fails, `cflk run publish` tries again.
+## States
 
-`cflk run explain` says why a Run is waiting or where it went, Worker by Worker, so scheduling is never a black box.
-
-## Needs input and the inbox
-
-A harness can stop to ask: a permission (may I run this command?) or a question. The Run moves to `waiting_input` and the Task shows as waiting for input. You can answer without attaching:
-
-- `cflk inbox` or the inbox view of the TUI list what needs you.
-- `cflk task respond` answers, or `y` and `n` in the TUI inbox.
-
-The inbox also lists failures that need a decision. By default a harness skips its own permission prompts; create the Task with `--permissions ask` to have them asked.
-
-## Harnesses
-
-A harness is the program that drives the coding agent. Code Flock does not replace it, and does not translate its configuration into a common format. Each has its own adapter.
-
-| Harness | What it is |
+| State | Meaning |
 | --- | --- |
-| `claude-code` | Claude Code, the `claude` program. |
-| `codex` | OpenAI's Codex CLI, the `codex` program. |
-| `command` | A generic harness: the prompt is run as a POSIX shell script. No model is involved. Useful to check the plumbing. |
+| `running` | The agent is working |
+| `waiting` | It stopped to ask a person |
+| `stopping` | Being stopped; a process may remain, run `cflk stop` |
+| `stopped` | Stopped, resumable here |
+| `done`, `failed` | The agent finished, or exited with an error |
+| `lost` | No process and no exit record, for example after a reboot; `cflk resume` brings it back |
+| `moving` | A move is in progress or unconfirmed |
+| `finishing` | A `pull --finish` is in progress |
+| `moved` | It lives on another peer |
 
-A Worker offers the harnesses it has installed. `cflk worker doctor` checks that they are present and logged in, and `cflk worker join` can offer to install the missing ones.
+Any command that reads a Job works out its state at that moment, from tmux and from the exit record. Nothing restarts by itself.
 
-The default tests use the `command` harness, a scripted fake harness and recorded Claude Code and Codex output. No automated test runs a session with the real Claude Code or Codex CLI; an opt-in check (`CF_REQUIRE_CLAUDE=1`) only confirms the flags the Claude Code adapter relies on.
+## How a Job moves
 
-## Configuration that travels
+The rule is one: the origin keeps the Job until the destination confirms it has started it, and in any doubt the Job stays `moving` until you resolve it.
 
-**Workflow.** A versioned, portable bundle of the native configuration of your harnesses and tools (for example the settings and instructions of Claude Code), together with the rules for putting it on a machine. It is not a universal format: it holds native snapshots, metadata and who owns each part. `cflk workflow adopt` creates one from the configuration already on your machine; `cflk workflow diff` and `explain` show what applying it would do; `apply` and `sync` put it on one or every Worker; `status` shows drift; `rollback` goes back one version.
+1. The origin stops the agent, and waits until its whole process group is gone.
+2. It commits the work and exports the session.
+3. It reserves the move (`moving`), and pushes the code to a fixed ref in a bare mirror on the destination.
+4. The destination prepares a worktree at that exact commit and keeps the session aside. Nothing starts.
+5. The origin asks it to activate. The destination imports the session with a new session id and starts the agent. From that moment the Job is the destination's.
+6. The origin marks it `moved`.
 
-**Environment.** How a worktree is prepared for a Run: the runtimes, services and dependencies it needs. It is versioned the same way (`cflk environment apply`, `show`, `list`). It does not impose Docker, Nix or any other tool.
+The code travels with git and the conversation with an export of the session. The conversation never goes into git, so neither your origin nor any branch you push has it.
 
-## Observing
+![A Job moves from A to B: stop, commit and push the branch to refs/cflk/<job>/g<gen> on B, export the session over ssh, import it with a new session id and resume. cflk pull brings it back.](img/move-a-job.svg)
 
-Everything that happens is an event. `cflk events` shows them and follows them; `cflk logs` shows the structured logs of the Controller and the Workers, or the exact output of one Run. `cflk search` finds Projects, Tasks, Runs, Workers and Workflows by reference or text. `cflk notify` turns the events that need you into desktop notifications and hooks.
+## Out of scope
 
-References accept a name or a short ID. When a Task name exists in more than one Project, `--project` says which.
+No scheduler (you choose the peer, or `--on any`), no central secrets (each peer has its own logins), no Projects, Workflows or Environments, no submodules with changes, no Windows.

@@ -1,37 +1,61 @@
 # Code Flock
 
-Code Flock (`cflk`) is a local-first control plane for running, moving, observing and comparing coding agents (Claude Code, Codex CLI, …) across a dynamic pool of machines.
+Code Flock (`cflk`) keeps your coding agents (Claude Code, Codex) working on another machine of your own network while you use this one for something else. You can enter them to see what they do, answer them, move them to another machine, and bring the work back. All from Claude Code.
 
-> *Tasks belong to Code Flock; Runs happen on Workers.*
+It is a network of equal peers over [Tailscale](https://tailscale.com), ssh, tmux and git. There is no Controller and no daemon: every machine with `cflk` can launch a Job, hand it to another, receive one, and see the Jobs of all.
 
-You think in **Projects → Tasks → Results**. Code Flock takes care of **Workers → Workflows → Harnesses → Models → Logs → Scheduling**.
+Landing page: <https://autarquico.github.io/codeflock/>
 
 ## Status
 
-Pre-release. The latest stable is `v0.2.1`; the `v0.4.0` betas carry the newest work. What works today:
+Pre-release. `v0.5.0-beta.1` is the first release of the peer network, and `v0.4.0-beta.8` is the last one with a Controller. The 0.5 betas have no compatibility with the Controller.
 
-- A Controller you run yourself, with Workers on macOS and Linux joined through a wizard and kept up as launchd or systemd services.
-- Tasks that run as isolated worktrees on a Worker, with checkpoints, a journal per Worker and backups you can restore on another host.
-- Handing a Claude Code or Codex session over to a remote Run (`handto`).
-- Attaching to a live Run, and a shell in its worktree, from your terminal, through the Controller.
-- The Runs of the pool seen from Claude Code over MCP, and entered from there (`runs_attach`). Without a terminal on its input, `cflk attach` opens the Run in a new window when it runs inside tmux, iTerm2 or Terminal.app, and otherwise gives the command to run.
-- A CLI and a TUI; signed releases and a verifying installer.
+What has been checked with the real CLIs: a Claude Code session exported on one machine and imported on another, in a different directory, is resumed and remembers the conversation; a Codex session does the same across directories on one machine. Moving a Job between machines, entering it, and bringing it back are in development and have not yet been checked by hand on a set of real machines. Codex between two machines has not been tried.
 
 ## Install
 
+On every machine of the network:
+
 ```bash
-curl -fsSL https://github.com/Autarquico/codeflock/releases/download/v0.4.0-beta.8/install.sh | CFLK_VERSION=v0.4.0-beta.8 sh
+curl -fsSL https://github.com/Autarquico/codeflock/releases/download/v0.5.0-beta.1/install.sh | CFLK_VERSION=v0.5.0-beta.1 sh
 ```
 
-`releases/latest` skips prereleases: while 0.4.0-beta.8 is the newest release of `cflk`, `…/releases/latest/download/install.sh` installs an older one that still calls the command `cf`. Pin the version, as above, until a stable release has `cflk`.
+`releases/latest` skips prereleases: pin the version, as above, while 0.5.0 is a beta. A machine needs `git`, `tmux` and at least one harness (`claude`, `codex`). Then follow the [getting started guide](docs/guide/getting-started.md).
 
-Then follow the [getting started guide](docs/guide/getting-started.md). Coming from the beta.6 or earlier (the command was `cf`)? Read [Upgrade to 0.4.0-beta.7](docs/guide/upgrade-beta7.md): its installer is `https://github.com/Autarquico/codeflock/releases/download/v0.4.0-beta.7/install.sh`.
+## Commands
+
+| CLI | MCP tool | What it does |
+| --- | --- | --- |
+| `cflk peers` | `peers_list` | Peers, whether they answer, their harnesses and number of Jobs |
+| `cflk ps [--peer p]` | `jobs_list` | Jobs of all peers (or one) |
+| `cflk show <job>` | `jobs_get` | One Job |
+| `cflk run [--on p\|any] [--harness h] -- "prompt"` | `jobs_run` | Start a Job on the current branch |
+| `cflk screen <job>` | `jobs_screen` | What its terminal shows now |
+| `cflk send <job> "text"` | `jobs_send` | Type into the agent |
+| `cflk attach <job> [--read-only]` | `jobs_attach` | Enter it, local or remote |
+| `cflk stop <job>` / `cflk resume <job>` | `jobs_stop` / `jobs_resume` | Stop / resume on the same peer |
+| `cflk clean <job>` | `jobs_clean` | Delete what a `moved` or `done` Job left on this peer |
+| `cflk move <job> --to p` | `jobs_move` | Move it and resume it on another peer |
+| `cflk pull <job> [--finish] [--push]` | `jobs_pull` | Bring it to this peer |
+
+Details in the [CLI reference](docs/guide/cli.md).
+
+## From Claude Code
+
+```bash
+cflk mcp install --claude
+```
+
+registers the MCP server and the `codeflock` skill, so Claude Code can use the commands above as tools. See [Use cflk from Claude Code](docs/guide/mcp.md).
+
+## What is not there any more
+
+The Controller, Projects, Workflows, Environments, the scheduler and centrally stored secrets are gone from 0.5.0. Each machine keeps its own Claude and Codex login and its own git credentials. If you ran the beta.8 Controller, [the retire runbook](docs/runbooks/retire-controller.md) lists what to stop and delete.
 
 ## Documentation
 
 - Guide: [`docs/guide/`](docs/guide/)
-- Specification: [`docs/codefabric-spec.md`](docs/codefabric-spec.md)
-- Roadmap: §43 of the spec (Phases 0–10, v0.1 → v1.0)
+- Specification of the peer network: [`docs/specs/p2p-peers.md`](docs/specs/p2p-peers.md)
 - Architecture decisions: [`docs/adr/`](docs/adr/)
 
 ## Build
