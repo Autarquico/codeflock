@@ -38,13 +38,34 @@ type Delegation struct {
 }
 
 // PushArgv is the `git push` that sends commit to ref of the target: an argv,
-// with no shell and `--` before the URL.
+// with no shell and `--` before the URL. The URL is made to rewrite to itself
+// (insteadOf and pushInsteadOf), and the longest matching rule wins, so no rule of
+// the repository sends the code elsewhere.
 func PushArgv(t PushTarget, commit, ref string) []string {
 	argv := []string{"git"}
 	for _, c := range t.Config {
 		argv = append(argv, "-c", c)
 	}
+	argv = append(argv, "-c", "url."+t.URL+".insteadOf="+t.URL, "-c", "url."+t.URL+".pushInsteadOf="+t.URL)
 	return append(argv, "push", "--quiet", "--", t.URL, commit+":"+ref)
+}
+
+// pushEnv is the environment of the push: the caller's, without what could
+// change where git sends the code or how it reaches it (GIT_SSH_COMMAND and
+// GIT_SSH win over core.sshCommand; GIT_CONFIG_* add settings), and with the
+// system and global git configuration off, whose url.*.insteadOf rules would
+// rewrite the peer's URL. Pushing over ssh needs nothing from them: the identity
+// is ssh's.
+func pushEnv(environ []string) []string {
+	env := make([]string, 0, len(environ)+3)
+	for _, kv := range environ {
+		name, _, _ := strings.Cut(kv, "=")
+		if name == "GIT_SSH_COMMAND" || name == "GIT_SSH" || strings.HasPrefix(name, "GIT_CONFIG") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return append(env, "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
 }
 
 // Deadlines of a delegation: the questions to the peer are quick, the push is
@@ -70,6 +91,7 @@ func Delegate(ctx context.Context, t Transport, peer discovery.Peer, d Delegatio
 	if err != nil {
 		return wire.JobView{}, err
 	}
+	retry := fmt.Sprintf("cflk run --id %s --on %s --harness %s --branch %s -- <the same prompt>", id, peer.Name, d.Harness, d.Commit)
 	order := func() (context.Context, context.CancelFunc) {
 		return context.WithTimeout(ctx, cmp.Or(d.OrderTimeout, DefaultOrderTimeout))
 	}
@@ -77,20 +99,20 @@ func Delegate(ctx context.Context, t Transport, peer discovery.Peer, d Delegatio
 	mirror, _, err := Call(askCtx, t, peer, wire.Request{Op: wire.OpMirror, Repo: d.Repo}, nil)
 	cancel()
 	if err != nil {
-		return wire.JobView{}, delegationError(err, id, peer, outcomeNothing)
+		return wire.JobView{}, delegationError(err, id, peer, outcomeNothing, retry)
 	}
 	if want := job.RepoHash(d.Repo) + ".git"; path.Base(mirror.Mirror) != want {
-		return wire.JobView{}, delegationError(fmt.Errorf("answered the mirror %q, not the one of this repo", path.Base(mirror.Mirror)), id, peer, outcomeNothing)
+		return wire.JobView{}, delegationError(fmt.Errorf("answered the mirror %q, not the one of this repo", path.Base(mirror.Mirror)), id, peer, outcomeNothing, retry)
 	}
 	target, err := t.PushTarget(peer, mirror.Mirror)
 	if err != nil {
-		return wire.JobView{}, delegationError(err, id, peer, outcomeNothing)
+		return wire.JobView{}, delegationError(err, id, peer, outcomeNothing, retry)
 	}
 	pushCtx, cancel := context.WithTimeout(ctx, cmp.Or(d.PushTimeout, DefaultPushTimeout))
 	err = runGit(pushCtx, d.RepoDir, PushArgv(target, d.Commit, ref))
 	cancel()
 	if err != nil {
-		return wire.JobView{}, delegationError(fmt.Errorf("sending the code: %w", err), id, peer, outcomeNothing)
+		return wire.JobView{}, delegationError(fmt.Errorf("sending the code: %w", err), id, peer, outcomeNothing, retry)
 	}
 	runCtx, cancel := order()
 	defer cancel()
@@ -98,10 +120,10 @@ func Delegate(ctx context.Context, t Transport, peer discovery.Peer, d Delegatio
 		Op: wire.OpRun, Job: id, Harness: d.Harness, Repo: d.Repo, Commit: d.Commit, CreatedBy: d.CreatedBy,
 	}, []byte(d.Prompt))
 	if err != nil {
-		return wire.JobView{}, delegationError(err, id, peer, outcomeOfRun(err))
+		return wire.JobView{}, delegationError(err, id, peer, outcomeOfRun(ctx, t, peer, id, err, cmp.Or(d.OrderTimeout, DefaultOrderTimeout)), retry)
 	}
 	if resp.Job == nil || resp.Job.ID != id {
-		return wire.JobView{}, delegationError(errors.New("answered the run without the Job that was asked"), id, peer, outcomeUnknown)
+		return wire.JobView{}, delegationError(errors.New("answered the run without the Job that was asked"), id, peer, outcomeUnknown, retry)
 	}
 	return *resp.Job, nil
 }
@@ -112,28 +134,43 @@ const (
 	outcomeNothing outcome = "nothing was started"
 	outcomeRefused outcome = "the peer refused it"
 	outcomeUnknown outcome = "it may be running"
+	// outcomeExists is a Job the peer has even though the run failed: its launch
+	// went wrong and it was kept, because its agent may be alive.
+	outcomeExists outcome = "the Job exists on the peer"
 )
 
-// outcomeOfRun is what a failed run ask says about the Job. A peer that answered
-// with an error did not start it; a stream that broke after the request left
-// may have.
-func outcomeOfRun(err error) outcome {
+// outcomeOfRun is what a failed run ask says about the Job. A stream that broke
+// after the request left may have started it. A peer that answered with an error
+// usually did not, but may have kept the Job (a launch that could not confirm its
+// agent ended), so the peer is asked about the Job: there is no refusal to report
+// when it is there.
+func outcomeOfRun(ctx context.Context, t Transport, peer discovery.Peer, id string, err error, timeout time.Duration) outcome {
 	var coded *domain.Error
-	if errors.As(err, &coded) && coded.Code != domain.CodePeerUnreachable && coded.Code != domain.CodePeerNoAnswer {
+	if !errors.As(err, &coded) || coded.Code == domain.CodePeerUnreachable || coded.Code == domain.CodePeerNoAnswer {
+		return outcomeUnknown
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	resp, _, probeErr := Call(probeCtx, t, peer, wire.Request{Op: wire.OpShow, Job: id}, nil)
+	switch {
+	case probeErr == nil && resp.Job != nil:
+		return outcomeExists
+	case errors.As(probeErr, &coded) && coded.Code == domain.CodeNotFound:
 		return outcomeRefused
 	}
 	return outcomeUnknown
 }
 
-// delegationError names the Job and the peer in a failure of any step, and says
-// whether the Job exists, so the person can `cflk show` it or ask again. It keeps
-// the code of the cause.
-func delegationError(err error, id string, peer discovery.Peer, o outcome) error {
-	var hint string
-	if o == outcomeUnknown {
-		hint = fmt.Sprintf("it may be running: check `cflk show %s` before asking again", id)
-	} else {
-		hint = string(o)
+// delegationError names the Job and the peer in a failure of any step, says
+// whether the Job exists, so the person can `cflk show` it, and gives the command
+// that asks again for the same Job (`cflk run --id`). It keeps the code of the cause.
+func delegationError(err error, id string, peer discovery.Peer, o outcome, retry string) error {
+	hint := fmt.Sprintf("%s; retry with: %s", o, retry)
+	switch o {
+	case outcomeUnknown:
+		hint = fmt.Sprintf("it may be running: check `cflk show %s` before asking again; if it is not there, retry with: %s", id, retry)
+	case outcomeExists:
+		hint = fmt.Sprintf("the Job exists on the peer and its agent may be running: check `cflk show %s`, not a new run", id)
 	}
 	var coded *domain.Error
 	if errors.As(err, &coded) {
@@ -145,7 +182,7 @@ func delegationError(err error, id string, peer discovery.Peer, o outcome) error
 func runGit(ctx context.Context, dir string, argv []string) error {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) //nolint:gosec // PushArgv: a fixed argv, no shell
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = pushEnv(os.Environ())
 	var stderr bytes.Buffer
 	cmd.Stderr = &limitedBuffer{buf: &stderr, room: maxStderr}
 	if err := cmd.Run(); err != nil {

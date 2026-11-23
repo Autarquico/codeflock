@@ -49,7 +49,10 @@ type RunRequest struct {
 	// Branch is the branch or commit the Job starts from; empty is the current commit.
 	Branch string
 	// On is the peer that runs it; empty is this one.
-	On     string
+	On string
+	// ID is the id of a delegation that failed or whose answer was lost: asking
+	// again with it starts nothing twice. Empty draws a new one.
+	ID     string
 	Prompt string
 }
 
@@ -111,7 +114,7 @@ func emitJob(cmd *cobra.Command, v JobView) error {
 }
 
 func newJobCmds(opts Options) []*cobra.Command {
-	run := jobCmd(opts, "run [--harness claude|codex] [--branch B] [--on PEER] -- PROMPT",
+	run := jobCmd(opts, "run [--harness claude|codex] [--branch B] [--on PEER [--id JOB]] -- PROMPT",
 		"Start a Job: an agent working on a new branch cflk/<id> of this repo", cobra.ExactArgs(1),
 		func(cmd *cobra.Command, jobs Jobs, args []string) error {
 			f := cmd.Flags()
@@ -119,6 +122,7 @@ func newJobCmds(opts Options) []*cobra.Command {
 			req.Harness, _ = f.GetString("harness")
 			req.Branch, _ = f.GetString("branch")
 			req.On, _ = f.GetString("on")
+			req.ID, _ = f.GetString("id")
 			req.Prompt = args[0]
 			v, err := jobs.Run(cmd.Context(), req)
 			if err != nil {
@@ -129,6 +133,8 @@ func newJobCmds(opts Options) []*cobra.Command {
 	run.Flags().String("harness", "", "the agent: claude (default) or codex")
 	run.Flags().String("branch", "", "start from this branch or commit instead of the current one")
 	run.Flags().String("on", "", "the peer that runs it: its name, or any for the one with fewest Jobs (default: this one)")
+
+	run.Flags().String("id", "", "retry a delegation with the id its failure named (needs --on PEER): the peer answers the Job it already has instead of starting another")
 
 	ps := jobCmd(opts, "ps [--peer PEER]", "List the Jobs of every peer (or of one)", cobra.NoArgs,
 		func(cmd *cobra.Command, jobs Jobs, _ []string) error {

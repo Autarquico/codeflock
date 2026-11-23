@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -102,9 +103,11 @@ func (p *peer) mirrorDir(repo string) string {
 
 // RunFromMirror starts a delegated Job from the ref the sender pushed to the
 // mirror: refs/cflk/<job>/g1 must exist and be exactly the commit it declared.
-// It is idempotent on the id: when the Job is already here, from this repo, the
-// answer is that Job, so a sender whose first answer was lost can ask again
-// without a second agent. A start that fails and keeps nothing takes the ref back.
+// It is idempotent on the id: asks for the same id take turns (the start is
+// serialized on it), and one that finds the Job already here, from this repo and
+// with its launch recorded, answers that Job, so a sender whose first answer was
+// lost, or whose first ask is still running, gets the same outcome and never a
+// second agent. A start that fails and keeps nothing takes the ref back.
 func (s peerService) RunFromMirror(ctx context.Context, in server.RunInput) (wire.JobView, error) {
 	p, err := s.l.open()
 	if err != nil {
@@ -118,13 +121,18 @@ func (s peerService) RunFromMirror(ctx context.Context, in server.RunInput) (wir
 	if err != nil {
 		return wire.JobView{}, err
 	}
+	release, err := p.store.LockStart(in.Job)
+	if err != nil {
+		return wire.JobView{}, err
+	}
+	defer release()
 	mirror := p.mirrorDir(in.Repo)
 	pushed, err := git(ctx, mirror, "rev-parse", "--verify", "--end-of-options", ref+"^{commit}")
 	if err != nil || pushed != in.Commit {
 		return wire.JobView{}, invalid("%s is not at %s in the mirror of %s: push the code first", ref, in.Commit, in.Repo)
 	}
-	if existing, err := p.store.Get(in.Job); err == nil && existing.Repo == in.Repo {
-		return wire.JobView(view(existing, "")), nil
+	if v, found, err := p.launchedJob(ctx, mirror, in); found || err != nil {
+		return v, err
 	}
 	v, err := p.startFromMirror(ctx, mirror, harnessID, in)
 	if err != nil {
@@ -134,6 +142,31 @@ func (s peerService) RunFromMirror(ctx context.Context, in server.RunInput) (wir
 		return wire.JobView{}, err
 	}
 	return wire.JobView(v), nil
+}
+
+// launchedJob is the Job this peer already has under the id of in, from its repo,
+// when its launch is recorded. A Job with none is what a start left when it died
+// before launching: it ran nothing and is discarded, so that the start begins again.
+// The start lock is held, so no start of this id is in progress.
+func (p *peer) launchedJob(ctx context.Context, mirror string, in server.RunInput) (wire.JobView, bool, error) {
+	var out wire.JobView
+	found := false
+	err := p.store.WithLock(in.Job, func(j *job.Job) error {
+		switch {
+		case j.Repo != in.Repo:
+		case j.State == job.Stopped && j.Launch == nil:
+			if !p.discard(ctx, mirror, *j) {
+				return fmt.Errorf("job %s is left over from a start that did not finish and could not be removed", j.ID)
+			}
+		default:
+			out, found = wire.JobView(view(*j, "")), true
+		}
+		return nil
+	})
+	if errors.Is(err, job.ErrNotFound) {
+		return wire.JobView{}, false, nil
+	}
+	return out, found, err
 }
 
 func (p *peer) startFromMirror(ctx context.Context, mirror, harnessID string, in server.RunInput) (cli.JobView, error) {

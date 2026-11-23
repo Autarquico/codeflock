@@ -86,7 +86,17 @@ func (s Server) dispatch(ctx context.Context, req wire.Request, body []byte) (wi
 		return wire.Response{Hello: &h}, nil, err
 	case wire.OpPS:
 		jobs, err := s.Local.List(ctx)
-		return wire.Response{Jobs: jobs}, nil, err
+		if err != nil {
+			return wire.Response{}, nil, err
+		}
+		if len(jobs) > wire.MaxListedJobs {
+			return wire.Response{}, nil, domain.NewError(domain.CodeInternal, fmt.Sprintf("this peer has %d Jobs: more than a listing carries (%d)", len(jobs), wire.MaxListedJobs), nil)
+		}
+		views := make([]wire.JobView, len(jobs))
+		for i, v := range jobs {
+			views[i] = v.Clamp()
+		}
+		return wire.Response{Jobs: views}, nil, nil
 	case wire.OpShow:
 		return one(s.Local.Show(ctx, req.Job))
 	case wire.OpStop:
@@ -127,6 +137,7 @@ func (s Server) expectGen(ctx context.Context, req wire.Request) error {
 }
 
 func one(v wire.JobView, err error) (wire.Response, []byte, error) {
+	v = v.Clamp()
 	return wire.Response{Job: &v}, nil, err
 }
 

@@ -476,7 +476,7 @@ func TestAnErrorFromAPeerCarriesNoControlCharactersAndAnOddCodeIsAProtocolError(
 	}
 	tf.dialer.Peers["odd"] = odd("CF_STALE_LEASE", "line one\n\x1b]0;title\x07"+strings.Repeat("y", 3000))
 	_, err := tf.Run(t.Context(), cli.RunRequest{On: "odd", Prompt: "x"})
-	if codeOf(err) != domain.CodeStaleLease || strings.ContainsAny(err.Error(), "\n\x1b\x07") || len(err.Error()) > 1200 {
+	if codeOf(err) != domain.CodeStaleLease || strings.ContainsAny(err.Error(), "\n\x1b\x07") || len(err.Error()) > 1400 {
 		t.Errorf("an error from a peer: %q", err)
 	}
 	tf.dialer.Peers["odd"] = odd("not a code\x1b", "m")

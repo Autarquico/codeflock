@@ -65,6 +65,9 @@ func Call(ctx context.Context, d Dialer, peer discovery.Peer, req wire.Request, 
 	if resp.Error != nil {
 		return wire.Response{}, nil, peerError(resp.Error)
 	}
+	if err := resp.Expect(req); err != nil {
+		return wire.Response{}, nil, fmt.Errorf("peer %s: %w", peer.Name, err)
+	}
 	return resp, respBody, nil
 }
 

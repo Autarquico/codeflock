@@ -110,6 +110,19 @@ func (s *Store) create(j Job, id string) (Job, error) {
 	return j, nil
 }
 
+// LockStart takes the lock that serializes the start of the Job with this id,
+// whoever asks, and blocks until it has it. It is not the Job's lock: it exists
+// before the Job does, and is held across the creation, the worktree and the launch.
+func (s *Store) LockStart(id string) (release func(), err error) {
+	if !ValidID(id) {
+		return nil, fmt.Errorf("job: invalid id %q", id)
+	}
+	if err := os.MkdirAll(filepath.Join(s.root, "jobs"), 0o700); err != nil {
+		return nil, fmt.Errorf("job: creating state root: %w", err)
+	}
+	return flock.Lock(filepath.Join(s.root, "jobs", id+".start"))
+}
+
 // Get reads a Job. Callers that mean to change it use WithLock.
 func (s *Store) Get(id string) (Job, error) {
 	if !ValidID(id) {

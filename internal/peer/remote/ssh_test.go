@@ -76,8 +76,10 @@ func TestTheCodeIsPushedWithGitToTheMirrorOfThePeerUnderTheRefOfTheJob(t *testin
 	}
 	commit := strings.Repeat("a", 40)
 	got := remote.PushArgv(target, commit, "refs/cflk/job-abcdefghij/g1")
+	url := "ssh://" + mini.Host + mirror
 	want := []string{
 		"git", "-c", "core.sshCommand=ssh " + strings.Join(sshFixed, " "),
+		"-c", "url." + url + ".insteadOf=" + url, "-c", "url." + url + ".pushInsteadOf=" + url,
 		"push", "--quiet", "--", "ssh://" + mini.Host + mirror, commit + ":refs/cflk/job-abcdefghij/g1",
 	}
 	if !reflect.DeepEqual(got, want) {

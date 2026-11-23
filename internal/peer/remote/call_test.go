@@ -1,6 +1,7 @@
 package remote_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -61,5 +62,33 @@ func TestAPeerThatIsKilledByTheDeadlineDidNotAnswer(t *testing.T) {
 	var coded *domain.Error
 	if !errors.As(err, &coded) || coded.Code != domain.CodePeerNoAnswer {
 		t.Errorf("error = %v", err)
+	}
+}
+
+// answeringDialer is a peer that answers any request with this response.
+type answeringDialer struct{ resp wire.Response }
+
+func (d answeringDialer) Dial(context.Context, discovery.Peer, ...string) (remote.Conn, error) {
+	var out bytes.Buffer
+	if err := wire.WriteResponse(&out, d.resp, nil); err != nil {
+		return remote.Conn{}, err
+	}
+	return remote.Conn{In: nopWriteCloser{io.Discard}, Out: &out, Wait: func() error { return nil }}, nil
+}
+
+func TestAnAnswerThatIsNotTheOneOfTheOpIsAProtocolError(t *testing.T) {
+	view := &wire.JobView{ID: "job-bbbbbbbbbb", State: "running"}
+	for name, c := range map[string]struct {
+		resp wire.Response
+		req  wire.Request
+	}{
+		"hello for ps":        {wire.Response{Hello: &wire.Hello{}}, wire.Request{Op: wire.OpPS}},
+		"job for a screen":    {wire.Response{Job: view}, wire.Request{Op: wire.OpScreen, Job: "job-aaaaaaaaaa"}},
+		"another job to stop": {wire.Response{Job: view}, wire.Request{Op: wire.OpStop, Job: "job-aaaaaaaaaa"}},
+	} {
+		_, _, err := remote.Call(t.Context(), answeringDialer{c.resp}, mini, c.req, nil)
+		if !errors.Is(err, wire.ErrProtocol) {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }

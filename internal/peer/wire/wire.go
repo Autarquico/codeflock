@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"regexp"
 	"strings"
 
@@ -24,6 +25,15 @@ const MaxHeader = 64 << 10
 // MaxBody is the longest body of the ops of this package (a prompt, a text, a
 // screen). A session archive has the limits of harness.SessionLimit instead.
 const MaxBody = 1 << 20
+
+// MaxListedJobs is the most Jobs one ps answers with, and MaxListBody the
+// longest body that carries them: the list travels in the body, not in the
+// header, so that a long history cannot overflow the header limit. With the
+// text of every view bounded (maxViewText) MaxListedJobs views fit in MaxListBody.
+const (
+	MaxListedJobs = 1000
+	MaxListBody   = 8 << 20
+)
 
 // ErrProtocol is the class of every refusal of a malformed stream.
 var ErrProtocol = errors.New("wire: protocol error")
@@ -99,6 +109,21 @@ func ValidName(s string) bool { return namePattern.MatchString(s) }
 
 // ValidCommit reports whether s is a full git object id.
 func ValidCommit(s string) bool { return commitPattern.MatchString(s) }
+
+// checkPresent refuses a header that names a field its op does not take, even
+// with a zero value: "absent" is not the same as "0" or "".
+func (r Request) checkPresent(keys map[string]bool) error {
+	sh := shapes[r.Op]
+	for key, allowed := range map[string]bool{
+		"job": sh.job, "gen": sh.gen, "repo": sh.repo, "size": sh.body,
+		"harness": sh.run, "commit": sh.run, "created_by": sh.run,
+	} {
+		if keys[key] && !allowed {
+			return protocolf("op %s: field %s is not allowed", r.Op, key)
+		}
+	}
+	return nil
+}
 
 // Validate checks the header against the shape of its op.
 func (r Request) Validate() error {
@@ -185,11 +210,33 @@ type JobView struct {
 	Problem   string `json:"problem,omitempty"`
 }
 
-// Validate refuses a view whose identity fields a peer could use to mislead:
-// the rest is text that is only ever printed.
+// maxViewText bounds each text field of a view.
+const maxViewText = 512
+
+func (v *JobView) texts() []*string {
+	return []*string{&v.Peer, &v.Repo, &v.Branch, &v.Harness, &v.SessionID, &v.Terminal, &v.Problem}
+}
+
+// Clamp cuts the text fields of the view to what a peer accepts.
+func (v JobView) Clamp() JobView {
+	for _, f := range v.texts() {
+		if len(*f) > maxViewText {
+			*f = strings.ToValidUTF8((*f)[:maxViewText], "")
+		}
+	}
+	return v
+}
+
+// Validate refuses a view whose identity fields a peer could use to mislead,
+// or whose text is longer than the bound: the rest is text that is only ever printed.
 func (v JobView) Validate() error {
 	if !job.ValidID(v.ID) || !job.State(v.State).Valid() || v.Gen < 0 {
 		return protocolf("job view %q is not valid", v.ID)
+	}
+	for _, f := range v.texts() {
+		if len(*f) > maxViewText {
+			return protocolf("job view %q has text longer than %d bytes", v.ID, maxViewText)
+		}
 	}
 	return nil
 }
@@ -205,12 +252,16 @@ type Hello struct {
 // Response is the header of what a peer answers. Exactly one of Error or the
 // result of the op is present.
 type Response struct {
-	Error  *Error    `json:"error,omitempty"`
-	Hello  *Hello    `json:"hello,omitempty"`
-	Job    *JobView  `json:"job,omitempty"`
-	Jobs   []JobView `json:"jobs,omitempty"`
-	Mirror string    `json:"mirror,omitempty"`
-	// Size is the length of the body that follows: the screen of a screen op.
+	Error  *Error   `json:"error,omitempty"`
+	Hello  *Hello   `json:"hello,omitempty"`
+	Job    *JobView `json:"job,omitempty"`
+	Mirror string   `json:"mirror,omitempty"`
+	// Listing says the body is the list of Jobs (a ps), which WriteResponse
+	// writes from Jobs and ReadResponse reads into it. An empty list is a
+	// non-nil empty Jobs.
+	Listing bool      `json:"listing,omitempty"`
+	Jobs    []JobView `json:"-"`
+	// Size is the length of the body that follows: the screen of a screen op, or the list.
 	Size int64 `json:"size,omitempty"`
 }
 
@@ -228,11 +279,18 @@ var errorCodePattern = regexp.MustCompile(`^CF_[A-Z0-9_]{1,60}$`)
 // Validate checks that the response says one thing (an error or a result, never
 // both), the identity fields of the views, the size and the bounds of the text.
 func (r Response) Validate() error {
-	if r.Size < 0 || r.Size > MaxBody {
+	limit := int64(MaxBody)
+	if r.Listing {
+		limit = MaxListBody
+	}
+	if r.Size < 0 || r.Size > limit || (r.Listing && r.Size == 0) {
 		return protocolf("response size %d is not valid", r.Size)
 	}
+	if len(r.Jobs) > MaxListedJobs {
+		return protocolf("%d Jobs in one listing", len(r.Jobs))
+	}
 	results := 0
-	for _, present := range []bool{r.Hello != nil, r.Job != nil, len(r.Jobs) > 0, r.Mirror != ""} {
+	for _, present := range []bool{r.Hello != nil, r.Job != nil, r.Listing || r.Jobs != nil, r.Mirror != ""} {
 		if present {
 			results++
 		}
@@ -265,6 +323,28 @@ func (r Response) Validate() error {
 		if err := v.Validate(); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// Expect checks that the response is the answer to req: the result its op
+// gives, about the Job that was asked, and nothing else.
+func (r Response) Expect(req Request) error {
+	var ok bool
+	switch req.Op {
+	case OpHello:
+		ok = r.Hello != nil && r.Job == nil && !r.Listing && r.Mirror == ""
+	case OpPS:
+		ok = r.Listing && r.Hello == nil && r.Job == nil && r.Mirror == ""
+	case OpShow, OpStop, OpResume, OpSend, OpRun:
+		ok = r.Job != nil && r.Job.ID == req.Job && r.Hello == nil && !r.Listing && r.Mirror == "" && r.Size == 0
+	case OpScreen:
+		ok = r.Hello == nil && r.Job == nil && !r.Listing && r.Mirror == ""
+	case OpMirror:
+		ok = r.Mirror != "" && r.Hello == nil && r.Job == nil && !r.Listing && r.Size == 0
+	}
+	if !ok {
+		return protocolf("the answer is not the one op %s asks for", req.Op)
 	}
 	return nil
 }
@@ -304,34 +384,139 @@ func WriteFrame(w io.Writer, header any, body []byte) error {
 
 // ReadFrame reads one header into header (a pointer to a struct) and then
 // declaredSize(header) bytes of body, and requires the stream to end there. The
-// header may not carry a field the struct does not declare, nor anything after
-// its JSON value; a body shorter or longer than declared is refused.
+// header may not carry a field the struct does not declare, a field spelled
+// other than as declared, a field twice, a null, nor anything after its JSON
+// value; a body shorter or longer than declared is refused.
 func ReadFrame(r io.Reader, header any, declaredSize func() int64) ([]byte, error) {
+	body, _, err := readFrame(r, header, declaredSize, MaxBody)
+	return body, err
+}
+
+// readFrame is ReadFrame with the longest body it takes, and says which fields
+// the header named.
+func readFrame(r io.Reader, header any, declaredSize func() int64, limit int64) ([]byte, map[string]bool, error) {
 	br := bufio.NewReader(r)
 	line, err := readLine(br)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	keys, err := strictKeys(line, reflect.TypeOf(header))
+	if err != nil {
+		return nil, nil, protocolf("header: %v", err)
 	}
 	dec := json.NewDecoder(bytes.NewReader(line))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(header); err != nil {
-		return nil, protocolf("header: %v", err)
-	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return nil, protocolf("header: data after the JSON value")
+		return nil, nil, protocolf("header: %v", err)
 	}
 	size := declaredSize()
-	if size < 0 || size > MaxBody {
-		return nil, protocolf("body of %d bytes", size)
+	if size < 0 || size > limit {
+		return nil, nil, protocolf("body of %d bytes", size)
 	}
 	body := make([]byte, size)
 	if _, err := io.ReadFull(br, body); err != nil {
-		return nil, protocolf("body truncated: declared %d bytes", size)
+		return nil, nil, protocolf("body truncated: declared %d bytes", size)
 	}
 	if _, err := br.ReadByte(); !errors.Is(err, io.EOF) {
-		return nil, protocolf("data after the declared body")
+		return nil, nil, protocolf("data after the declared body")
 	}
-	return body, nil
+	return body, keys, nil
+}
+
+// strictKeys checks what encoding/json lets through: the JSON text must be one
+// value of type t whose object keys are exactly the declared names (the
+// decoder accepts any case), none twice and no value null. It returns the keys
+// of the top-level object.
+func strictKeys(data []byte, t reflect.Type) (map[string]bool, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	keys := map[string]bool{}
+	if err := walk(dec, t, keys); err != nil {
+		return nil, err
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return nil, errors.New("data after the JSON value")
+	}
+	return keys, nil
+}
+
+// walk consumes one JSON value that should be a t. keys, if not nil, collects
+// the keys of the object.
+func walk(dec *json.Decoder, t reflect.Type, keys map[string]bool) error {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if tok == nil {
+		return errors.New("null is not a value")
+	}
+	delim, ok := tok.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch {
+	case delim == '{' && t.Kind() == reflect.Struct:
+		fields := declaredFields(t)
+		seen := map[string]bool{}
+		for dec.More() {
+			keyTok, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			key, _ := keyTok.(string)
+			ft, declared := fields[key]
+			switch {
+			case !declared:
+				return fmt.Errorf("unknown field %q", key)
+			case seen[key]:
+				return fmt.Errorf("field %q twice", key)
+			}
+			seen[key] = true
+			if keys != nil {
+				keys[key] = true
+			}
+			if err := walk(dec, ft, nil); err != nil {
+				return err
+			}
+		}
+	case delim == '[' && t.Kind() == reflect.Slice:
+		for dec.More() {
+			if err := walk(dec, t.Elem(), nil); err != nil {
+				return err
+			}
+		}
+	default:
+		// Not the shape of t: the decoder says so; here the value is only skipped.
+		for depth := 1; depth > 0; {
+			tok, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			if d, ok := tok.(json.Delim); ok {
+				if d == '{' || d == '[' {
+					depth++
+				} else {
+					depth--
+				}
+			}
+		}
+		return nil
+	}
+	_, err = dec.Token()
+	return err
+}
+
+// declaredFields is the field of a struct by the exact name of its json tag.
+func declaredFields(t reflect.Type) map[string]reflect.Type {
+	fields := map[string]reflect.Type{}
+	for f := range t.Fields() {
+		if name, _, _ := strings.Cut(f.Tag.Get("json"), ","); name != "" && name != "-" {
+			fields[name] = f.Type
+		}
+	}
+	return fields
 }
 
 // readLine reads up to the newline, refusing a header longer than MaxHeader.
@@ -355,11 +540,14 @@ func readLine(br *bufio.Reader) ([]byte, error) {
 // ReadRequest reads and validates a request and its body.
 func ReadRequest(r io.Reader) (Request, []byte, error) {
 	var req Request
-	body, err := ReadFrame(r, &req, func() int64 { return req.Size })
+	body, keys, err := readFrame(r, &req, func() int64 { return req.Size }, MaxBody)
 	if err != nil {
 		return Request{}, nil, err
 	}
 	if err := req.Validate(); err != nil {
+		return Request{}, nil, err
+	}
+	if err := req.checkPresent(keys); err != nil {
 		return Request{}, nil, err
 	}
 	return req, body, nil
@@ -368,14 +556,36 @@ func ReadRequest(r io.Reader) (Request, []byte, error) {
 // ReadResponse reads and validates a response and its body.
 func ReadResponse(r io.Reader) (Response, []byte, error) {
 	var resp Response
-	body, err := ReadFrame(r, &resp, func() int64 { return resp.Size })
+	body, _, err := readFrame(r, &resp, func() int64 { return resp.Size }, MaxListBody)
 	if err != nil {
 		return Response{}, nil, err
 	}
 	if err := resp.Validate(); err != nil {
 		return Response{}, nil, err
 	}
+	if resp.Listing {
+		if resp.Jobs, err = decodeJobs(body); err != nil {
+			return Response{}, nil, err
+		}
+		if err := resp.Validate(); err != nil {
+			return Response{}, nil, err
+		}
+	}
 	return resp, body, nil
+}
+
+// decodeJobs reads the body of a listing: a JSON array of views, read as strictly as a header.
+func decodeJobs(body []byte) ([]JobView, error) {
+	jobs := []JobView{}
+	if _, err := strictKeys(body, reflect.TypeOf(jobs)); err != nil {
+		return nil, protocolf("listing: %v", err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&jobs); err != nil {
+		return nil, protocolf("listing: %v", err)
+	}
+	return jobs, nil
 }
 
 // WriteRequest validates and writes a request.
@@ -387,8 +597,22 @@ func WriteRequest(w io.Writer, req Request, body []byte) error {
 	return WriteFrame(w, req, body)
 }
 
-// WriteResponse writes a response with body.
+// WriteResponse writes a response with body. A response with Jobs (non-nil) is
+// a listing: its body is the list, and body must be empty.
 func WriteResponse(w io.Writer, resp Response, body []byte) error {
+	if resp.Jobs != nil {
+		if len(body) > 0 || len(resp.Jobs) > MaxListedJobs {
+			return protocolf("a listing of %d Jobs with a body of %d bytes", len(resp.Jobs), len(body))
+		}
+		list, err := json.Marshal(resp.Jobs)
+		if err != nil {
+			return err
+		}
+		if len(list) > MaxListBody {
+			return protocolf("listing of %d bytes", len(list))
+		}
+		resp.Listing, body = true, list
+	}
 	resp.Size = int64(len(body))
 	return WriteFrame(w, resp, body)
 }

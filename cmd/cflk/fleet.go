@@ -19,6 +19,7 @@ import (
 	"github.com/Autarquico/codeflock/internal/peer/discovery"
 	"github.com/Autarquico/codeflock/internal/peer/job"
 	"github.com/Autarquico/codeflock/internal/peer/remote"
+	"github.com/Autarquico/codeflock/internal/peer/runner"
 	"github.com/Autarquico/codeflock/internal/peer/wire"
 )
 
@@ -129,21 +130,31 @@ func (f *fleet) List(ctx context.Context, only string) (cli.JobList, error) {
 			peers = []discovery.Peer{p}
 		}
 	}
-	var local []cli.JobView
-	var localErr error
-	localDone := make(chan struct{})
+	type localRead struct {
+		views []cli.JobView
+		err   error
+	}
+	localDone := make(chan localRead, 1)
 	go func() {
-		defer close(localDone)
+		var r localRead
 		if wantLocal {
-			local, localErr = f.local.List(ctx)
+			r.views, r.err = f.local.List(ctx)
 		}
+		localDone <- r
 	}()
 	replies := f.ask(budget, peers, wire.Request{Op: wire.OpPS})
-	<-localDone
-	if localErr != nil {
-		return cli.JobList{}, localErr
+	var local localRead
+	select {
+	case local = <-localDone:
+	case <-budget.Done():
+		// A command that holds a Job's lock (a stop that waits for its agent)
+		// must not hold the listing: show the records as they are on disk.
+		local.views, local.err = f.local.Stored(localBusy)
 	}
-	list := cli.JobList{Jobs: local}
+	if local.err != nil {
+		return cli.JobList{}, local.err
+	}
+	list := cli.JobList{Jobs: local.views}
 	for _, r := range replies {
 		if r.err != nil {
 			list.Unreachable = append(list.Unreachable, cli.UnreachablePeer{Peer: r.peer.Name, Problem: r.err.Error()})
@@ -155,6 +166,10 @@ func (f *fleet) List(ctx context.Context, only string) (cli.JobList, error) {
 	}
 	return list, nil
 }
+
+// localBusy is the problem shown on a local Job that the listing could not
+// reconcile in time.
+const localBusy = "not checked: busy, showing the last record"
 
 func (f *fleet) Peers(ctx context.Context) ([]cli.PeerView, error) {
 	res, err := f.discover(ctx)
@@ -255,9 +270,23 @@ func (f *fleet) locate(ctx context.Context, id string) (owner, error) {
 	return owner{}, domain.NewError(domain.CodeNotFound, fmt.Sprintf("no peer has job %s", id), nil)
 }
 
+// stopTimeout is how long a peer has to stop a Job: the windows the stopper
+// itself gives the agent (the wrapper's grace, the margin after it, the wait
+// after the kill) and the usual time of an order for the rest.
+const stopTimeout = runner.WrapperGrace + runner.GraceMargin + runner.DefaultKillWait + remote.DefaultOrderTimeout
+
+// timeoutOf is how long a peer has to carry out op: orderTimeout if set, else
+// the default of the op.
+func (f *fleet) timeoutOf(op wire.Op) time.Duration {
+	if op == wire.OpStop {
+		return cmp.Or(f.orderTimeout, stopTimeout)
+	}
+	return cmp.Or(f.orderTimeout, remote.DefaultOrderTimeout)
+}
+
 // call is op on the Job at its owner, expecting the generation that was found.
 func (f *fleet) call(ctx context.Context, o owner, op wire.Op, body []byte) (wire.Response, []byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, cmp.Or(f.orderTimeout, remote.DefaultOrderTimeout))
+	ctx, cancel := context.WithTimeout(ctx, f.timeoutOf(op))
 	defer cancel()
 	return remote.Call(ctx, f.transport, *o.peer, wire.Request{Op: op, Job: o.view.ID, Gen: o.view.Gen}, body)
 }
@@ -347,6 +376,14 @@ func (f *fleet) Run(ctx context.Context, req cli.RunRequest) (cli.JobView, error
 	if err != nil {
 		return cli.JobView{}, err
 	}
+	if req.ID != "" {
+		switch {
+		case !job.ValidID(req.ID):
+			return cli.JobView{}, invalid("%q is not a Job id (job-xxxxxxxxxx)", req.ID)
+		case req.On == "" || req.On == "any" || this:
+			return cli.JobView{}, invalid("--id retries a delegation: name with --on the other peer it went to")
+		}
+	}
 	if req.On == "" || this {
 		return f.local.Run(ctx, req)
 	}
@@ -382,7 +419,7 @@ func (f *fleet) Run(ctx context.Context, req cli.RunRequest) (cli.JobView, error
 	}
 	v, err := remote.Delegate(ctx, f.transport, *target, remote.Delegation{
 		RepoDir: src.dir, Repo: src.repo, Commit: src.commit, Harness: harness, CreatedBy: createdBy, Prompt: req.Prompt,
-		OrderTimeout: f.orderTimeout,
+		OrderTimeout: f.orderTimeout, ID: req.ID,
 	})
 	return cli.JobView(v), err
 }

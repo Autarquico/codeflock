@@ -209,9 +209,9 @@ func (p *peer) start(ctx context.Context, sp startSpec) (cli.JobView, error) {
 	if err != nil {
 		return cli.JobView{}, err
 	}
-	worktree := p.store.WorktreeDir(j.ID, j.Gen)
-	if _, err := git(ctx, top, "worktree", "add", "-b", j.Branch, worktree, sp.commit); err != nil {
+	if err := p.addWorktree(ctx, top, j, sp.commit); err != nil {
 		_ = os.RemoveAll(p.store.Dir(j.ID))
+		_, _ = git(context.WithoutCancel(ctx), top, "worktree", "prune")
 		return cli.JobView{}, err
 	}
 	launched, err := p.runner.Launch(ctx, j.ID, sp.prompt)
@@ -220,15 +220,11 @@ func (p *peer) start(ctx context.Context, sp startSpec) (cli.JobView, error) {
 		// with none recorded ran nothing and was told nothing. That is decided
 		// and acted on under the Job's lock: a `resume` that got in between has
 		// recorded a launch, and its Job is not ours to delete.
-		bg := context.WithoutCancel(ctx)
 		removed := false
 		_ = p.store.WithLock(j.ID, func(left *job.Job) error {
-			if left.State != job.Stopped || left.Launch != nil {
-				return nil
+			if left.State == job.Stopped && left.Launch == nil {
+				removed = p.discard(ctx, top, *left)
 			}
-			_, _ = git(bg, top, "worktree", "remove", "--force", worktree)
-			_, _ = git(bg, top, "branch", "-D", j.Branch)
-			removed = os.RemoveAll(p.store.Dir(j.ID)) == nil
 			return nil
 		})
 		if !removed {
@@ -239,6 +235,40 @@ func (p *peer) start(ctx context.Context, sp startSpec) (cli.JobView, error) {
 		return cli.JobView{}, err
 	}
 	return view(launched, ""), nil
+}
+
+// addWorktree creates the worktree of j at commit on its new branch. A failure
+// (a post-checkout hook, a full disk) can leave the branch and git's registration
+// of the worktree behind: both are taken back, the branch only if it did not exist
+// before and is at the commit, which is where `worktree add -b` put it.
+func (p *peer) addWorktree(ctx context.Context, top string, j job.Job, commit string) error {
+	worktree := p.store.WorktreeDir(j.ID, j.Gen)
+	_, lookErr := git(ctx, top, "rev-parse", "--verify", "--quiet", "--end-of-options", "refs/heads/"+j.Branch)
+	existed := lookErr == nil
+	_, err := git(ctx, top, "worktree", "add", "-b", j.Branch, worktree, commit)
+	if err == nil {
+		return nil
+	}
+	bg := context.WithoutCancel(ctx)
+	_, _ = git(bg, top, "worktree", "remove", "--force", worktree)
+	_ = os.RemoveAll(worktree)
+	_, _ = git(bg, top, "worktree", "prune")
+	if tip, tipErr := git(bg, top, "rev-parse", "--verify", "--quiet", "--end-of-options", "refs/heads/"+j.Branch); !existed && tipErr == nil && tip == commit {
+		_, _ = git(bg, top, "branch", "-D", "--", j.Branch)
+	}
+	return err
+}
+
+// discard takes back a Job that launched nothing: its worktree and registration,
+// its branch and its directory. It reports whether the directory is gone. The
+// caller holds the Job's lock.
+func (p *peer) discard(ctx context.Context, top string, j job.Job) bool {
+	bg := context.WithoutCancel(ctx)
+	_, _ = git(bg, top, "worktree", "remove", "--force", p.store.WorktreeDir(j.ID, j.Gen))
+	_, _ = git(bg, top, "branch", "-D", "--", j.Branch)
+	removed := os.RemoveAll(p.store.Dir(j.ID)) == nil
+	_, _ = git(bg, top, "worktree", "prune")
+	return removed
 }
 
 func (l *localJobs) List(ctx context.Context) ([]cli.JobView, error) {
@@ -258,6 +288,25 @@ func (l *localJobs) List(ctx context.Context) ([]cli.JobView, error) {
 			continue
 		}
 		views = append(views, view(j, ""))
+	}
+	return views, nil
+}
+
+// Stored is the Jobs as their records say, without observing their agents or
+// waiting for any lock: what a listing shows when a command has a Job busy.
+// problem is shown with each.
+func (l *localJobs) Stored(problem string) ([]cli.JobView, error) {
+	p, err := l.open()
+	if err != nil {
+		return nil, err
+	}
+	stored, err := p.store.List()
+	if err != nil {
+		return nil, err
+	}
+	views := make([]cli.JobView, len(stored))
+	for i, s := range stored {
+		views[i] = view(s, problem)
 	}
 	return views, nil
 }
