@@ -1,0 +1,240 @@
+package cli
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"text/tabwriter"
+
+	"github.com/spf13/cobra"
+
+	"github.com/Autarquico/codeflock/internal/domain"
+)
+
+// JobView is a Job as the CLI shows it.
+type JobView struct {
+	ID        string `json:"id"`
+	Peer      string `json:"peer"`
+	Repo      string `json:"repo"`
+	Branch    string `json:"branch"`
+	Harness   string `json:"harness"`
+	State     string `json:"state"`
+	Gen       int    `json:"gen"`
+	SessionID string `json:"session_id,omitempty"`
+	// Terminal is the tmux session of the current launch, if there is one.
+	Terminal string `json:"terminal,omitempty"`
+	// Problem is why the Job could not be read up to date; the other fields are
+	// then what was last recorded.
+	Problem string `json:"problem,omitempty"`
+}
+
+// RunRequest asks for a new Job on the current repo.
+type RunRequest struct {
+	// Harness is the user's name for it ("claude", "codex"); empty is the default.
+	Harness string
+	// Branch is the branch or commit the Job starts from; empty is the current commit.
+	Branch string
+	// On is the peer that runs it; empty is this one.
+	On     string
+	Prompt string
+}
+
+// Jobs is what the job commands need of a peer. cmd/cflk composes it (ADR 0001):
+// the CLI knows neither the runner nor the adapters. Every method that reads a Job
+// reconciles it first.
+type Jobs interface {
+	Run(ctx context.Context, req RunRequest) (JobView, error)
+	List(ctx context.Context) ([]JobView, error)
+	Show(ctx context.Context, id string) (JobView, error)
+	Stop(ctx context.Context, id string) (JobView, error)
+	Resume(ctx context.Context, id string) (JobView, error)
+	Screen(ctx context.Context, id string) (string, error)
+	Send(ctx context.Context, id, text string) (JobView, error)
+	// Attach enters the terminal of the Job and returns when the person leaves it.
+	// Without a terminal it opens a window for it.
+	Attach(ctx context.Context, id string, readOnly bool) error
+}
+
+func jobsOf(opts Options) (Jobs, error) {
+	if opts.Jobs == nil {
+		return nil, domain.NewError(domain.CodeNotImplemented, "this build has no Jobs", nil)
+	}
+	return opts.Jobs, nil
+}
+
+// jobCmd builds a command whose argument is a Job id.
+func jobCmd(opts Options, use, short string, extra cobra.PositionalArgs, do func(cmd *cobra.Command, jobs Jobs, args []string) error) *cobra.Command {
+	return &cobra.Command{
+		Use: use, Short: short, Args: extra,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			jobs, err := jobsOf(opts)
+			if err != nil {
+				return err
+			}
+			return do(cmd, jobs, args)
+		},
+	}
+}
+
+func emitJob(cmd *cobra.Command, v JobView) error {
+	return emit(cmd, v, func(w io.Writer) error { return printJob(w, v) })
+}
+
+func newJobCmds(opts Options) []*cobra.Command {
+	run := jobCmd(opts, "run [--harness claude|codex] [--branch B] [--on PEER] -- PROMPT",
+		"Start a Job: an agent working on a new branch cflk/<id> of this repo", cobra.ExactArgs(1),
+		func(cmd *cobra.Command, jobs Jobs, args []string) error {
+			f := cmd.Flags()
+			var req RunRequest
+			req.Harness, _ = f.GetString("harness")
+			req.Branch, _ = f.GetString("branch")
+			req.On, _ = f.GetString("on")
+			req.Prompt = args[0]
+			v, err := jobs.Run(cmd.Context(), req)
+			if err != nil {
+				return err
+			}
+			return emitJob(cmd, v)
+		})
+	run.Flags().String("harness", "", "the agent: claude (default) or codex")
+	run.Flags().String("branch", "", "start from this branch or commit instead of the current one")
+	run.Flags().String("on", "", "the peer that runs it; only this peer for now")
+
+	ps := jobCmd(opts, "ps", "List the Jobs of this peer", cobra.NoArgs,
+		func(cmd *cobra.Command, jobs Jobs, _ []string) error {
+			list, err := jobs.List(cmd.Context())
+			if err != nil {
+				return err
+			}
+			if list == nil {
+				list = []JobView{}
+			}
+			return emit(cmd, list, func(w io.Writer) error { return printJobs(w, list) })
+		})
+
+	show := jobCmd(opts, "show JOB", "Show a Job", cobra.ExactArgs(1),
+		func(cmd *cobra.Command, jobs Jobs, args []string) error {
+			v, err := jobs.Show(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			return emitJob(cmd, v)
+		})
+
+	stop := jobCmd(opts, "stop JOB", "Stop the agent of a Job; if a process survives the Job stays stopping", cobra.ExactArgs(1),
+		func(cmd *cobra.Command, jobs Jobs, args []string) error {
+			v, err := jobs.Stop(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			return emitJob(cmd, v)
+		})
+
+	resume := jobCmd(opts, "resume JOB", "Start the agent of a stopped or lost Job again, in the same session", cobra.ExactArgs(1),
+		func(cmd *cobra.Command, jobs Jobs, args []string) error {
+			v, err := jobs.Resume(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			return emitJob(cmd, v)
+		})
+
+	screen := jobCmd(opts, "screen JOB", "Show what the terminal of the Job's agent shows now", cobra.ExactArgs(1),
+		func(cmd *cobra.Command, jobs Jobs, args []string) error {
+			text, err := jobs.Screen(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			return emit(cmd, struct {
+				Screen string `json:"screen"`
+			}{text}, func(w io.Writer) error { _, err := io.WriteString(w, text); return err })
+		})
+
+	send := jobCmd(opts, "send JOB TEXT", "Type TEXT into the agent of a Job and press Enter", cobra.ExactArgs(2),
+		func(cmd *cobra.Command, jobs Jobs, args []string) error {
+			v, err := jobs.Send(cmd.Context(), args[0], args[1])
+			if err != nil {
+				return err
+			}
+			return emitJob(cmd, v)
+		})
+
+	attach := jobCmd(opts, "attach [--read-only] JOB", "Enter the terminal of a Job (a new window when there is no terminal here)", cobra.ExactArgs(1),
+		func(cmd *cobra.Command, jobs Jobs, args []string) error {
+			readOnly, _ := cmd.Flags().GetBool("read-only")
+			return jobs.Attach(cmd.Context(), args[0], readOnly)
+		})
+	attach.Flags().Bool("read-only", false, "what you type does not reach the agent")
+
+	return []*cobra.Command{run, ps, show, stop, resume, screen, send, attach, newInternalCmd(opts)}
+}
+
+func printJobs(w io.Writer, jobs []JobView) error {
+	if len(jobs) == 0 {
+		_, err := fmt.Fprintln(w, "no Jobs")
+		return err
+	}
+	t := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(t, "JOB\tPEER\tSTATE\tHARNESS\tREPO\tBRANCH")
+	for _, j := range jobs {
+		state := printable(j.State)
+		if j.Problem != "" {
+			state += "?"
+		}
+		fmt.Fprintf(t, "%s\t%s\t%s\t%s\t%s\t%s\n", printable(j.ID), printable(j.Peer), state, printable(j.Harness), printable(j.Repo), printable(j.Branch))
+	}
+	return t.Flush()
+}
+
+func printJob(w io.Writer, j JobView) error {
+	t := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	rows := [][2]string{
+		{"job", j.ID},
+		{"state", j.State},
+		{"peer", j.Peer},
+		{"repo", j.Repo},
+		{"branch", j.Branch},
+		{"harness", j.Harness},
+		{"gen", fmt.Sprint(j.Gen)},
+	}
+	if j.SessionID != "" {
+		rows = append(rows, [2]string{"session", j.SessionID})
+	}
+	if j.Terminal != "" {
+		rows = append(rows, [2]string{"terminal", j.Terminal})
+	}
+	if j.Problem != "" {
+		rows = append(rows, [2]string{"problem", j.Problem})
+	}
+	for _, r := range rows {
+		fmt.Fprintf(t, "%s:\t%s\n", r[0], printable(r[1]))
+	}
+	return t.Flush()
+}
+
+// newInternalCmd groups the commands cflk runs on itself: the wrapper under which
+// a launch runs and the program Codex notifies. They have a fixed argv, written by
+// the runner, and are not for people.
+func newInternalCmd(opts Options) *cobra.Command {
+	wrapper := &cobra.Command{
+		Use: "wrapper LAUNCH_DIR", Args: cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			if opts.Wrapper == nil {
+				return domain.NewError(domain.CodeNotImplemented, "this build has no wrapper", nil)
+			}
+			return opts.Wrapper(args[0])
+		},
+	}
+	notify := &cobra.Command{
+		Use: "notify MARKER SESSION_FILE PAYLOAD", Args: cobra.ExactArgs(3),
+		RunE: func(_ *cobra.Command, args []string) error {
+			if opts.Notify == nil {
+				return domain.NewError(domain.CodeNotImplemented, "this build has no notify handler", nil)
+			}
+			return opts.Notify(args[0], args[1], args[2])
+		},
+	}
+	internal := &cobra.Command{Use: "internal", Hidden: true}
+	internal.AddCommand(wrapper, notify)
+	return internal
+}

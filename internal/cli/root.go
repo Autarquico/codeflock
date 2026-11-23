@@ -31,6 +31,12 @@ const (
 type Options struct {
 	// Doctor replaces the checks of `cflk doctor`; nil answers CF_NOT_IMPLEMENTED.
 	Doctor func(context.Context) ([]doctor.Component, error)
+	// Jobs is the peer the job commands act on; nil answers CF_NOT_IMPLEMENTED.
+	Jobs Jobs
+	// Wrapper runs execwrap on a launch directory (`cflk internal wrapper`), and
+	// Notify is the program Codex runs at the end of a turn (`cflk internal notify`).
+	Wrapper func(launchDir string) error
+	Notify  func(marker, sessionFile, payload string) error
 }
 
 // ExecuteWith runs the cf command tree with the composition of the binary and
@@ -161,6 +167,7 @@ func newRootCmd(opts Options) *cobra.Command {
 	flags.Bool(flagJSON, false, "output as JSON; errors too, as {\"error\":{code,message,details}} on stdout")
 	flags.Bool(flagDebug, false, "show the details of an error")
 	root.AddCommand(newVersionCmd(), newDoctorCmd(opts))
+	root.AddCommand(newJobCmds(opts)...)
 	return root
 }
 
