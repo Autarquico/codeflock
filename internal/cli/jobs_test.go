@@ -87,18 +87,18 @@ func TestPsIsATableAndJSONIsAnArrayEvenWhenEmpty(t *testing.T) {
 
 func TestEachJobCommandReachesItsOperation(t *testing.T) {
 	f := &fakeJobs{}
-	for args, want := range map[string]string{
-		"show job-bbbbbbbbbb":               "waiting",
-		"stop job-bbbbbbbbbb":               "stopped",
-		"resume job-bbbbbbbbbb":             "running",
-		"screen job-bbbbbbbbbb":             "the screen",
-		"send job-bbbbbbbbbb hola":          "hola",
-		"attach job-bbbbbbbbbb":             "",
-		"attach --read-only job-bbbbbbbbbb": "",
+	for _, c := range []struct{ args, want string }{
+		{"show job-bbbbbbbbbb", "waiting"},
+		{"stop job-bbbbbbbbbb", "stopped"},
+		{"resume job-bbbbbbbbbb", "running"},
+		{"screen job-bbbbbbbbbb", "the screen"},
+		{"send job-bbbbbbbbbb hola", "hola"},
+		{"attach job-bbbbbbbbbb", ""},
+		{"attach --read-only job-bbbbbbbbbb", ""},
 	} {
-		code, out, errOut := runWith(Options{Jobs: f}, strings.Fields(args)...)
-		if code != 0 || !strings.Contains(out, want) {
-			t.Errorf("%s: exit %d, stdout %q, stderr %q", args, code, out, errOut)
+		code, out, errOut := runWith(Options{Jobs: f}, strings.Fields(c.args)...)
+		if code != 0 || !strings.Contains(out, c.want) {
+			t.Errorf("%s: exit %d, stdout %q, stderr %q", c.args, code, out, errOut)
 		}
 	}
 	if strings.Join(f.attached, ",") != "job-bbbbbbbbbb,job-bbbbbbbbbb,ro" {

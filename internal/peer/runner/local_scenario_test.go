@@ -19,6 +19,7 @@ import (
 	"github.com/Autarquico/codeflock/internal/peer/runner"
 	"github.com/Autarquico/codeflock/internal/testutil/fakeharness"
 	"github.com/Autarquico/codeflock/internal/worker/execwrap"
+	"github.com/Autarquico/codeflock/internal/worker/procident"
 )
 
 // Scenarios of docs/specs/p2p-peers.md that F2 covers on one peer: a real tmux
@@ -228,6 +229,12 @@ func TestGivenARunningJobWhenThePeerRestartsThenItIsLostNothingRelaunchesItAndRe
 		t.Fatal(err)
 	}
 	_ = syscall.Kill(-w.PGID, syscall.SIGKILL)
+	// SIGKILL is asynchronous: observing while the group is still dying would (rightly) write
+	// stopping, which only a stop leaves. A restart is over once nothing of the group is left.
+	eventually(t, "the group to be gone", func() bool {
+		empty, err := procident.GroupEmpty(w.PGID)
+		return err == nil && empty
+	})
 	eventually(t, "the job to be seen as lost", func() bool { return p.state(t, sj.id) == job.Lost })
 
 	after, err := p.store.Get(sj.id)
