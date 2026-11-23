@@ -41,7 +41,7 @@ TestScenario_ExistingCf_isLeftAlone() {
 	run_install "$KEY_A/install.sh"
 	assert_rc 0
 	cmp -s "$T/bin/cf" "$T/old-cf" || fail "the cf was modified"
-	[ "$(ls -A "$T/bin" | tr '\n' ' ')" = "cf cflk " ] || fail "unexpected files in the install dir: $(ls -A "$T/bin")"
+	[ -e "$T/bin/cflk" ] && [ "$(find "$T/bin" -mindepth 1 | wc -l | tr -d " ")" -eq 2 ] || fail "unexpected files in the install dir"
 	[ "$("$T/bin/cflk" version)" = "$BARE_VERSION" ] || fail "cflk was not installed"
 }
 
