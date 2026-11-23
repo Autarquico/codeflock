@@ -13,6 +13,7 @@ type fakeJobs struct {
 	list     []JobView
 	ran      RunRequest
 	attached []string
+	listed   string
 	err      error
 }
 
@@ -20,7 +21,16 @@ func (f *fakeJobs) Run(_ context.Context, r RunRequest) (JobView, error) {
 	f.ran = r
 	return JobView{ID: "job-aaaaaaaaaa", State: "running"}, f.err
 }
-func (f *fakeJobs) List(context.Context) ([]JobView, error) { return f.list, f.err }
+
+func (f *fakeJobs) List(_ context.Context, peer string) ([]JobView, error) {
+	f.listed = peer
+	return f.list, f.err
+}
+
+func (f *fakeJobs) Peers(context.Context) ([]PeerView, error) {
+	return []PeerView{{Name: "laptop", This: true, Reachable: true, Jobs: 1}, {Name: "mini"}}, f.err
+}
+
 func (f *fakeJobs) Show(_ context.Context, id string) (JobView, error) {
 	return JobView{ID: id, State: "waiting", Repo: "h/o/r", Branch: "cflk/" + id}, f.err
 }
@@ -151,5 +161,27 @@ func TestTheInternalCommandsAreHiddenAndCallTheirHandlers(t *testing.T) {
 	}
 	if code, _, e := runWith(opts, "internal", "notify", "/m", "/s", `{"type":"x"}`); code != 0 || strings.Join(notified, "|") != `/m|/s|{"type":"x"}` {
 		t.Errorf("notify: exit %d, args %v, %s", code, notified, e)
+	}
+}
+
+func TestPsPassesThePeerAndShowsAnUnreachablePeerAsARow(t *testing.T) {
+	f := &fakeJobs{list: []JobView{{Peer: "mini", State: "unreachable", Problem: "timeout"}}}
+	_, out, _ := runWith(Options{Jobs: f}, "ps", "--peer", "mini")
+	if f.listed != "mini" || !strings.Contains(out, "unreachable") {
+		t.Errorf("listed %q:\n%s", f.listed, out)
+	}
+}
+
+func TestPeersIsATableWithThisMachineAndTheOnesThatDoNotAnswer(t *testing.T) {
+	_, out, _ := runWith(Options{Jobs: &fakeJobs{}}, "peers")
+	for _, want := range []string{"laptop (this)", "reachable", "mini", "unreachable"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("table lacks %q:\n%s", want, out)
+		}
+	}
+	_, out, _ = runWith(Options{Jobs: &fakeJobs{}}, "peers", "--json")
+	var got []PeerView
+	if err := json.Unmarshal([]byte(out), &got); err != nil || len(got) != 2 || got[1].Reachable {
+		t.Errorf("--json = %q, %v", out, err)
 	}
 }

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"os"
 	"testing"
 
@@ -14,14 +13,6 @@ func isolated(t *testing.T) *localJobs {
 	t.Helper()
 	t.Setenv(stateDirVar, t.TempDir())
 	return newLocalJobs("/cflk")
-}
-
-func codeOf(err error) domain.Code {
-	var coded *domain.Error
-	if errors.As(err, &coded) {
-		return coded.Code
-	}
-	return ""
 }
 
 func TestAnEmptyStateListsNothing(t *testing.T) {

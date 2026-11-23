@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -39,12 +40,28 @@ type RunRequest struct {
 	Prompt string
 }
 
+// PeerView is a peer as `cflk peers` shows it.
+type PeerView struct {
+	Name string `json:"name"`
+	// This is true for the machine the command runs on.
+	This      bool     `json:"this,omitempty"`
+	Reachable bool     `json:"reachable"`
+	Harnesses []string `json:"harnesses,omitempty"`
+	Jobs      int      `json:"jobs"`
+	// Problem is why the peer did not answer.
+	Problem string `json:"problem,omitempty"`
+}
+
 // Jobs is what the job commands need of a peer. cmd/cflk composes it (ADR 0001):
 // the CLI knows neither the runner nor the adapters. Every method that reads a Job
 // reconciles it first.
 type Jobs interface {
 	Run(ctx context.Context, req RunRequest) (JobView, error)
-	List(ctx context.Context) ([]JobView, error)
+	// List is the Jobs of every peer, or of the one named; a peer that does not
+	// answer is a row with the state "unreachable".
+	List(ctx context.Context, peer string) ([]JobView, error)
+	// Peers lists the peers and whether they answer.
+	Peers(ctx context.Context) ([]PeerView, error)
 	Show(ctx context.Context, id string) (JobView, error)
 	Stop(ctx context.Context, id string) (JobView, error)
 	Resume(ctx context.Context, id string) (JobView, error)
@@ -98,11 +115,12 @@ func newJobCmds(opts Options) []*cobra.Command {
 		})
 	run.Flags().String("harness", "", "the agent: claude (default) or codex")
 	run.Flags().String("branch", "", "start from this branch or commit instead of the current one")
-	run.Flags().String("on", "", "the peer that runs it; only this peer for now")
+	run.Flags().String("on", "", "the peer that runs it: its name, or any for the one with fewest Jobs (default: this one)")
 
-	ps := jobCmd(opts, "ps", "List the Jobs of this peer", cobra.NoArgs,
+	ps := jobCmd(opts, "ps [--peer PEER]", "List the Jobs of every peer (or of one)", cobra.NoArgs,
 		func(cmd *cobra.Command, jobs Jobs, _ []string) error {
-			list, err := jobs.List(cmd.Context())
+			only, _ := cmd.Flags().GetString("peer")
+			list, err := jobs.List(cmd.Context(), only)
 			if err != nil {
 				return err
 			}
@@ -110,6 +128,20 @@ func newJobCmds(opts Options) []*cobra.Command {
 				list = []JobView{}
 			}
 			return emit(cmd, list, func(w io.Writer) error { return printJobs(w, list) })
+		})
+
+	ps.Flags().String("peer", "", "only the Jobs of this peer")
+
+	peers := jobCmd(opts, "peers", "List the peers, whether they answer, their harnesses and their Jobs", cobra.NoArgs,
+		func(cmd *cobra.Command, jobs Jobs, _ []string) error {
+			list, err := jobs.Peers(cmd.Context())
+			if err != nil {
+				return err
+			}
+			if list == nil {
+				list = []PeerView{}
+			}
+			return emit(cmd, list, func(w io.Writer) error { return printPeers(w, list) })
 		})
 
 	show := jobCmd(opts, "show JOB", "Show a Job", cobra.ExactArgs(1),
@@ -166,7 +198,7 @@ func newJobCmds(opts Options) []*cobra.Command {
 		})
 	attach.Flags().Bool("read-only", false, "what you type does not reach the agent")
 
-	return []*cobra.Command{run, ps, show, stop, resume, screen, send, attach, newPeerCmd(opts), newInternalCmd(opts)}
+	return []*cobra.Command{run, ps, peers, show, stop, resume, screen, send, attach, newPeerCmd(opts), newInternalCmd(opts)}
 }
 
 func printJobs(w io.Writer, jobs []JobView) error {
@@ -181,7 +213,23 @@ func printJobs(w io.Writer, jobs []JobView) error {
 		if j.Problem != "" {
 			state += "?"
 		}
-		fmt.Fprintf(t, "%s\t%s\t%s\t%s\t%s\t%s\n", printable(j.ID), printable(j.Peer), state, printable(j.Harness), printable(j.Repo), printable(j.Branch))
+		fmt.Fprintf(t, "%s\t%s\t%s\t%s\t%s\t%s\n", dash(printable(j.ID)), printable(j.Peer), state, dash(printable(j.Harness)), dash(printable(j.Repo)), dash(printable(j.Branch)))
+	}
+	return t.Flush()
+}
+
+func printPeers(w io.Writer, peers []PeerView) error {
+	t := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(t, "PEER\tSTATE\tHARNESSES\tJOBS")
+	for _, p := range peers {
+		name, state, harnesses, jobs := printable(p.Name), "reachable", printable(strings.Join(p.Harnesses, ",")), fmt.Sprint(p.Jobs)
+		if p.This {
+			name += " (this)"
+		}
+		if !p.Reachable {
+			state, harnesses, jobs = "unreachable", "-", "-"
+		}
+		fmt.Fprintf(t, "%s\t%s\t%s\t%s\n", name, state, harnesses, jobs)
 	}
 	return t.Flush()
 }

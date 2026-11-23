@@ -27,7 +27,7 @@ func run() int {
 	local := newLocalJobs(exe)
 	return cli.ExecuteWith(cli.Options{
 		Doctor:     checkThisMachine,
-		Jobs:       local,
+		Jobs:       newFleet(local),
 		Wrapper:    runWrapper,
 		Notify:     runner.HandleNotify,
 		PeerServe:  local.servePeer,

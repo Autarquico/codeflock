@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/Autarquico/codeflock/internal/peer/discovery"
 	"github.com/Autarquico/codeflock/internal/peer/remote"
@@ -19,6 +20,7 @@ type ServeFunc func(ctx context.Context, in io.Reader, out io.Writer) error
 // recorded, so a test can check which peer was asked, with what argv.
 type Dialer struct {
 	Peers map[string]ServeFunc
+	mu    sync.Mutex
 	// Dialed is the argv (after `cflk peer`) of each dial, in order, by peer name.
 	Dialed []Dial
 }
@@ -35,7 +37,9 @@ func (d *Dialer) Dial(ctx context.Context, peer discovery.Peer, args ...string) 
 	if !ok {
 		return remote.Conn{}, fmt.Errorf("remotetest: no peer %q", peer.Name)
 	}
+	d.mu.Lock()
 	d.Dialed = append(d.Dialed, Dial{Peer: peer.Name, Args: args})
+	d.mu.Unlock()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 	done := make(chan error, 1)
@@ -46,4 +50,19 @@ func (d *Dialer) Dial(ctx context.Context, peer discovery.Peer, args ...string) 
 		done <- err
 	}()
 	return remote.Conn{In: inW, Out: outR, Wait: func() error { return <-done }}, nil
+}
+
+// PushTarget is the mirror itself: it is a directory of this machine.
+func (d *Dialer) PushTarget(_ discovery.Peer, mirror string) (remote.PushTarget, error) {
+	return remote.PushTarget{URL: mirror}, nil
+}
+
+// AttachArgv is a stand-in for the ssh command: a test that needs the real one
+// wraps the Dialer with remote.SSH.AttachArgv.
+func (d *Dialer) AttachArgv(peer discovery.Peer, id string, readOnly bool) ([]string, error) {
+	argv := []string{"attach-on", peer.Name}
+	if readOnly {
+		argv = append(argv, "--read-only")
+	}
+	return append(argv, id), nil
 }

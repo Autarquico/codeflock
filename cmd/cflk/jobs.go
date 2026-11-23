@@ -146,32 +146,43 @@ func (l *localJobs) Run(ctx context.Context, req cli.RunRequest) (cli.JobView, e
 		return cli.JobView{}, invalid("unknown harness %q: use claude or codex", req.Harness)
 	}
 	if req.On != "" && req.On != "local" && req.On != p.name {
-		return cli.JobView{}, invalid("--on %q: other peers are not available yet; a Job runs on this peer (%s)", req.On, p.name)
+		return cli.JobView{}, invalid("--on %q: this runs Jobs on this peer (%s); other peers go through the fleet", req.On, p.name)
 	}
 	if err := p.tmux.Check(ctx); err != nil {
 		return cli.JobView{}, err
 	}
+	src, err := sourceOf(ctx, req.Branch)
+	if err != nil {
+		return cli.JobView{}, err
+	}
+	return p.start(ctx, startSpec{repoDir: src.dir, repo: src.repo, harness: harnessID, commit: src.commit, prompt: req.Prompt, createdBy: p.name})
+}
+
+// source is the code a Job starts from: a commit of the repository the person is in.
+type source struct{ dir, repo, commit string }
+
+// sourceOf resolves base (a branch or commit; empty is HEAD) in the repository of the current directory.
+func sourceOf(ctx context.Context, base string) (source, error) {
 	top, err := git(ctx, "", "rev-parse", "--show-toplevel")
 	if err != nil {
-		return cli.JobView{}, invalid("cflk run starts from a git repository: %v", err)
+		return source{}, invalid("cflk run starts from a git repository: %v", err)
 	}
 	origin, err := git(ctx, top, "remote", "get-url", "origin")
 	if err != nil {
-		return cli.JobView{}, invalid("the repository has no origin remote: %v", err)
+		return source{}, invalid("the repository has no origin remote: %v", err)
 	}
 	repo, err := job.NormalizeRepo(origin)
 	if err != nil {
-		return cli.JobView{}, invalid("origin %q: %v", origin, err)
+		return source{}, invalid("origin %q: %v", origin, err)
 	}
-	base := req.Branch
 	if base == "" {
 		base = "HEAD"
 	}
 	commit, err := git(ctx, top, "rev-parse", "--verify", "--end-of-options", base+"^{commit}")
 	if err != nil {
-		return cli.JobView{}, invalid("%q is not a commit of this repository: %v", base, err)
+		return source{}, invalid("%q is not a commit of this repository: %v", base, err)
 	}
-	return p.start(ctx, startSpec{repoDir: top, repo: repo, harness: harnessID, commit: commit, prompt: req.Prompt, createdBy: p.name})
+	return source{dir: top, repo: repo, commit: commit}, nil
 }
 
 // startSpec is a Job to create and launch from a commit of a repository on this
@@ -313,6 +324,12 @@ func (l *localJobs) Attach(ctx context.Context, id string, readOnly bool) error 
 	if err != nil {
 		return err
 	}
+	return enter(ctx, attachwindow.ExecRunner{}, attach, j.ID)
+}
+
+// enter runs the command that enters a terminal: here when this one is a
+// terminal, else in a new window of the one the person works in.
+func enter(ctx context.Context, windows attachwindow.Runner, attach cfruntime.Command, id string) error {
 	if isTerminal(os.Stdin) && isTerminal(os.Stdout) {
 		return runAttached(ctx, attach)
 	}
@@ -320,10 +337,10 @@ func (l *localJobs) Attach(ctx context.Context, id string, readOnly bool) error 
 	if !ok {
 		return domain.NewError(domain.CodeRunNotAttachable, "there is no terminal here to attach in; run `cflk attach` from a terminal", nil)
 	}
-	if err := launcher.Open(ctx, attachwindow.ExecRunner{}, windowArgv(attach), "cflk "+j.ID); err != nil {
+	if err := launcher.Open(ctx, windows, windowArgv(attach), "cflk "+id); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "opened a %s window attached to %s\n", launcher.Label(), j.ID)
+	fmt.Fprintf(os.Stderr, "opened a %s window attached to %s\n", launcher.Label(), id)
 	return nil
 }
 
