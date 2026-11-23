@@ -134,8 +134,8 @@ func TestPaths(t *testing.T) {
 	for got, want := range map[string]string{
 		s.Dir(id):            "/state/jobs/job-abcdefghij",
 		s.WorktreeDir(id, 3): "/state/jobs/job-abcdefghij/g3",
-		s.StartedPath(id, l): "/state/jobs/job-abcdefghij/launches/abcdefgh/started",
-		s.ExitPath(id, l):    "/state/jobs/job-abcdefghij/launches/abcdefgh/exit",
+		s.StartedPath(id, l): "/state/jobs/job-abcdefghij/launches/abcdefgh/started.json",
+		s.ExitPath(id, l):    "/state/jobs/job-abcdefghij/launches/abcdefgh/exit.json",
 		s.WaitingPath(id, l): "/state/jobs/job-abcdefghij/launches/abcdefgh/waiting",
 	} {
 		if filepath.ToSlash(got) != want {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/Autarquico/codeflock/internal/support/atomicfile"
 	"github.com/Autarquico/codeflock/internal/support/flock"
+	"github.com/Autarquico/codeflock/internal/worker/execwrap"
 )
 
 // ErrNotFound is returned when a Job has no directory in the store.
@@ -44,14 +45,14 @@ func (s *Store) LaunchDir(id, launchID string) string {
 	return filepath.Join(s.Dir(id), "launches", launchID)
 }
 
-// StartedPath is the wrapper's record of the launch's process.
+// StartedPath is the wrapper's record of the launch's process: the file execwrap writes.
 func (s *Store) StartedPath(id, launchID string) string {
-	return filepath.Join(s.LaunchDir(id, launchID), "started")
+	return filepath.Join(s.LaunchDir(id, launchID), execwrap.StartedFile)
 }
 
 // ExitPath is the wrapper's record of how the launch ended.
 func (s *Store) ExitPath(id, launchID string) string {
-	return filepath.Join(s.LaunchDir(id, launchID), "exit")
+	return filepath.Join(s.LaunchDir(id, launchID), execwrap.ExitFile)
 }
 
 // WaitingPath is the marker that says the agent waits for a person.

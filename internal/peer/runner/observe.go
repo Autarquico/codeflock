@@ -39,7 +39,7 @@ func (r *Runner) Observe(ctx context.Context, j job.Job) (job.Facts, error) {
 	}
 	f := job.Facts{SessionAlive: status.Alive, GroupEmpty: true}
 	var exit execwrap.Exit
-	if ok, err := execwrap.Read(dir, execwrap.ExitFile, &exit); err != nil {
+	if ok, err := readRecord(store.ExitPath(j.ID, j.Launch.ID), &exit); err != nil {
 		return job.Facts{}, err
 	} else if ok {
 		code := exitBySignal

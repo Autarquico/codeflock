@@ -38,6 +38,31 @@ func (a Adapter) StartSession(_ context.Context, host harness.Host, run harness.
 // entry is set; the rest of the file is kept. Claude Code keys the trust by the
 // real path of the folder.
 func (Adapter) TrustFolder(host harness.Host, worktree string) error {
+	return editProject(host, worktree, func(projects object, key string) bool {
+		entry, _ := projects[key].(object)
+		if entry == nil {
+			entry = object{}
+		}
+		entry[trustField] = true
+		projects[key] = entry
+		return true
+	})
+}
+
+// UntrustFolder removes the trust entry TrustFolder wrote for the worktree, and
+// only that project's entry. A folder with no entry is left as it is.
+func (Adapter) UntrustFolder(host harness.Host, worktree string) error {
+	return editProject(host, worktree, func(projects object, key string) bool {
+		_, present := projects[key]
+		delete(projects, key)
+		return present
+	})
+}
+
+// editProject applies change to the projects of ~/.claude.json under the key of the
+// worktree, keeping the rest of the file, and writes it back atomically if change
+// says it changed something.
+func editProject(host harness.Host, worktree string, change func(projects object, key string) bool) error {
 	resolved, err := trustedPath(worktree)
 	if err != nil {
 		return err
@@ -58,12 +83,9 @@ func (Adapter) TrustFolder(host harness.Host, worktree string) error {
 	if projects == nil {
 		projects = object{}
 	}
-	entry, _ := projects[resolved].(object)
-	if entry == nil {
-		entry = object{}
+	if !change(projects, resolved) {
+		return nil
 	}
-	entry[trustField] = true
-	projects[resolved] = entry
 	state[projectsField] = projects
 	out, err := encodeObject(state)
 	if err != nil {

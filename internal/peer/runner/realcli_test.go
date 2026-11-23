@@ -51,9 +51,12 @@ func realRunner(t *testing.T, binary, harnessID string) (*runner.Runner, *job.St
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(store.WorktreeDir(j.ID, 1), 0o700); err != nil {
+	worktree := store.WorktreeDir(j.ID, 1)
+	if err := os.MkdirAll(worktree, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// Claude's trust of the worktree lives in the real ~/.claude.json: take it out again.
+	t.Cleanup(func() { _ = claude.Adapter{}.UntrustFolder(host, worktree) })
 	r := runner.New(runner.Config{
 		Store: store, Host: host, Tmux: rt,
 		Wrapper:   func(dir string) []string { return []string{"/usr/bin/env", asWrapper + "=" + dir, os.Args[0]} },

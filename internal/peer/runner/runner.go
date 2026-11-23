@@ -151,7 +151,7 @@ func (r *Runner) start(ctx context.Context, agent Agent, in Input, l job.Launch)
 	if err != nil {
 		return "", fmt.Errorf("runner: starting the session of the launch: %w", err)
 	}
-	session, err := r.settle(ctx, agent, in, plan.SessionID)
+	session, err := r.settle(ctx, agent, in, l, plan.SessionID)
 	if err != nil {
 		r.abort(in.LaunchDir, handle)
 		return "", err
@@ -161,14 +161,14 @@ func (r *Runner) start(ctx context.Context, agent Agent, in Input, l job.Launch)
 
 // settle waits for the harness to have started and, if its session is not known,
 // for it to exist.
-func (r *Runner) settle(ctx context.Context, agent Agent, in Input, session string) (string, error) {
+func (r *Runner) settle(ctx context.Context, agent Agent, in Input, l job.Launch, session string) (string, error) {
 	var started execwrap.Started
 	err := poll(ctx, r.cfg.StartTimeout, func() (bool, error) {
-		if ok, err := execwrap.Read(in.LaunchDir, execwrap.StartedFile, &started); err != nil || ok {
+		if ok, err := readRecord(r.cfg.Store.StartedPath(in.Job.ID, l.ID), &started); err != nil || ok {
 			return ok, err
 		}
 		var exit execwrap.Exit
-		if ok, err := execwrap.Read(in.LaunchDir, execwrap.ExitFile, &exit); err != nil {
+		if ok, err := readRecord(r.cfg.Store.ExitPath(in.Job.ID, l.ID), &exit); err != nil {
 			return false, err
 		} else if ok {
 			return false, fmt.Errorf("runner: the agent did not start: %s", orUnknown(exit.Error))
@@ -241,4 +241,9 @@ func poll(ctx context.Context, timeout time.Duration, check func() (bool, error)
 		case <-tick.C:
 		}
 	}
+}
+
+// readRecord loads a record the wrapper wrote at path; ok is false if it is not there yet.
+func readRecord(path string, v any) (bool, error) {
+	return execwrap.Read(filepath.Dir(path), filepath.Base(path), v)
 }

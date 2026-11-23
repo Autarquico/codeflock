@@ -77,3 +77,40 @@ func TestTrustFolderSetsOnlyThatProject(t *testing.T) {
 		t.Error("a relative path is refused")
 	}
 }
+
+func TestUntrustFolderRemovesOnlyThatProject(t *testing.T) {
+	h, home := jobHost(t)
+	state := filepath.Join(home, claude.StateFile)
+	wt := t.TempDir()
+	if err := os.WriteFile(state, []byte(`{"theme":"dark","projects":{"/other":{"x":1}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := claude.Adapter{}
+	if err := a.TrustFolder(h, wt); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.UntrustFolder(h, wt); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(state) //nolint:gosec // a file of the test
+	var got struct {
+		Theme    string                    `json:"theme"`
+		Projects map[string]map[string]any `json:"projects"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if resolved, _ := filepath.EvalSymlinks(wt); got.Theme != "dark" || len(got.Projects) != 1 || got.Projects["/other"]["x"] == nil {
+		t.Errorf("state = %s (the entry of %s should be gone and the rest kept)", raw, resolved)
+	}
+}
+
+func TestUntrustFolderWithoutStateDoesNotCreateIt(t *testing.T) {
+	h, home := jobHost(t)
+	if err := (claude.Adapter{}).UntrustFolder(h, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, claude.StateFile)); err == nil {
+		t.Error("untrusting created the state file")
+	}
+}

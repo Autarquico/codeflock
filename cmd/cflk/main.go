@@ -12,6 +12,7 @@ import (
 	"github.com/Autarquico/codeflock/internal/adapters/harness/localhost"
 	"github.com/Autarquico/codeflock/internal/cli"
 	"github.com/Autarquico/codeflock/internal/config"
+	"github.com/Autarquico/codeflock/internal/peer/runner"
 	"github.com/Autarquico/codeflock/internal/worker/doctor"
 )
 
@@ -19,7 +20,16 @@ func main() { os.Exit(run()) }
 
 // run composes the binary: the CLI with the checks of this machine.
 func run() int {
-	return cli.ExecuteWith(cli.Options{Doctor: checkThisMachine})
+	exe, err := os.Executable()
+	if err != nil {
+		exe = os.Args[0]
+	}
+	return cli.ExecuteWith(cli.Options{
+		Doctor:  checkThisMachine,
+		Jobs:    newLocalJobs(exe),
+		Wrapper: runWrapper,
+		Notify:  runner.HandleNotify,
+	})
 }
 
 // checkThisMachine is `cflk doctor`: the checks of the doctor over the harness
