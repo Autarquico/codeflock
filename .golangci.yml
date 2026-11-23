@@ -252,6 +252,18 @@ linters:
             - $gostd
             - github.com/Autarquico/codeflock/internal/support/svcunit
             - github.com/Autarquico/codeflock/internal/support/atomicfile
+        # A peer runs Jobs on its own: the harness adapters, the leaf utilities and the
+        # domain are all it needs. Nothing of the Controller, the SDK, the wire types or the
+        # Worker. (Tests may stand real survivors up, e.g. worker/procident.)
+        peer:
+          list-mode: strict
+          files: ["**/internal/peer/**", "!$test"]
+          allow:
+            - $gostd
+            - github.com/Autarquico/codeflock/internal/peer
+            - github.com/Autarquico/codeflock/internal/adapters
+            - github.com/Autarquico/codeflock/internal/support
+            - github.com/Autarquico/codeflock/internal/domain
         # support is the leaf utilities: it never reaches up to the Worker, the
         # Controller or an adapter, which inject what they know (migrate.LiveRuns).
         support:
