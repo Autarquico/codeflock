@@ -195,7 +195,7 @@ cadena muestra el Job como «en `<peer>`, sin confirmar».
 | `cflk show <job>` | `jobs_get` | Un Job |
 | `cflk run [--on p\|any] [--harness h] -- "prompt"` | `jobs_run` | Lanza un Job sobre la rama actual |
 | `cflk screen <job>` | `jobs_screen` | Lo que muestra su terminal ahora (`tmux capture-pane`) |
-| `cflk send <job> "texto"` | `jobs_send` | Escribe en el agente (`Adapter.SendInput`) |
+| `cflk send <job> "texto"` | `jobs_send` | Escribe en el agente (pega el texto en su panel de tmux y pulsa Enter) |
 | `cflk attach <job> [--read-only]` | `jobs_attach` | Entra (local: `tmux attach`; remoto: `ssh -t`) |
 | `cflk stop <job>` / `cflk resume <job>` | `jobs_stop` / `jobs_resume` | Para / reanuda en el mismo peer |
 | `cflk clean <job>` | `jobs_clean` | Borra lo que queda de un Job `moved` o `done` en este peer |
