@@ -1,0 +1,73 @@
+package runner
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/Autarquico/codeflock/internal/adapters/harness"
+	"github.com/Autarquico/codeflock/internal/adapters/harness/claude"
+	"github.com/Autarquico/codeflock/internal/support/atomicfile"
+)
+
+// ClaudeSettingsFile is the settings of a launch, in its directory, that Claude Code
+// reads on top of the user's through --settings: the hooks of the Job live there and
+// nowhere else.
+const ClaudeSettingsFile = "claude-settings.json"
+
+type claudeAgent struct{ host harness.Host }
+
+func (a claudeAgent) Prepare(ctx context.Context, in Input) (Plan, error) {
+	id := in.SessionID
+	if id == "" {
+		var err error
+		if id, err = NewSessionID(claude.ID); err != nil {
+			return Plan{}, err
+		}
+	}
+	adapter := claude.Adapter{}
+	if err := adapter.TrustFolder(a.host, in.Worktree); err != nil {
+		return Plan{}, err
+	}
+	settings := filepath.Join(in.LaunchDir, ClaudeSettingsFile)
+	if err := writeClaudeSettings(settings, in.Waiting); err != nil {
+		return Plan{}, err
+	}
+	run := interactive(in)
+	run.ConfigDir = filepath.Join(a.host.Home(), claude.ConfigDirName)
+	l, err := adapter.StartSession(ctx, a.host, run, id)
+	if err != nil {
+		return Plan{}, err
+	}
+	return Plan{Argv: withFlags(l.Argv, "--settings", settings), SessionID: id}, nil
+}
+
+// Discover is never needed: the session of a Claude launch is named at the start.
+func (claudeAgent) Discover(context.Context, Input, time.Time) ([]string, error) { return nil, nil }
+
+// writeClaudeSettings installs the hooks that say that the agent waits: Stop, the
+// end of a turn, writes the marker, and UserPromptSubmit, which also fires for
+// text that arrives through tmux, removes it.
+func writeClaudeSettings(path, marker string) error {
+	hook := func(command string) []map[string]any {
+		return []map[string]any{{"hooks": []map[string]any{{"type": "command", "command": command}}}}
+	}
+	raw, err := json.MarshalIndent(map[string]any{
+		// The launch runs in bypassPermissions mode and nobody is there to accept its
+		// disclaimer; this setting is what newer versions read instead of .claude.json.
+		"skipDangerousModePermissionPrompt": true,
+		"hooks": map[string]any{
+			"Stop":             hook("touch -- " + shellQuote(marker)),
+			"UserPromptSubmit": hook("rm -f -- " + shellQuote(marker)),
+		},
+	}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("runner: encoding the hooks: %w", err)
+	}
+	return atomicfile.Write(path, raw, 0o600)
+}
+
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }

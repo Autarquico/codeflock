@@ -1,0 +1,63 @@
+package runner
+
+import (
+	"context"
+	"time"
+
+	"github.com/Autarquico/codeflock/internal/adapters/harness"
+	"github.com/Autarquico/codeflock/internal/domain"
+	"github.com/Autarquico/codeflock/internal/peer/job"
+)
+
+// Input is what an Agent is told to build the process of a launch.
+type Input struct {
+	Job      job.Job
+	Worktree string
+	// LaunchDir holds the records of the launch.
+	LaunchDir string
+	// Waiting is the marker the agent's hooks write and remove.
+	Waiting string
+	// SessionFile is where the launch writes the Job's session id for the notify program.
+	SessionFile string
+	// NotifyCmd is the program a harness without hooks runs when a turn ends.
+	NotifyCmd []string
+	// SessionID is the session to resume; empty on the first launch.
+	SessionID string
+	Prompt    string
+}
+
+// Plan is the process an Agent built.
+type Plan struct {
+	Argv []string
+	Env  []string
+	// SessionID is the session the process runs; empty if the harness picks its
+	// own, which Discover then finds.
+	SessionID string
+}
+
+// Agent is what the launch needs to know of one harness.
+type Agent interface {
+	// Prepare readies what must exist before the harness starts (trust of the folder,
+	// the hooks of the launch) and says what to run.
+	Prepare(ctx context.Context, in Input) (Plan, error)
+	// Discover lists the sessions the launch created, for a Plan without one.
+	Discover(ctx context.Context, in Input, after time.Time) ([]string, error)
+}
+
+// staleWaiting is implemented by an Agent whose waiting marker the activity of the
+// agent supersedes (Codex: its rollout grows after the marker).
+type staleWaiting interface {
+	WaitingStale(sessionID string, marker time.Time) bool
+}
+
+func interactive(in Input) harness.RunSpec {
+	return harness.RunSpec{Mode: domain.ModeInteractive, Prompt: in.Prompt, Worktree: in.Worktree}
+}
+
+// withFlags puts flags right after the binary, before any subcommand or prompt.
+func withFlags(argv []string, flags ...string) []string {
+	out := make([]string, 0, len(argv)+len(flags))
+	out = append(out, argv[0])
+	out = append(out, flags...)
+	return append(out, argv[1:]...)
+}

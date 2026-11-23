@@ -1,0 +1,244 @@
+package runner
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/Autarquico/codeflock/internal/adapters/harness"
+	"github.com/Autarquico/codeflock/internal/adapters/harness/claude"
+	"github.com/Autarquico/codeflock/internal/adapters/harness/codex"
+	cfruntime "github.com/Autarquico/codeflock/internal/adapters/runtime"
+	"github.com/Autarquico/codeflock/internal/adapters/runtime/tmux"
+	"github.com/Autarquico/codeflock/internal/peer/job"
+	"github.com/Autarquico/codeflock/internal/support/atomicfile"
+	"github.com/Autarquico/codeflock/internal/worker/execwrap"
+)
+
+// Timings of a launch.
+const (
+	// DefaultStartTimeout is how long Launch waits for the wrapper to record that
+	// the harness started: the wrapper itself waits up to execwrap.GateTimeout for
+	// the terminal to be wired.
+	DefaultStartTimeout = execwrap.GateTimeout + 10*time.Second
+	// DefaultDiscoverTimeout is how long a harness that picks its own session id
+	// has, once it started, to create its session.
+	DefaultDiscoverTimeout = 30 * time.Second
+	pollEvery              = 50 * time.Millisecond
+)
+
+// SessionFile and PaneReadyFile are files of a launch directory besides the
+// wrapper's own records and the waiting marker.
+const (
+	SessionFile   = "session_id"
+	PaneReadyFile = "pane.ready"
+)
+
+// Config is what a Runner runs on.
+type Config struct {
+	Store *job.Store
+	Host  harness.Host
+	// Tmux is the runtime of the launches. Its socket (-L) is the caller's: a
+	// test gives it one of its own.
+	Tmux *tmux.Runtime
+	// Wrapper is the argv that runs execwrap.Run on a launch directory (cflk's own
+	// hidden command; a test binary in a role).
+	Wrapper func(launchDir string) []string
+	// NotifyCmd is the argv of the program Codex runs when a turn ends; Codex appends
+	// the JSON of the notification, and the launch the marker and the session file
+	// before it. The program calls HandleNotify.
+	NotifyCmd []string
+	// Agents adds to, or replaces, the harnesses the Runner knows (claude-code and codex).
+	Agents map[string]Agent
+	// Stopper ends the groups of launches; its zero value is the default.
+	Stopper Stopper
+	// StartTimeout and DiscoverTimeout default to the constants above.
+	StartTimeout, DiscoverTimeout time.Duration
+}
+
+// Runner starts, watches, talks to and stops the agent of a Job on this peer.
+type Runner struct {
+	cfg    Config
+	agents map[string]Agent
+}
+
+// New builds a Runner.
+func New(cfg Config) *Runner {
+	agents := map[string]Agent{
+		claude.ID: claudeAgent{host: cfg.Host},
+		codex.ID:  codexAgent{host: cfg.Host},
+	}
+	for id, a := range cfg.Agents {
+		agents[id] = a
+	}
+	if cfg.StartTimeout == 0 {
+		cfg.StartTimeout = DefaultStartTimeout
+	}
+	if cfg.DiscoverTimeout == 0 {
+		cfg.DiscoverTimeout = DefaultDiscoverTimeout
+	}
+	return &Runner{cfg: cfg, agents: agents}
+}
+
+// Launch starts the agent of the Job as a new launch: its own id, the tmux session
+// cflk-<job>-<launch>, the harness under the wrapper, in the worktree of the Job's
+// generation. A Job without a session names one (Claude) or has it discovered
+// (Codex); one with a session resumes it, and prompt may then be empty. The Job
+// must be in a state that may become running (stopped, failed or lost). It returns
+// the Job with its new launch, running. If the agent does not start, nothing of the
+// Job changes and nothing is left running.
+func (r *Runner) Launch(ctx context.Context, id, prompt string) (job.Job, error) {
+	var out job.Job
+	err := r.cfg.Store.WithLock(id, func(j *job.Job) error {
+		if err := j.Transition(job.Running); err != nil {
+			return err
+		}
+		agent, ok := r.agents[j.Harness]
+		if !ok {
+			return fmt.Errorf("runner: job %s: unknown harness %q", j.ID, j.Harness)
+		}
+		l := job.NewLaunch(j.ID)
+		in := Input{
+			Job:       *j,
+			Worktree:  r.cfg.Store.WorktreeDir(j.ID, j.Gen),
+			LaunchDir: r.cfg.Store.LaunchDir(j.ID, l.ID),
+			Waiting:   r.cfg.Store.WaitingPath(j.ID, l.ID),
+			SessionID: j.SessionID,
+			Prompt:    prompt,
+			NotifyCmd: r.cfg.NotifyCmd,
+		}
+		in.SessionFile = filepath.Join(in.LaunchDir, SessionFile)
+		session, err := r.start(ctx, agent, in, l)
+		if err != nil {
+			return err
+		}
+		j.SessionID, j.Launch = session, &l
+		out = *j
+		return nil
+	})
+	return out, err
+}
+
+func (r *Runner) start(ctx context.Context, agent Agent, in Input, l job.Launch) (string, error) {
+	if info, err := os.Stat(in.Worktree); err != nil || !info.IsDir() {
+		return "", fmt.Errorf("runner: job %s has no worktree at %s", in.Job.ID, in.Worktree)
+	}
+	if err := os.MkdirAll(in.LaunchDir, 0o700); err != nil {
+		return "", fmt.Errorf("runner: creating the launch directory: %w", err)
+	}
+	plan, err := agent.Prepare(ctx, in)
+	if err != nil {
+		return "", err
+	}
+	if plan.SessionID != "" {
+		if err := writeSession(in.SessionFile, plan.SessionID); err != nil {
+			return "", err
+		}
+	}
+	ready := filepath.Join(in.LaunchDir, PaneReadyFile)
+	launch := execwrap.Launch{Argv: plan.Argv, Env: plan.Env, Dir: in.Worktree, Mode: execwrap.ModeInteractive, Grace: execwrap.DefaultGrace, Gate: ready}
+	if err := execwrap.Write(in.LaunchDir, execwrap.LaunchFile, launch); err != nil {
+		return "", err
+	}
+	spec := cfruntime.Spec{
+		Name: l.Session, Dir: in.Worktree, Command: r.cfg.Wrapper(in.LaunchDir),
+		Capture: filepath.Join(in.LaunchDir, execwrap.OutputLog), Ready: ready,
+	}
+	handle, err := r.cfg.Tmux.Start(ctx, spec)
+	if err != nil {
+		return "", fmt.Errorf("runner: starting the session of the launch: %w", err)
+	}
+	session, err := r.settle(ctx, agent, in, plan.SessionID)
+	if err != nil {
+		r.abort(in.LaunchDir, handle)
+		return "", err
+	}
+	return session, nil
+}
+
+// settle waits for the harness to have started and, if its session is not known,
+// for it to exist.
+func (r *Runner) settle(ctx context.Context, agent Agent, in Input, session string) (string, error) {
+	var started execwrap.Started
+	err := poll(ctx, r.cfg.StartTimeout, func() (bool, error) {
+		if ok, err := execwrap.Read(in.LaunchDir, execwrap.StartedFile, &started); err != nil || ok {
+			return ok, err
+		}
+		var exit execwrap.Exit
+		if ok, err := execwrap.Read(in.LaunchDir, execwrap.ExitFile, &exit); err != nil {
+			return false, err
+		} else if ok {
+			return false, fmt.Errorf("runner: the agent did not start: %s", orUnknown(exit.Error))
+		}
+		return false, nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("runner: waiting for the agent to start: %w", err)
+	}
+	if session != "" {
+		return session, nil
+	}
+	err = poll(ctx, r.cfg.DiscoverTimeout, func() (bool, error) {
+		ids, err := agent.Discover(ctx, in, started.StartedAt)
+		switch {
+		case err != nil:
+			return false, err
+		case len(ids) > 1:
+			return false, fmt.Errorf("%d sessions of the harness were created in %s: %v", len(ids), in.Worktree, ids)
+		case len(ids) == 1:
+			session = ids[0]
+		}
+		return session != "", nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("runner: finding the session of the launch: %w", err)
+	}
+	return session, writeSession(in.SessionFile, session)
+}
+
+// abort ends a launch that did not come to be.
+func (r *Runner) abort(launchDir string, h cfruntime.Handle) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*DefaultGrace)
+	defer cancel()
+	if t, ok := targetOf(launchDir); ok {
+		_, _ = r.cfg.Stopper.Stop(ctx, t)
+	}
+	_ = r.cfg.Tmux.Stop(ctx, h)
+}
+
+func writeSession(path, id string) error {
+	if err := atomicfile.Write(path, []byte(id), 0o600); err != nil {
+		return fmt.Errorf("runner: recording the session: %w", err)
+	}
+	return nil
+}
+
+func orUnknown(s string) string {
+	if s == "" {
+		return "no reason recorded"
+	}
+	return s
+}
+
+// poll runs check every pollEvery until it says it is done, fails, or timeout or ctx ends.
+func poll(ctx context.Context, timeout time.Duration, check func() (bool, error)) error {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(pollEvery)
+	defer tick.Stop()
+	for {
+		if done, err := check(); err != nil || done {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return errors.New("timed out")
+		case <-tick.C:
+		}
+	}
+}
