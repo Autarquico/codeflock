@@ -20,7 +20,6 @@ import (
 	"github.com/Autarquico/codeflock/internal/support/redact"
 	"github.com/Autarquico/codeflock/internal/testutil/fakeharness"
 	"github.com/Autarquico/codeflock/internal/worker/execwrap"
-	"github.com/Autarquico/codeflock/internal/worker/secretjit"
 )
 
 const (
@@ -34,7 +33,7 @@ const (
 func delivered(t *testing.T, secrets ...redact.Needle) string {
 	t.Helper()
 	dir := t.TempDir()
-	if err := secretjit.New().Deliver(dir, 1, secrets, func() error { return nil }); err != nil {
+	if err := deliver(dir, secrets); err != nil {
 		t.Fatal(err)
 	}
 	return dir
@@ -181,7 +180,7 @@ func TestNothingRunsWithoutTheSecrets(t *testing.T) {
 	}{
 		"revoked from the harness": {
 			prepare: func(t *testing.T, dir string) {
-				if err := secretjit.New().Revoke(dir, secretjit.Harness, []string{apiRef}); err != nil {
+				if err := revoke(dir, apiRef); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -287,7 +286,7 @@ func TestTheFilterRedactsWhatATerminalMakesOfASecret(t *testing.T) {
 
 func TestAFilterThatCannotRedactSaysSoAndDrainsTheTerminal(t *testing.T) {
 	for name, retention := range map[string]execwrap.LoadSecrets{
-		"unreadable": func() ([]redact.Needle, error) { return nil, secretjit.ErrCorrupt },
+		"unreadable": func() ([]redact.Needle, error) { return nil, errCorruptDelivery },
 		"too short":  retained(redact.Needle{Ref: apiRef, Value: []byte("short")}),
 		"over the budget": retained(
 			redact.Needle{Ref: "a", Value: bytes.Repeat([]byte("a"), redact.MaxNeedleBytes/2+1)},

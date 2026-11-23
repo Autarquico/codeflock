@@ -14,7 +14,6 @@ import (
 
 	"github.com/Autarquico/codeflock/internal/adapters/harness"
 	"github.com/Autarquico/codeflock/internal/support/redact"
-	"github.com/Autarquico/codeflock/internal/worker/secretjit"
 )
 
 // RenderFile is a file of a configuration that carries secret markers: the
@@ -60,7 +59,7 @@ func renderedOf(a harness.Adapter, snap harness.NativeSnapshot) ([]RenderFile, e
 // Fence runs write once it has registered paths, relative to the run
 // directory, as files that will carry secret values, durably, so that
 // whatever write leaves is found and removed later. It is
-// secretjit.Manager.Render with the attempt and the fence of the caller.
+// the registry of the caller.
 type Fence func(paths []string, write func() error) error
 
 // Render writes the values of the markers into the files of mat.Rendered, in
@@ -127,7 +126,7 @@ func (m *Materializer) renderFile(root *os.Root, name string, f RenderFile, valu
 	if err != nil {
 		return err
 	}
-	tmp := secretjit.RenderTemp(name)
+	tmp := renderTemp(name)
 	if err := root.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
@@ -192,4 +191,11 @@ func escapeValue(e harness.Escape, value []byte) ([]byte, error) {
 		return nil, fmt.Errorf("unknown escape %q", e)
 	}
 	return escape(value)
+}
+
+// renderTemp is the temporary file a render of the file at p writes beside it
+// before it renames it into place.
+func renderTemp(p string) string {
+	dir, base := path.Split(p)
+	return dir + "." + base + ".cf-render"
 }

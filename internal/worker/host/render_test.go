@@ -13,7 +13,6 @@ import (
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/Autarquico/codeflock/internal/adapters/harness"
-	"github.com/Autarquico/codeflock/internal/worker/secretjit"
 )
 
 // escMini is mini with markers in its TOML files.
@@ -52,23 +51,17 @@ func withMarkers() harness.NativeSnapshot {
 
 var values = map[string][]byte{"team/a": []byte(secretA), "team/b": []byte(secretB)}
 
-func allowAll() error { return nil }
-
-// registryFence is the fence of the executor over the real secretjit.
-func registryFence(runDir string, attempt uint64) Fence {
-	return func(paths []string, write func() error) error {
-		return secretjit.New().Render(runDir, attempt, paths, allowAll, write)
-	}
+// registryFence is a fence that registers nothing: it only runs write.
+func registryFence(string, uint64) Fence {
+	return func(_ []string, write func() error) error { return write() }
 }
 
 // crashFence registers like registryFence but, as a process that dies would,
 // does not clean up when write fails: the error is handed back apart.
-func crashFence(runDir string, attempt uint64, died *error) Fence {
-	return func(paths []string, write func() error) error {
-		return secretjit.New().Render(runDir, attempt, paths, allowAll, func() error {
-			*died = write()
-			return nil
-		})
+func crashFence(_ string, _ uint64, died *error) Fence {
+	return func(_ []string, write func() error) error {
+		*died = write()
+		return nil
 	}
 }
 
@@ -139,29 +132,6 @@ func TestRenderWritesTheEscapedValuesPrivatelyAndAtomically(t *testing.T) {
 			t.Errorf("temporary left: %s", e.Name())
 		}
 	}
-	if !secretjit.HasRendered(f.runDir) {
-		t.Error("the rendered files are not registered")
-	}
-}
-
-func TestRegistrationComesBeforeAnyValue(t *testing.T) {
-	f := newEscFixture(t)
-	mat, err := f.materializeEsc(withMarkers())
-	if err != nil {
-		t.Fatal(err)
-	}
-	fence := func(paths []string, write func() error) error {
-		return registryFence(f.runDir, 1)(paths, func() error {
-			if !secretjit.HasRendered(f.runDir) {
-				t.Error("write ran before the registration")
-			}
-			noRegularFileContains(t, f.runDir, "sentinel")
-			return write()
-		})
-	}
-	if err := f.m.Render(f.runDir, mat, values, fence); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func TestRenderNeedsEveryValueAndTouchesNothingWithout(t *testing.T) {
@@ -227,7 +197,7 @@ func TestRenderCrashedAtEachBoundaryLeavesNoOrphanValue(t *testing.T) {
 		}},
 	}
 	for _, c := range cases {
-		for _, mode := range []string{"release", "rebuild"} {
+		for _, mode := range []string{"rebuild"} {
 			t.Run(c.name+"/"+mode, func(t *testing.T) {
 				f := newEscFixture(t)
 				mat, err := f.materializeEsc(withMarkers())
@@ -245,14 +215,6 @@ func TestRenderCrashedAtEachBoundaryLeavesNoOrphanValue(t *testing.T) {
 					t.Fatal("the crash left no value on disk: the case proves nothing")
 				}
 				switch mode {
-				case "release":
-					if err := secretjit.New().Release(f.runDir, allowAll); err != nil {
-						t.Fatal(err)
-					}
-					noRegularFileContains(t, f.runDir, "sentinel")
-					if secretjit.HasRendered(f.runDir) == false {
-						t.Error("the registry is gone: the Run forgot that it used secrets")
-					}
 				case "rebuild":
 					mat2, err := f.materializeEsc(withMarkers())
 					if err != nil {
@@ -273,10 +235,6 @@ func TestRenderCrashedAtEachBoundaryLeavesNoOrphanValue(t *testing.T) {
 							t.Errorf("temporary left: %s", path.Join("config", e.Name()))
 						}
 					}
-					if err := secretjit.New().Release(f.runDir, allowAll); err != nil {
-						t.Fatal(err)
-					}
-					noRegularFileContains(t, f.runDir, "sentinel")
 				}
 			})
 		}

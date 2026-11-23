@@ -8,8 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
-	"strings"
 
 	"github.com/Autarquico/codeflock/internal/adapters/harness"
 	"github.com/Autarquico/codeflock/internal/config"
@@ -27,54 +25,7 @@ type Settings struct {
 	// is every installed one, as before the join wizard. The command adapter
 	// is not a harness of this list: it is always there.
 	Harnesses []string `json:"harnesses,omitzero"`
-	// Checkpoint tunes how this Worker captures checkpoints.
-	Checkpoint Checkpoint `json:"checkpoint,omitzero"`
-	// Retention is how long this Worker keeps what it has already delivered.
-	Retention Retention `json:"retention,omitzero"`
-	// JournalMaxSize and JournalHardMax are journal.max_size and journal.hard_max
-	// (§1.3) as sizes such as "1GiB"; empty is the default of each.
-	JournalMaxSize string `json:"journal_max_size,omitempty"`
-	JournalHardMax string `json:"journal_hard_max,omitempty"`
-	// AllowShell says whether this Worker lets a shell be opened in the worktree
-	// of its Runs (cflk shell). Off unless the owner of this machine turns it on:
-	// the shell has the authority of the user the Worker runs as.
-	AllowShell bool `json:"allow_shell,omitempty"`
-	// SetupPending says the join has not finished: the Worker reports the
-	// "setup" component failing and takes no Runs. Absent means done.
-	SetupPending bool `json:"setup_pending,omitempty"`
-	// Wizard is the progress of the join wizard, kept to resume it.
-	Wizard *Progress `json:"wizard,omitempty"`
 }
-
-// Checkpoint is checkpoint.* of the Worker config.
-type Checkpoint struct {
-	// Grace is how long a harness has to end when it is quiesced for a capture,
-	// before the group is killed. Unset, the default of Appendix A.
-	Grace config.Duration `json:"grace,omitempty"`
-}
-
-// Retention of a Worker, as JSON such as "7d".
-type Retention struct {
-	// Worktrees is how long the worktree of a published Run is kept. Unset, 7d.
-	Worktrees config.Duration `json:"worktrees,omitempty"`
-}
-
-// Progress is where the join wizard stopped and the answers it needs to go on.
-// What each Step means belongs to the wizard; here it is only kept.
-type Progress struct {
-	Step            int      `json:"step"`
-	Name            string   `json:"name,omitempty"`
-	DiskMinFree     string   `json:"disk_min_free,omitempty"`
-	Harnesses       []string `json:"harnesses,omitempty"`
-	InitialWorkflow string   `json:"initial_workflow,omitempty"`
-	// PreviousIdentity is a non-secret fingerprint of the credentials the machine
-	// held before the invitation was redeemed (NoIdentity if none), so that a
-	// recovery can tell the new enrolment from the old one.
-	PreviousIdentity string `json:"previous_identity,omitempty"`
-}
-
-// NoIdentity is the PreviousIdentity of a machine that held no credentials.
-const NoIdentity = "none"
 
 // SettingsFile is the Worker's config, next to its credentials.
 func SettingsFile(p config.Paths) string {
@@ -172,59 +123,4 @@ func SameHarnesses(a, b []string) bool {
 	slices.Sort(x)
 	slices.Sort(y)
 	return slices.Equal(x, y)
-}
-
-// SetupPending says whether the join of this Worker is unfinished. A config
-// that cannot be read counts as done: the Worker must not be locked out of Runs
-// by a file the daemon cannot interpret, which the doctor reports on its own.
-func SetupPending(p config.Paths) bool {
-	s, err := LoadSettings(p)
-	return err == nil && s.SetupPending
-}
-
-// Defaults of journal.max_size and journal.hard_max (Appendix A).
-const (
-	DefaultJournalMaxSize uint64 = 1 << 30
-	DefaultJournalHardMax uint64 = 5 << 30
-)
-
-// JournalLimits are the sizes at which the journal of the Worker degrades (max)
-// and truncates (hard). A config that cannot be read, or whose sizes are not
-// valid, gives the defaults and the reason, so the Worker keeps a bound.
-func JournalLimits(p config.Paths) (maxSize, hardMax uint64, err error) {
-	maxSize, hardMax = DefaultJournalMaxSize, DefaultJournalHardMax
-	s, err := LoadSettings(p)
-	if err != nil {
-		return maxSize, hardMax, err
-	}
-	if s.JournalMaxSize != "" {
-		if maxSize, err = parseSize("journal_max_size", s.JournalMaxSize); err != nil {
-			return DefaultJournalMaxSize, DefaultJournalHardMax, err
-		}
-	}
-	if s.JournalHardMax != "" {
-		if hardMax, err = parseSize("journal_hard_max", s.JournalHardMax); err != nil {
-			return DefaultJournalMaxSize, DefaultJournalHardMax, err
-		}
-	}
-	if hardMax < maxSize {
-		return DefaultJournalMaxSize, DefaultJournalHardMax, fmt.Errorf("doctor: journal_hard_max (%d bytes) is below journal_max_size (%d bytes)", hardMax, maxSize)
-	}
-	return maxSize, hardMax, nil
-}
-
-func parseSize(key, text string) (uint64, error) {
-	upper := strings.ToUpper(strings.TrimSpace(text))
-	for _, u := range sizeUnits {
-		digits, ok := strings.CutSuffix(upper, u.suffix)
-		if !ok {
-			continue
-		}
-		n, err := strconv.ParseUint(strings.TrimSpace(digits), 10, 64)
-		if err != nil || n == 0 || n > (1<<62)/u.factor {
-			break
-		}
-		return n * u.factor, nil
-	}
-	return 0, fmt.Errorf("doctor: %s must be a size such as 1GiB, got %q", key, text)
 }

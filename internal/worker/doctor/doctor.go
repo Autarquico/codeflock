@@ -1,8 +1,7 @@
-// Package doctor is the Worker's own verdict on its machine (§9.4): one
-// ComponentHealth per thing a Run needs, from the runtime to the login of each
-// harness. Every dependency is injected, so a check is a function of what the
-// machine looks like and the package never reads a secret: it only asks
-// whether one is there.
+// Package doctor is the verdict on this machine: one Component per thing a Job
+// needs, from the runtime to the login of each harness. Every dependency is
+// injected, so a check is a function of what the machine looks like and the
+// package never reads a secret: it only asks whether a login is there.
 package doctor
 
 import (
@@ -11,25 +10,34 @@ import (
 	"fmt"
 	"os"
 	"runtime"
-	"slices"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/Autarquico/codeflock/internal/adapters/harness"
 	"github.com/Autarquico/codeflock/internal/adapters/harness/claude"
 	"github.com/Autarquico/codeflock/internal/adapters/runtime/tmux"
-	"github.com/Autarquico/codeflock/internal/adapters/secrets"
-	v1 "github.com/Autarquico/codeflock/internal/api/v1"
-	"github.com/Autarquico/codeflock/internal/worker/globalapply"
 	"github.com/Autarquico/codeflock/internal/worker/sysinfo"
 )
 
+// Status of a Component.
+const (
+	ComponentOK   = "ok"
+	ComponentWarn = "warn"
+	ComponentFail = "fail"
+)
+
+// Component is the verdict on one thing of the machine: Name is "runtime",
+// "git", "disk", or "harness:<id>", "auth:<id>". Action is what a person does
+// to fix it, never a secret.
+type Component struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
+	Action  string `json:"action,omitempty"`
+}
+
 // ClaudeKeychainItem is where Claude Code keeps its login on macOS.
 const ClaudeKeychainItem = "Claude Code-credentials"
-
-// SetupComponent is the global component of a Worker whose join is unfinished.
-const SetupComponent = "setup"
 
 // loginCommands is what a person runs, on the Worker, to log in to a harness.
 var loginCommands = map[string]string{claude.ID: "claude login", "codex": "codex login"}
@@ -48,12 +56,7 @@ type Options struct {
 	// DataDir is the data directory of the Worker: its disk is the one measured,
 	// and its baselines say what was applied.
 	DataDir string
-	Secrets secrets.Store
-	// SecretState is how the keyring entry m stood at the last Check, or false
-	// if none has seen it. A daemon sets it so that the doctor, which runs on
-	// the heartbeat, never reads the keyring; nil asks the Store (a CLI run).
-	SecretState func(m secrets.Metadata) (secrets.State, bool)
-	MinFree     Threshold // zero is DefaultMinFree
+	MinFree Threshold // zero is DefaultMinFree
 	// Git is the git binary; empty is the one in the PATH.
 	Git string
 
@@ -63,20 +66,11 @@ type Options struct {
 	RuntimeName string
 	// Disk measures the filesystem of dir; nil is sysinfo.DiskOf.
 	Disk func(dir string) (sysinfo.Disk, error)
-	// Applied says what was applied to a harness; nil reads the baseline.
-	Applied func(ctx context.Context, a harness.Adapter) ([]globalapply.Applied, error)
 	// GOOS is the platform, for the checks that depend on it; empty is this one.
 	GOOS string
 	// RuntimeIsolated says the runtime confines the Runs (a container, a VM).
 	// The zero value is the host itself, which is what tmux and a process are.
 	RuntimeIsolated bool
-	// SetupPending says the join has not finished, asked at every pass; nil is
-	// a Worker with nothing pending.
-	SetupPending func() bool
-	// RestartNeeded says the join finished (or the offered harnesses changed)
-	// after this daemon started: what it announces is stale until it restarts.
-	// nil is a daemon that never needs it.
-	RestartNeeded func() bool
 }
 
 // Doctor runs the checks. It remembers whether the disk was failing, which is
@@ -108,11 +102,6 @@ func New(o Options) *Doctor {
 	if o.Disk == nil {
 		o.Disk = sysinfo.DiskOf
 	}
-	if o.Applied == nil {
-		o.Applied = func(ctx context.Context, a harness.Adapter) ([]globalapply.Applied, error) {
-			return (&globalapply.Engine{Adapter: a, Host: o.Host, DataDir: o.DataDir}).Applied(ctx)
-		}
-	}
 	if o.Git == "" {
 		o.Git = "git"
 	}
@@ -122,25 +111,11 @@ func New(o Options) *Doctor {
 	return &Doctor{o: o}
 }
 
-// Check runs every check; what it returns is fit for a heartbeat (Clean). The Controller decides "version" and the heartbeat
-// itself says "controller": neither is here.
-func (d *Doctor) Check(ctx context.Context) []v1.ComponentHealth {
-	out := []v1.ComponentHealth{d.runtime(ctx), d.git(ctx), d.disk()}
+// Check runs every check; what it returns is fit for a terminal (Clean).
+func (d *Doctor) Check(ctx context.Context) []Component {
+	out := []Component{d.runtime(ctx), d.git(ctx), d.disk()}
 	for _, a := range d.o.Adapters {
 		out = append(out, d.harness(ctx, a)...)
-	}
-	switch {
-	case d.o.SetupPending != nil && d.o.SetupPending():
-		out = append(out, v1.ComponentHealth{
-			Name: SetupComponent, Status: v1.ComponentFail, Message: "join sin terminar",
-			Action: "cflk worker join --resume",
-		})
-	case d.o.RestartNeeded != nil && d.o.RestartNeeded():
-		out = append(out, v1.ComponentHealth{
-			Name: SetupComponent, Status: v1.ComponentFail,
-			Message: "join terminado: el daemon anuncia la configuración con la que arrancó",
-			Action:  "reinicia el daemon del Worker (cflk worker run o su servicio)",
-		})
 	}
 	for i := range out {
 		out[i] = CleanComponent(out[i])
@@ -148,52 +123,40 @@ func (d *Doctor) Check(ctx context.Context) []v1.ComponentHealth {
 	return out
 }
 
-// Health is the summary of components for a heartbeat: degraded if any fails.
-func Health(components []v1.ComponentHealth) v1.Health {
-	h := v1.Health{Status: v1.HealthOK, Components: components}
-	for _, c := range components {
-		if c.Status == v1.ComponentFail {
-			h.Status, h.Message = v1.HealthDegraded, Clean(c.Name+": "+c.Message)
-			break
-		}
-	}
-	return h
-}
-
 // Failing is the number of components that fail.
-func Failing(components []v1.ComponentHealth) int {
+func Failing(components []Component) int {
 	n := 0
 	for _, c := range components {
-		if c.Status == v1.ComponentFail {
+		if c.Status == ComponentFail {
 			n++
 		}
 	}
 	return n
 }
 
-func ok(name, msg string) v1.ComponentHealth {
-	return v1.ComponentHealth{Name: name, Status: v1.ComponentOK, Message: msg}
+func ok(name, msg string) Component {
+	return Component{Name: name, Status: ComponentOK, Message: msg}
 }
 
-func (d *Doctor) runtime(ctx context.Context) v1.ComponentHealth {
+func (d *Doctor) runtime(ctx context.Context) Component {
 	if err := d.o.Runtime(ctx); err != nil {
 		action := "revisa el runtime de sesiones en " + d.o.Worker
 		if d.o.RuntimeName == "tmux" {
 			action = "instala tmux 3.0 o posterior en " + d.o.Worker
 		}
-		return v1.ComponentHealth{
-			Name: "runtime", Status: v1.ComponentFail, Message: err.Error(),
+		return Component{
+			Name: "runtime", Status: ComponentFail, Message: err.Error(),
 			Action: action,
 		}
 	}
 	return ok("runtime", d.o.RuntimeName+" disponible")
 }
 
-func (d *Doctor) git(ctx context.Context) v1.ComponentHealth {
+func (d *Doctor) git(ctx context.Context) Component {
 	res, err := d.o.Host.Run(ctx, harness.Cmd{Argv: []string{d.o.Git, "--version"}})
 	if err != nil || res.ExitCode != 0 {
-		return v1.ComponentHealth{
-			Name: "git", Status: v1.ComponentFail, Message: "git no está disponible",
+		return Component{
+			Name: "git", Status: ComponentFail, Message: "git no está disponible",
 			Action: "instala git en " + d.o.Worker,
 		}
 	}
@@ -201,10 +164,10 @@ func (d *Doctor) git(ctx context.Context) v1.ComponentHealth {
 	return ok("git", version)
 }
 
-func (d *Doctor) disk() v1.ComponentHealth {
+func (d *Doctor) disk() Component {
 	disk, err := d.o.Disk(d.o.DataDir)
 	if err != nil {
-		return v1.ComponentHealth{Name: "disk", Status: v1.ComponentWarn, Message: "no se pudo medir el disco: " + err.Error()}
+		return Component{Name: "disk", Status: ComponentWarn, Message: "no se pudo medir el disco: " + err.Error()}
 	}
 	d.mu.Lock()
 	d.diskFailing = d.o.MinFree.Failing(disk.FreeBytes, disk.TotalBytes, d.diskFailing)
@@ -217,8 +180,8 @@ func (d *Doctor) disk() v1.ComponentHealth {
 	}
 	msg := fmt.Sprintf("%.0f%% libre (%s); mínimo %s", pct, humanBytes(disk.FreeBytes), d.o.MinFree)
 	if failing {
-		return v1.ComponentHealth{
-			Name: "disk", Status: v1.ComponentFail, Message: msg,
+		return Component{
+			Name: "disk", Status: ComponentFail, Message: msg,
 			Action: "libera espacio en " + d.o.Worker + " o baja --disk-min-free",
 		}
 	}
@@ -227,55 +190,52 @@ func (d *Doctor) disk() v1.ComponentHealth {
 
 // harness checks the harnesses this machine offers: one that is not installed
 // is not offered, and has nothing to report.
-func (d *Doctor) harness(ctx context.Context, a harness.Adapter) []v1.ComponentHealth {
+func (d *Doctor) harness(ctx context.Context, a harness.Adapter) []Component {
 	id := a.ID()
 	det, err := a.Detect(ctx, d.o.Host)
 	switch {
 	case err != nil:
-		return []v1.ComponentHealth{{
-			Name: "harness:" + id, Status: v1.ComponentFail, Message: "no se pudo detectar: " + err.Error(),
+		return []Component{{
+			Name: "harness:" + id, Status: ComponentFail, Message: "no se pudo detectar: " + err.Error(),
 			Action: "revisa la instalación de " + id + " en " + d.o.Worker,
 		}}
 	case !det.Installed:
 		return nil
 	}
-	out := []v1.ComponentHealth{d.config(ctx, a)}
+	out := []Component{d.config(ctx, a)}
 	if c, warn := d.isolation(a); warn {
 		out = append(out, c)
 	}
 	if _, isAuth := a.(globalAuth); isAuth {
 		out = append(out, d.auth(ctx, a))
 	}
-	if _, isInspector := a.(harness.GlobalInspector); isInspector {
-		out = append(out, d.workflow(ctx, a))
-	}
 	return out
 }
 
-func (d *Doctor) config(ctx context.Context, a harness.Adapter) v1.ComponentHealth {
+func (d *Doctor) config(ctx context.Context, a harness.Adapter) Component {
 	name := "harness:" + a.ID()
 	val, err := a.ValidateConfig(ctx, d.o.Host)
 	switch {
 	case errors.Is(err, harness.ErrUnsupported):
 	case err != nil:
-		return v1.ComponentHealth{
-			Name: name, Status: v1.ComponentFail, Message: "no se pudo validar la configuración: " + err.Error(),
+		return Component{
+			Name: name, Status: ComponentFail, Message: "no se pudo validar la configuración: " + err.Error(),
 			Action: "revisa la configuración de " + a.ID() + " en " + d.o.Worker,
 		}
 	case len(val.Issues) > 0:
 		// A harness with ConfigIsolation runs on the configuration materialised
 		// for each Run, never on the host's: a problem there is only a warning.
 		// Without it, a configuration that does not work takes no Runs.
-		status := v1.ComponentWarn
+		status := ComponentWarn
 		if val.Blocking() && !a.Capabilities().ConfigIsolation {
-			status = v1.ComponentFail
+			status = ComponentFail
 		}
 		issue := val.Issues[0]
 		msg := issue.Message
 		if issue.Component != "" {
 			msg = issue.Component + ": " + msg
 		}
-		return v1.ComponentHealth{
+		return Component{
 			Name: name, Status: status, Message: fmt.Sprintf("configuración con %d problema(s): %s", len(val.Issues), msg),
 			Action: "revisa la configuración de " + a.ID() + " en " + d.o.Worker,
 		}
@@ -286,7 +246,7 @@ func (d *Doctor) config(ctx context.Context, a harness.Adapter) v1.ComponentHeal
 // isolation warns of a harness that would run with its permission prompts
 // skipped directly on the host: because it launches that way on a runtime that
 // does not confine it, or because the host configuration it reads says so.
-func (d *Doctor) isolation(a harness.Adapter) (v1.ComponentHealth, bool) {
+func (d *Doctor) isolation(a harness.Adapter) (Component, bool) {
 	var reasons []string
 	if a.Capabilities().PreapprovedPermissions && !d.o.RuntimeIsolated {
 		reasons = append(reasons, a.ID()+" se ejecuta con permisos preaprobados directamente en el host (sin aislamiento)")
@@ -295,10 +255,10 @@ func (d *Doctor) isolation(a harness.Adapter) (v1.ComponentHealth, bool) {
 		reasons = append(reasons, a.ID()+" no aísla su configuración y la del host salta los permisos (bypass)")
 	}
 	if len(reasons) == 0 {
-		return v1.ComponentHealth{}, false
+		return Component{}, false
 	}
-	return v1.ComponentHealth{
-		Name: "isolation:" + a.ID(), Status: v1.ComponentWarn,
+	return Component{
+		Name: "isolation:" + a.ID(), Status: ComponentWarn,
 		Message: strings.Join(reasons, "; "),
 		Action:  "usa un Worker dedicado o un runtime aislado para " + a.ID() + " en " + d.o.Worker,
 	}, true
@@ -314,22 +274,10 @@ func (d *Doctor) hostConfigBypasses(a harness.Adapter) bool {
 }
 
 // auth says whether a login is there, never what it is.
-func (d *Doctor) auth(ctx context.Context, a harness.Adapter) v1.ComponentHealth {
+func (d *Doctor) auth(ctx context.Context, a harness.Adapter) Component {
 	name := "auth:" + a.ID()
-	var note string
-	if a.ID() == claude.ID {
-		var held, badFormat bool
-		held, badFormat, note = d.secretState(ctx, claude.OAuthTokenRef)
-		if held && badFormat {
-			return v1.ComponentHealth{
-				Name: name, Status: v1.ComponentWarn,
-				Message: "el " + claude.OAuthTokenRef + " guardado no parece un token" + note,
-				Action:  "vuelve a guardarlo con la línea que imprime `claude setup-token`: cflk worker secrets set " + claude.OAuthTokenRef + " en " + d.o.Worker,
-			}
-		}
-		if held || d.hasKeychainLogin(ctx) {
-			return ok(name, "login de Claude Code presente"+note)
-		}
+	if a.ID() == claude.ID && d.hasKeychainLogin(ctx) {
+		return ok(name, "login de Claude Code presente")
 	}
 	if auth, isAuth := a.(globalAuth); isAuth {
 		if _, err := os.Stat(auth.GlobalAuth(d.o.Host)); err == nil {
@@ -340,63 +288,10 @@ func (d *Doctor) auth(ctx context.Context, a harness.Adapter) v1.ComponentHealth
 	if login == "" {
 		login = "inicia sesión en " + a.ID()
 	}
-	return v1.ComponentHealth{
-		Name: name, Status: v1.ComponentFail, Message: "sin login de " + a.ID() + note,
+	return Component{
+		Name: name, Status: ComponentFail, Message: "sin login de " + a.ID(),
 		Action: login + " en " + d.o.Worker,
 	}
-}
-
-// secretState says whether this Worker holds ref with a value to use, and a
-// note for the message when its keyring entry is not as it should be. A broken
-// entry (its value gone from the keyring) is not a login; a locked keyring is
-// one that cannot be read now, not one that is gone. Only the entries of the
-// keyring cost a Check (or the state a daemon already has); no value leaves it.
-func (d *Doctor) secretState(ctx context.Context, ref string) (held, badFormat bool, note string) {
-	if d.o.Secrets == nil {
-		return false, false, ""
-	}
-	list, err := d.o.Secrets.List(ctx) // metadata only: no value is read
-	if err != nil {
-		return false, false, ""
-	}
-	i := slices.IndexFunc(list, func(m secrets.Metadata) bool { return m.Ref == ref })
-	if i < 0 {
-		return false, false, ""
-	}
-	// Only a secret stored with --force can say its format is wrong; absent is
-	// unknown.
-	bad := list[i].Format == secrets.FormatUnexpected
-	if list[i].Backend != secrets.BackendKeyring {
-		return true, bad, ""
-	}
-	state, known := d.keyringState(ctx, list[i])
-	if !known {
-		return true, bad, ""
-	}
-	switch state {
-	case secrets.StateBroken:
-		return false, false, fmt.Sprintf(" (el secret %q está roto: su valor ya no está en el llavero; vuelve a guardarlo con `cflk worker secrets set`)", ref)
-	case secrets.StateUnavailable:
-		return true, bad, fmt.Sprintf(" (el llavero no responde ahora: el secret %q puede estar bloqueado)", ref)
-	}
-	return true, bad, ""
-}
-
-// keyringState is how the keyring entry m stands, or false if it is not known.
-func (d *Doctor) keyringState(ctx context.Context, m secrets.Metadata) (secrets.State, bool) {
-	if d.o.SecretState != nil {
-		return d.o.SecretState(m)
-	}
-	statuses, err := d.o.Secrets.Check(ctx)
-	if err != nil {
-		return "", false
-	}
-	for _, st := range statuses {
-		if st.Ref == m.Ref {
-			return st.State, true
-		}
-	}
-	return "", false
 }
 
 // hasKeychainLogin asks the macOS Keychain whether the item exists. Without -w
@@ -409,51 +304,3 @@ func (d *Doctor) hasKeychainLogin(ctx context.Context) bool {
 	res, err := d.o.Host.Run(ctx, harness.Cmd{Argv: []string{"security", "find-generic-password", "-s", ClaudeKeychainItem}})
 	return err == nil && res.ExitCode == 0
 }
-
-func (d *Doctor) workflow(ctx context.Context, a harness.Adapter) v1.ComponentHealth {
-	name := "workflow:" + a.ID()
-	applied, err := d.o.Applied(ctx, a)
-	if err != nil {
-		return v1.ComponentHealth{Name: name, Status: v1.ComponentWarn, Message: "no se pudo comprobar lo aplicado: " + err.Error()}
-	}
-	var drifted, missing []string
-	managed := 0
-	for _, c := range applied {
-		if c.Ownership != harness.Managed {
-			continue
-		}
-		managed++
-		switch {
-		case c.Missing:
-			missing = append(missing, c.Name)
-		case c.Drift:
-			drifted = append(drifted, c.Name)
-		}
-	}
-	if len(drifted)+len(missing) > 0 {
-		return v1.ComponentHealth{
-			Name: name, Status: v1.ComponentWarn,
-			Message: describeDrift(drifted, missing),
-			Action:  "cflk workflow status --worker " + d.o.Worker,
-		}
-	}
-	if managed == 0 {
-		return ok(name, "ningún workflow aplicado")
-	}
-	return ok(name, fmt.Sprintf("%d componente(s) aplicados, sin cambios", managed))
-}
-
-func describeDrift(drifted, missing []string) string {
-	var parts []string
-	if len(drifted) > 0 {
-		parts = append(parts, "editados en el host: "+strings.Join(drifted, ", "))
-	}
-	if len(missing) > 0 {
-		parts = append(parts, "aplicados pero ausentes: "+strings.Join(missing, ", "))
-	}
-	return strings.Join(parts, "; ")
-}
-
-// Every is how often the daemon runs the checks: not every heartbeat, since
-// some of them start processes.
-const Every = time.Minute
