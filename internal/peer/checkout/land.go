@@ -155,6 +155,15 @@ func Create(ctx context.Context, dir, ref, commit, branch string) (Outcome, erro
 		}
 		return Unchanged, nil
 	}
+	// A branch that HEAD names without a commit is occupied: creating it would leave
+	// the checkout on it without the files.
+	checkedOut, err := r.checkedOut(ctx)
+	if err != nil {
+		return "", err
+	}
+	if checkedOut[branch] {
+		return "", fmt.Errorf("%w: %s is checked out", ErrBranchExists, branch)
+	}
 	if _, err := r.run(ctx, "update-ref", "-m", "cflk checkout", "refs/heads/"+branch, commit, ""); err != nil {
 		return "", err
 	}

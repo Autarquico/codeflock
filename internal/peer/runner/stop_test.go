@@ -281,3 +281,66 @@ func TestAFailedReverifySignalsNothing(t *testing.T) {
 		})
 	}
 }
+
+// A wrapper that exits between two looks is a wrapper that is gone, not an identity that
+// was lost: an empty group is stopped, survivors are killed.
+func TestAWrapperThatExitsBetweenTheLooksIsGone(t *testing.T) {
+	t.Run("at the check before the first signal, group empty", func(t *testing.T) {
+		w := newWrapperProcess(t, "sleep 300")
+		sg := &signals{}
+		var calls atomic.Int32
+		s := stopper(sg, time.Second, time.Second)
+		s.Verify = func(_ int, _ string) procident.Verdict {
+			if calls.Add(1) == 1 {
+				return procident.Same
+			}
+			_ = syscall.Kill(-w.t.PGID, syscall.SIGKILL)
+			<-w.ended
+			return procident.Gone
+		}
+		out, err := s.Stop(t.Context(), w.t)
+		if err != nil || out != runner.Stopped || len(sg.got()) != 0 {
+			t.Fatalf("outcome %v, %v, signals %v", out, err, sg.got())
+		}
+	})
+	t.Run("at the check before the first signal, survivors", func(t *testing.T) {
+		w := newWrapperProcess(t, "sleep 300 & wait")
+		waitFor(t, "the straggler", func() bool { return groupSize(w.t.PGID) == 2 })
+		sg := &signals{}
+		var calls atomic.Int32
+		s := stopper(sg, 10*time.Second, 5*time.Second)
+		s.Verify = func(_ int, _ string) procident.Verdict {
+			if calls.Add(1) == 1 {
+				return procident.Same
+			}
+			_ = syscall.Kill(w.t.PID, syscall.SIGKILL)
+			<-w.ended
+			return procident.Gone
+		}
+		out, err := s.Stop(t.Context(), w.t)
+		if err != nil || out != runner.Stopped || groupSize(w.t.PGID) != 0 {
+			t.Fatalf("outcome %v, %v, group %d", out, err, groupSize(w.t.PGID))
+		}
+		if got := sg.got(); len(got) == 0 || got[0] != syscall.SIGKILL {
+			t.Errorf("signals = %v: a wrapper that is gone is not asked", got)
+		}
+	})
+	t.Run("at the check before the kill", func(t *testing.T) {
+		w := newTrappingWrapperProcess(t, "trap '' TERM", "while :; do sleep 0.05; done")
+		sg := &signals{swallow: true}
+		s := stopper(sg, 30*time.Millisecond, 50*time.Millisecond)
+		s.Verify = func(pid int, start string) procident.Verdict {
+			if len(sg.got()) > 0 {
+				return procident.Gone
+			}
+			return procident.Verify(pid, start)
+		}
+		out, err := s.Stop(t.Context(), w.t)
+		if err != nil || out != runner.Survivors {
+			t.Fatalf("outcome %v, %v", out, err)
+		}
+		if got := sg.got(); len(got) != 2 || got[0] != syscall.SIGTERM || got[1] != syscall.SIGKILL {
+			t.Errorf("signals = %v", got)
+		}
+	})
+}

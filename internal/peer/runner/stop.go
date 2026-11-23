@@ -106,8 +106,8 @@ func (s Stopper) inspect(t Target) (State, procident.Verdict) {
 		return Alive, v
 	case procident.Gone:
 		// The wrapper is gone, so a group with this ID is what it left behind.
-		if empty, err := procident.GroupEmpty(t.PGID); err != nil || !empty {
-			return Alive, v // not knowing is not empty
+		if !s.groupEmpty(t) {
+			return Alive, v
 		}
 		return Empty, v
 	case procident.Rebooted, procident.Different:
@@ -156,14 +156,23 @@ func (s Stopper) Stop(ctx context.Context, t Target) (Outcome, error) {
 	}
 	var killedAt time.Time
 	if v == procident.Same {
-		if s.verdict(t) != procident.Same {
+		switch s.verdict(t) {
+		case procident.Same:
+			if err := s.signal(t.PGID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+				return Survivors, err
+			}
+		case procident.Gone:
+			// It exited since the first look: from here on it is a wrapper that is gone.
+			v = procident.Gone
+		default:
 			return NotVerified, nil
 		}
-		if err := s.signal(t.PGID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
-			return Survivors, err
-		}
-	} else {
+	}
+	if v != procident.Same {
 		// A wrapper that is gone with a group that is not: the survivors are ours to end.
+		if s.groupEmpty(t) {
+			return Stopped, nil
+		}
 		if s.kill(t) {
 			killedAt = time.Now()
 		}
@@ -194,10 +203,23 @@ func (s Stopper) Stop(ctx context.Context, t Target) (Outcome, error) {
 	}
 }
 
+// groupEmpty says that nothing of the group is left; not knowing is not empty.
+func (s Stopper) groupEmpty(t Target) bool {
+	empty, err := procident.GroupEmpty(t.PGID)
+	return err == nil && empty
+}
+
 // kill sends SIGKILL to the group, after checking again who leads it: a wrapper that
-// is something else now is not signalled. It says whether it signalled.
+// is something else now is not signalled, and a wrapper that is gone is only followed
+// into its group while the group has members. It says whether it signalled.
 func (s Stopper) kill(t Target) bool {
-	if v := s.verdict(t); v != procident.Same && v != procident.Gone {
+	switch s.verdict(t) {
+	case procident.Same:
+	case procident.Gone:
+		if s.groupEmpty(t) {
+			return false
+		}
+	default:
 		return false
 	}
 	_ = s.signal(t.PGID, syscall.SIGKILL)

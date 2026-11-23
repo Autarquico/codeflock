@@ -2,6 +2,7 @@ package checkout_test
 
 import (
 	"errors"
+	"path/filepath"
 	"testing"
 
 	"github.com/Autarquico/codeflock/internal/peer/checkout"
@@ -67,5 +68,21 @@ func TestCreate_RefusesBranchNamesThatAreNotNewPlainBranches(t *testing.T) {
 		if branchExists(t, w.mac, "other") {
 			t.Fatalf("branch %q created the branch it expands to", name)
 		}
+	}
+}
+
+func TestCreate_NeverMakesABranchThatHeadNamesWithoutACommit(t *testing.T) {
+	w := newWorld(t)
+	commitFile(t, w.worker, "fix.go", "package fix\n", "the fix")
+	req := w.request()
+	unborn := filepath.Join(filepath.Dir(w.mac), "unborn")
+	gitIn(t, filepath.Dir(w.mac), "init", "-q", "-b", own, unborn)
+	gitIn(t, unborn, "fetch", "-q", w.worker, "+HEAD:"+jobRef)
+
+	if _, err := checkout.Create(t.Context(), unborn, req.Ref, req.Commit, own); !errors.Is(err, checkout.ErrBranchExists) {
+		t.Fatalf("create onto the unborn branch of HEAD: %v", err)
+	}
+	if branchExists(t, unborn, own) {
+		t.Fatal("the branch HEAD names was created under the checkout")
 	}
 }
