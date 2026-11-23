@@ -37,6 +37,11 @@ type Options struct {
 	// Notify is the program Codex runs at the end of a turn (`cflk internal notify`).
 	Wrapper func(launchDir string) error
 	Notify  func(marker, sessionFile, payload string) error
+	// PeerServe answers one request of another peer read from stdin on stdout
+	// (`cflk peer`), and PeerAttach enters a Job's terminal for it
+	// (`cflk peer attach`). Both are what `ssh <peer> cflk peer` runs.
+	PeerServe  func(ctx context.Context, stdin io.Reader, stdout io.Writer) error
+	PeerAttach func(ctx context.Context, id string, readOnly bool) error
 }
 
 // ExecuteWith runs the cf command tree with the composition of the binary and

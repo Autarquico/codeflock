@@ -96,10 +96,23 @@ func repoWithOrigin(t *testing.T) string {
 // agent is the fake harness running steps.
 func peerWith(t *testing.T, agent func(script string) fakeAgent, steps ...fakeharness.Step) *localJobs {
 	t.Helper()
+	return peerNamed(t, "", agent, steps...)
+}
+
+// peerNamed is peerWith for a peer with a name, a state root and a mirror
+// directory of its own, so that several can coexist in one test. An empty name
+// is the machine's own, on the root of CFLK_STATE_DIR.
+func peerNamed(t *testing.T, name string, agent func(script string) fakeAgent, steps ...fakeharness.Step) *localJobs {
+	t.Helper()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux is not installed")
 	}
-	t.Setenv(stateDirVar, t.TempDir())
+	over := overrides{name: name, share: t.TempDir()}
+	if name == "" {
+		t.Setenv(stateDirVar, t.TempDir())
+	} else {
+		over.root = t.TempDir()
+	}
 	script := filepath.Join(t.TempDir(), "script.json")
 	raw, err := json.Marshal(fakeharness.Script{Steps: steps})
 	if err != nil {
@@ -108,10 +121,9 @@ func peerWith(t *testing.T, agent func(script string) fakeAgent, steps ...fakeha
 	if err := os.WriteFile(script, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	l := newLocalJobs("/cflk", overrides{
-		agents:  map[string]runner.Agent{claude.ID: agent(script)},
-		wrapper: func(dir string) []string { return []string{"/usr/bin/env", asWrapper + "=" + dir, os.Args[0]} },
-	})
+	over.agents = map[string]runner.Agent{claude.ID: agent(script)}
+	over.wrapper = func(dir string) []string { return []string{"/usr/bin/env", asWrapper + "=" + dir, os.Args[0]} }
+	l := newLocalJobs("/cflk", over)
 	p, err := l.open()
 	if err != nil {
 		t.Fatal(err)

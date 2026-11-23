@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -42,18 +44,24 @@ type localJobs struct {
 
 // peer is this machine as a place where Jobs run.
 type peer struct {
-	name   string
-	store  *job.Store
-	tmux   *tmux.Runtime
-	runner *runner.Runner
+	name string
+	// mirrors holds the bare repositories other peers push the code of their
+	// delegations to: <share>/repos/<sha-repo>.git.
+	mirrors string
+	store   *job.Store
+	tmux    *tmux.Runtime
+	runner  *runner.Runner
 }
 
 // overrides are what a test of this package swaps in the composition: the
 // agents that stand for the harnesses, and the program a launch runs as its
 // wrapper. They are not flags of the binary.
 type overrides struct {
-	agents  map[string]runner.Agent
-	wrapper func(launchDir string) []string
+	// name, root and share place a peer apart from the machine's own: a test
+	// that runs two peers on one machine gives each its own.
+	name, root, share string
+	agents            map[string]runner.Agent
+	wrapper           func(launchDir string) []string
 }
 
 func newLocalJobs(exe string, over ...overrides) *localJobs {
@@ -74,11 +82,15 @@ func openPeer(exe string, over overrides) (*peer, error) {
 	if err != nil {
 		return nil, err
 	}
-	root := os.Getenv(stateDirVar)
+	root := cmp.Or(over.root, os.Getenv(stateDirVar))
 	if root == "" {
 		if root, err = job.DefaultRoot(); err != nil {
 			return nil, err
 		}
+	}
+	share, err := shareDir(home, over.share)
+	if err != nil {
+		return nil, err
 	}
 	host, err := localhost.New(localhost.Options{Home: home, Env: os.Environ()})
 	if err != nil {
@@ -97,9 +109,10 @@ func openPeer(exe string, over overrides) (*peer, error) {
 		wrapper = func(dir string) []string { return []string{exe, "internal", "wrapper", dir} }
 	}
 	return &peer{
-		name:  config.MachineName(hostname, "this machine"),
-		store: store,
-		tmux:  rt,
+		name:    cmp.Or(over.name, config.MachineName(hostname, "this machine")),
+		mirrors: filepath.Join(share, "repos"),
+		store:   store,
+		tmux:    rt,
 		runner: runner.New(runner.Config{
 			Store: store, Host: host, Tmux: rt,
 			Wrapper:   wrapper,
@@ -107,6 +120,17 @@ func openPeer(exe string, over overrides) (*peer, error) {
 			Agents:    over.agents,
 		}),
 	}, nil
+}
+
+// shareDirVar overrides where this peer keeps the mirrors (~/.local/share/cflk).
+const shareDirVar = "CFLK_SHARE_DIR"
+
+func shareDir(home, override string) (string, error) {
+	dir := cmp.Or(override, os.Getenv(shareDirVar), filepath.Join(home, ".local", "share", "cflk"))
+	if !filepath.IsAbs(dir) {
+		return "", fmt.Errorf("%s must be an absolute path, got %q", shareDirVar, dir)
+	}
+	return dir, nil
 }
 
 // harnessIDs are the names a person gives a harness.
@@ -147,16 +171,39 @@ func (l *localJobs) Run(ctx context.Context, req cli.RunRequest) (cli.JobView, e
 	if err != nil {
 		return cli.JobView{}, invalid("%q is not a commit of this repository: %v", base, err)
 	}
-	j, err := p.store.Create(job.Job{Repo: repo, Harness: harnessID, Gen: 1, Peer: p.name, State: job.Stopped, CreatedBy: p.name})
+	return p.start(ctx, startSpec{repoDir: top, repo: repo, harness: harnessID, commit: commit, prompt: req.Prompt, createdBy: p.name})
+}
+
+// startSpec is a Job to create and launch from a commit of a repository on this
+// machine: the one the person is in, or the mirror a delegation was pushed to.
+type startSpec struct {
+	repoDir, repo, harness, commit, prompt, createdBy string
+	// id is the id another peer drew; empty draws one.
+	id string
+}
+
+// start creates the Job, its worktree at the commit and its first launch. When
+// nothing was started it leaves nothing behind.
+func (p *peer) start(ctx context.Context, sp startSpec) (cli.JobView, error) {
+	top := sp.repoDir
+	proto := job.Job{Repo: sp.repo, Harness: sp.harness, Gen: 1, Peer: p.name, State: job.Stopped, CreatedBy: sp.createdBy}
+	create := p.store.Create
+	if sp.id != "" {
+		create = func(j job.Job) (job.Job, error) { return p.store.CreateAs(sp.id, j) }
+	}
+	j, err := create(proto)
+	if errors.Is(err, job.ErrExists) {
+		return cli.JobView{}, domain.NewError(domain.CodeInvalidRequest, fmt.Sprintf("job %s already exists on %s", sp.id, p.name), nil)
+	}
 	if err != nil {
 		return cli.JobView{}, err
 	}
 	worktree := p.store.WorktreeDir(j.ID, j.Gen)
-	if _, err := git(ctx, top, "worktree", "add", "-b", j.Branch, worktree, commit); err != nil {
+	if _, err := git(ctx, top, "worktree", "add", "-b", j.Branch, worktree, sp.commit); err != nil {
 		_ = os.RemoveAll(p.store.Dir(j.ID))
 		return cli.JobView{}, err
 	}
-	launched, err := p.runner.Launch(ctx, j.ID, req.Prompt)
+	launched, err := p.runner.Launch(ctx, j.ID, sp.prompt)
 	if err != nil {
 		// A launch is recorded before anything starts, so a Job that is stopped
 		// with none recorded ran nothing and was told nothing. That is decided
@@ -262,17 +309,7 @@ func (l *localJobs) Send(ctx context.Context, id, text string) (cli.JobView, err
 }
 
 func (l *localJobs) Attach(ctx context.Context, id string, readOnly bool) error {
-	j, p, err := l.read(ctx, id)
-	if err != nil {
-		return err
-	}
-	if err := hasTerminal(j, domain.CodeRunNotAttachable); err != nil {
-		return err
-	}
-	if err := p.tmux.Check(ctx); err != nil {
-		return err
-	}
-	attach, err := p.tmux.AttachCommand(p.tmux.HandleFor(j.Launch.Session), readOnly)
+	j, attach, err := l.attachCommand(ctx, id, readOnly)
 	if err != nil {
 		return err
 	}
@@ -288,6 +325,35 @@ func (l *localJobs) Attach(ctx context.Context, id string, readOnly bool) error 
 	}
 	fmt.Fprintf(os.Stderr, "opened a %s window attached to %s\n", launcher.Label(), j.ID)
 	return nil
+}
+
+// AttachHere is Attach for a process whose terminal is the person's, as under
+// `ssh -t <peer> cflk peer attach`: it never opens a window.
+func (l *localJobs) AttachHere(ctx context.Context, id string, readOnly bool) error {
+	_, attach, err := l.attachCommand(ctx, id, readOnly)
+	if err != nil {
+		return err
+	}
+	if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
+		return domain.NewError(domain.CodeRunNotAttachable, "attach needs a terminal (ssh -t)", nil)
+	}
+	return runAttached(ctx, attach)
+}
+
+// attachCommand is the tmux client that enters the terminal of a running Job.
+func (l *localJobs) attachCommand(ctx context.Context, id string, readOnly bool) (job.Job, cfruntime.Command, error) {
+	j, p, err := l.read(ctx, id)
+	if err != nil {
+		return j, cfruntime.Command{}, err
+	}
+	if err := hasTerminal(j, domain.CodeRunNotAttachable); err != nil {
+		return j, cfruntime.Command{}, err
+	}
+	if err := p.tmux.Check(ctx); err != nil {
+		return j, cfruntime.Command{}, err
+	}
+	attach, err := p.tmux.AttachCommand(p.tmux.HandleFor(j.Launch.Session), readOnly)
+	return j, attach, err
 }
 
 // read is the Job as it is now: reconciled under its lock.

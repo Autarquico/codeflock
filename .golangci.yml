@@ -121,6 +121,7 @@ linters:
             - github.com/Autarquico/codeflock/internal/worker/procident
             - github.com/Autarquico/codeflock/internal/worker/execwrap
             - github.com/Autarquico/codeflock/internal/worker/gitops
+            - github.com/pelletier/go-toml/v2
         # support is the leaf utilities: it never reaches up to the Worker or an
         # adapter, which inject what they know.
         support:

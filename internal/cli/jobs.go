@@ -166,7 +166,7 @@ func newJobCmds(opts Options) []*cobra.Command {
 		})
 	attach.Flags().Bool("read-only", false, "what you type does not reach the agent")
 
-	return []*cobra.Command{run, ps, show, stop, resume, screen, send, attach, newInternalCmd(opts)}
+	return []*cobra.Command{run, ps, show, stop, resume, screen, send, attach, newPeerCmd(opts), newInternalCmd(opts)}
 }
 
 func printJobs(w io.Writer, jobs []JobView) error {
@@ -237,4 +237,33 @@ func newInternalCmd(opts Options) *cobra.Command {
 	internal := &cobra.Command{Use: "internal", Hidden: true}
 	internal.AddCommand(wrapper, notify)
 	return internal
+}
+
+// newPeerCmd is `cflk peer`, what other peers run over ssh. It has a fixed argv:
+// the operation and its data come in on stdin (a header and a body, see
+// internal/peer/wire), so nothing a person or a peer wrote is ever an argument
+// of a shell. It is not for people.
+func newPeerCmd(opts Options) *cobra.Command {
+	attach := &cobra.Command{
+		Use: "attach [--read-only] JOB", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if opts.PeerAttach == nil {
+				return domain.NewError(domain.CodeNotImplemented, "this build does not serve peers", nil)
+			}
+			readOnly, _ := cmd.Flags().GetBool("read-only")
+			return opts.PeerAttach(cmd.Context(), args[0], readOnly)
+		},
+	}
+	attach.Flags().Bool("read-only", false, "what the person types does not reach the agent")
+	peer := &cobra.Command{
+		Use: "peer", Hidden: true, Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if opts.PeerServe == nil {
+				return domain.NewError(domain.CodeNotImplemented, "this build does not serve peers", nil)
+			}
+			return opts.PeerServe(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout())
+		},
+	}
+	peer.AddCommand(attach)
+	return peer
 }
