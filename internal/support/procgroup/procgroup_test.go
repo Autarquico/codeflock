@@ -139,7 +139,8 @@ func TestALeaderThatCannotBeLookedAtIsStillKilledWithItsGroup(t *testing.T) {
 	}
 	cancel()
 	select {
-	case <-done:
+	case err := <-done:
+		t.Logf("Wait returned: %v", err)
 	case <-time.After(10 * time.Second):
 		t.Fatal("Wait did not return after the cancel")
 	}
@@ -185,7 +186,8 @@ func TestACancelDuringTheDrainKillsTheGroup(t *testing.T) {
 	time.Sleep(50 * time.Millisecond) // Wait is draining now
 	cancel()
 	select {
-	case <-done:
+	case err := <-done:
+		t.Logf("Wait returned: %v", err)
 	case <-time.After(10 * time.Second):
 		t.Fatal("Wait did not return after the cancel")
 	}
