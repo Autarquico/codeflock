@@ -36,7 +36,13 @@ const (
 
 // Defaults of a Stopper.
 const (
-	DefaultGrace    = 30 * time.Second
+	// WrapperGrace is how long the wrapper itself gives the harness after a SIGTERM before
+	// it escalates; it writes the exit record and the final output when that is over.
+	WrapperGrace = 30 * time.Second
+	// GraceMargin is what the stopper waits beyond WrapperGrace, so that a wrapper that
+	// cooperates is always done before the stopper kills the group under it.
+	GraceMargin     = 10 * time.Second
+	DefaultGrace    = WrapperGrace + GraceMargin
 	DefaultKillWait = 10 * time.Second
 	DefaultPoll     = 100 * time.Millisecond
 )
@@ -50,6 +56,9 @@ type Stopper struct {
 	Poll time.Duration
 	// Signal sends sig to the group; nil is kill(-pgid, sig).
 	Signal func(pgid int, sig syscall.Signal) error
+	// Verify says who the process with the wrapper's pid is; nil is procident.Verify.
+	// A test seam: the identity is re-checked right before every signal.
+	Verify func(pid int, start string) procident.Verdict
 }
 
 func (s Stopper) grace() time.Duration    { return orDefault(s.Grace, DefaultGrace) }
@@ -76,6 +85,9 @@ func (s Stopper) signal(pgid int, sig syscall.Signal) error {
 func (s Stopper) verdict(t Target) procident.Verdict {
 	if t.PGID != t.PID {
 		return procident.Unknown
+	}
+	if s.Verify != nil {
+		return s.Verify(t.PID, t.Start)
 	}
 	return procident.Verify(t.PID, t.Start)
 }
@@ -122,6 +134,14 @@ const (
 // Stop asks the group of t to end with SIGTERM, kills it if it is still there after
 // Grace, and gives up KillWait after that. It returns Stopped only when the group is
 // empty, never on the wrapper's exit alone.
+//
+// Grace defaults to longer than the grace of the wrapper (WrapperGrace), which manages
+// its own escalation and writes its exit record; the stopper's kill is the backstop.
+//
+// The identity of the wrapper is verified again immediately before every signal, and a
+// group whose leader fails that check is not signalled. A window remains between that
+// check and the kill(2) in which the pid could be reused; closing it needs a pidfd
+// (Linux), which is out of scope here.
 func (s Stopper) Stop(ctx context.Context, t Target) (Outcome, error) {
 	if t.PID <= 1 || t.PGID <= 1 {
 		return NotVerified, fmt.Errorf("runner: refusing to stop pid %d, pgid %d: not a process this peer launched", t.PID, t.PGID)
@@ -135,6 +155,9 @@ func (s Stopper) Stop(ctx context.Context, t Target) (Outcome, error) {
 	}
 	var killedAt time.Time
 	if v == procident.Same {
+		if s.verdict(t) != procident.Same {
+			return NotVerified, nil
+		}
 		if err := s.signal(t.PGID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
 			return Survivors, err
 		}

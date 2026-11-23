@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -242,5 +243,41 @@ func TestAPidThatIsNotAProcessOfOursIsRefused(t *testing.T) {
 		if err == nil || out != runner.NotVerified || len(sg.got()) != 0 {
 			t.Errorf("pid %d: outcome %v, err %v, signals %v", id, out, err, sg.got())
 		}
+	}
+}
+
+// The stopper never kills under a wrapper that is still inside its own grace.
+func TestTheDefaultGraceOutlastsTheGraceOfTheWrapper(t *testing.T) {
+	if runner.DefaultGrace < runner.WrapperGrace+runner.GraceMargin || runner.GraceMargin <= 0 {
+		t.Fatalf("default grace %v, wrapper grace %v, margin %v", runner.DefaultGrace, runner.WrapperGrace, runner.GraceMargin)
+	}
+}
+
+// The identity is checked again right before each signal: a leader that is not the wrapper
+// by then gets nothing, neither the first signal nor the escalation.
+func TestAFailedReverifySignalsNothing(t *testing.T) {
+	for name, failFrom := range map[string]int32{"before the first signal": 2, "before the kill": 3} {
+		t.Run(name, func(t *testing.T) {
+			w := newTrappingWrapperProcess(t, "trap '' TERM", "while :; do sleep 0.05; done")
+			sg := &signals{swallow: true}
+			var calls atomic.Int32
+			s := stopper(sg, 30*time.Millisecond, 50*time.Millisecond)
+			s.Verify = func(pid int, start string) procident.Verdict {
+				if calls.Add(1) >= failFrom {
+					return procident.Different
+				}
+				return procident.Verify(pid, start)
+			}
+			if _, err := s.Stop(t.Context(), w.t); err != nil {
+				t.Fatal(err)
+			}
+			want := 0
+			if failFrom == 3 {
+				want = 1 // only the TERM
+			}
+			if got := sg.got(); len(got) != want || (want == 1 && got[0] != syscall.SIGTERM) {
+				t.Errorf("signals = %v", got)
+			}
+		})
 	}
 }

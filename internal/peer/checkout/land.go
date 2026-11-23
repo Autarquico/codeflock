@@ -85,7 +85,8 @@ func Land(ctx context.Context, req Request) (Result, error) {
 		return Result{}, err
 	}
 	l := &lander{req: req, repo: repo{dir: root}, worktreeAsked: req.Worktree != ""}
-	if _, err := l.destination(); err != nil {
+	dest, err := l.destination()
+	if err != nil {
 		return Result{}, err
 	}
 	if err := l.repo.expect(ctx, req.Ref, req.Commit); err != nil {
@@ -104,7 +105,6 @@ func Land(ctx context.Context, req Request) (Result, error) {
 	res := Result{Commit: req.Commit, Branch: pl.branch, Outcome: pl.outcome, Dir: l.repo.dir}
 	switch {
 	case l.worktreeAsked:
-		dest, _ := l.destination()
 		if _, err := l.repo.run(ctx, "worktree", "add", "--quiet", "--", dest, pl.branch); err != nil {
 			return res, err
 		}

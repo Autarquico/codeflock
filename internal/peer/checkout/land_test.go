@@ -252,6 +252,7 @@ func TestLand_ABranchAtTheCommitThatAnotherWorktreeHasCheckedOutIsSkipped(t *tes
 // by the fast-forward: git would remove it without a word.
 var collisions = map[string]struct{ ignore, local, remote string }{
 	"the work versions the ignored file itself":                      {".env\n", ".env", ".env"},
+	"the ignored file's name begins with a space":                    {"\\ .env\n", " .env", " .env"},
 	"the work versions a file where the ignored one has a directory": {"cache/credentials\n", "cache/credentials", "cache"},
 	"the work versions a directory where the ignored one is a file":  {"cache\n", "cache", "cache/x"},
 }
@@ -297,5 +298,34 @@ func TestLand_AnIgnoredPathIsNotOverwrittenByTheSwitch(t *testing.T) {
 func TestLand_AnIgnoredPathIsNotOverwrittenByTheFastForward(t *testing.T) {
 	for name, c := range collisions {
 		t.Run(name, func(t *testing.T) { collide(t, true, c.ignore, c.local, c.remote) })
+	}
+}
+
+func TestLand_ABranchThatHeadNamesWithoutACommitIsOccupied(t *testing.T) {
+	w := newWorld(t)
+	commitFile(t, w.worker, "feature.go", "package x\n", "feature")
+	req := w.request()
+	unborn := filepath.Join(filepath.Dir(w.mac), "unborn")
+	gitIn(t, filepath.Dir(w.mac), "init", "-q", "-b", "cflk/job-aaaaaaaaaa", unborn)
+	gitIn(t, unborn, "fetch", "-q", w.worker, "+HEAD:"+jobRef)
+	req.Dir = unborn
+
+	res, err := checkout.Land(t.Context(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Branch != own+"@g1" || branchExists(t, unborn, own) {
+		t.Fatalf("branch %q: the branch HEAD names was created under the checkout", res.Branch)
+	}
+}
+
+func TestLand_WorktreeLandsAtTheDestinationOfThePreflight(t *testing.T) {
+	w := newWorld(t)
+	commitFile(t, w.worker, "feature.go", "package x\n", "feature")
+	req := w.request()
+	req.Worktree = filepath.Join(filepath.Dir(w.mac), "wt")
+	res, err := checkout.Land(t.Context(), req)
+	if err != nil || res.Dir != req.Worktree || !res.Worktree {
+		t.Fatalf("result %+v, err %v", res, err)
 	}
 }

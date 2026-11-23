@@ -61,7 +61,9 @@ func (l *lander) place(ctx context.Context, commit string) (placement, error) {
 		}
 		oid, exists := l.repo.branchOID(ctx, name)
 		switch {
-		case !exists && isSource:
+		case !exists && (isSource || checkedOut[name]):
+			// A branch that HEAD names without a commit is occupied: creating it
+			// would leave the checkout on it without the files.
 			continue
 		case !exists:
 			return placement{branch: name, outcome: Created}, nil

@@ -25,6 +25,13 @@ func gitArgs(dir string, args []string) []string {
 }
 
 func (r repo) run(ctx context.Context, args ...string) (string, error) {
+	out, err := r.output(ctx, args...)
+	return strings.TrimSpace(out), err
+}
+
+// output is what git wrote, as it wrote it: NUL-delimited output must not be trimmed, a
+// pathname may begin with a space.
+func (r repo) output(ctx context.Context, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", gitArgs(r.dir, args)...) //nolint:gosec // fixed git subcommands; user values follow "--" or are validated refs
 	cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
 	var stdout, stderr bytes.Buffer
@@ -38,7 +45,7 @@ func (r repo) run(ctx context.Context, args ...string) (string, error) {
 		}
 		return "", err
 	}
-	return strings.TrimSpace(stdout.String()), nil
+	return stdout.String(), nil
 }
 
 // ok runs git for its exit status alone: true for 0, false for 1, an error otherwise.
@@ -124,11 +131,11 @@ func (r repo) expect(ctx context.Context, ref, commit string) error {
 // commit would overwrite without a word: those commit versions as a file, those under a
 // path commit versions as a file, and those that are a directory path of commit.
 func (r repo) ignoredClash(ctx context.Context, commit string) ([]string, error) {
-	ignored, err := r.run(ctx, "ls-files", "-z", "--others", "--ignored", "--exclude-standard")
+	ignored, err := r.output(ctx, "ls-files", "-z", "--others", "--ignored", "--exclude-standard")
 	if err != nil || ignored == "" {
 		return nil, err
 	}
-	versioned, err := r.run(ctx, "ls-tree", "-r", "-z", "--name-only", commit)
+	versioned, err := r.output(ctx, "ls-tree", "-r", "-z", "--name-only", commit)
 	if err != nil {
 		return nil, err
 	}
