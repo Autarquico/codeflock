@@ -163,6 +163,37 @@ func TestLand_DivergentLocalBranchSendsTheWorkToTheAlternative(t *testing.T) {
 	}
 }
 
+func TestLand_WhenEveryBranchHasCommitsOfItsOwnNothingChanges(t *testing.T) {
+	w := newWorld(t)
+	for _, b := range []string{own, own + "@g1"} {
+		gitIn(t, w.mac, "switch", "-q", "-c", b)
+		commitFile(t, w.mac, b+".txt", "mine\n", "my commit on "+b)
+	}
+	gitIn(t, w.mac, "switch", "-q", "main")
+	commitFile(t, w.worker, "feature.go", "package x\n", "feature")
+	req := w.request()
+	head, tips := w.head(), [2]string{w.tip(own), w.tip(own + "@g1")}
+
+	_, err := checkout.Land(t.Context(), req)
+	if !errors.Is(err, checkout.ErrBranchDiverged) {
+		t.Fatalf("err = %v", err)
+	}
+	if w.head() != head || w.branch() != "main" || w.tip(own) != tips[0] || w.tip(own+"@g1") != tips[1] {
+		t.Errorf("something changed: head %s branch %s", w.head(), w.branch())
+	}
+}
+
+func TestLand_WhenTheOnlyCandidateIsMissingThereIsNoBranch(t *testing.T) {
+	w := newWorld(t)
+	commitFile(t, w.worker, "feature.go", "package x\n", "feature")
+	req := w.request()
+	req.Source, req.Branch, req.Alt = "no-such-branch", "", ""
+
+	if _, err := checkout.Land(t.Context(), req); !errors.Is(err, checkout.ErrNoBranch) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestLand_NotAGitRepository(t *testing.T) {
 	w := newWorld(t)
 	req := w.request()

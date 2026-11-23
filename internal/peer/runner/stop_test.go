@@ -16,25 +16,6 @@ import (
 	"github.com/Autarquico/codeflock/internal/worker/procident"
 )
 
-// realProber is the machine's own view, as the peer wires it.
-type realProber struct{}
-
-func (realProber) Verify(pid int, start string) runner.Verdict {
-	switch procident.Verify(pid, start) {
-	case procident.Same:
-		return runner.Same
-	case procident.Gone:
-		return runner.Gone
-	case procident.Different:
-		return runner.Different
-	case procident.Rebooted:
-		return runner.Rebooted
-	}
-	return runner.Unknown
-}
-
-func (realProber) GroupEmpty(pgid int) (bool, error) { return procident.GroupEmpty(pgid) }
-
 type helper struct {
 	cmd   *exec.Cmd
 	ended chan struct{}
@@ -138,7 +119,7 @@ func (s *signals) got() []syscall.Signal {
 }
 
 func stopper(sg *signals, grace, killWait time.Duration) runner.Stopper {
-	return runner.Stopper{Prober: realProber{}, Grace: grace, KillWait: killWait, Poll: 5 * time.Millisecond, Signal: sg.send}
+	return runner.Stopper{Grace: grace, KillWait: killWait, Poll: 5 * time.Millisecond, Signal: sg.send}
 }
 
 func TestStopAsksTheWrapperGroupAndNobodyElse(t *testing.T) {
@@ -199,7 +180,7 @@ func TestAStopThatCannotVerifyTheWrapperSignalsNothing(t *testing.T) {
 	}
 }
 
-func TestAReusedPidOfARecordThatDoesNotLeadItsGroupSaysNothing(t *testing.T) {
+func TestARecordWhosePidDoesNotLeadItsGroupSignalsNothing(t *testing.T) {
 	w := newWrapperProcess(t, "sleep 60")
 	odd := w.t // even the right process: a record whose pgid is not its pid says nothing of a group
 	odd.PGID = odd.PID + 1
@@ -251,5 +232,15 @@ func TestAGroupThatSurvivesTheKillIsNotStopped(t *testing.T) {
 	out, err := stopper(sg, 50*time.Millisecond, 100*time.Millisecond).Stop(t.Context(), w.t)
 	if err != nil || out != runner.Survivors || !w.alive() {
 		t.Fatalf("outcome %v, %v, alive %v", out, err, w.alive())
+	}
+}
+
+func TestAPidThatIsNotAProcessOfOursIsRefused(t *testing.T) {
+	for _, id := range []int{-1, 0, 1} {
+		sg := &signals{}
+		out, err := stopper(sg, time.Second, time.Second).Stop(t.Context(), runner.Target{PID: id, PGID: id, Start: "x"})
+		if err == nil || out != runner.NotVerified || len(sg.got()) != 0 {
+			t.Errorf("pid %d: outcome %v, err %v, signals %v", id, out, err, sg.got())
+		}
 	}
 }

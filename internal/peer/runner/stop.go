@@ -7,42 +7,18 @@ package runner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"syscall"
 	"time"
-)
 
-// Verdict is what comparing a recorded identity with the process that has the pid now says.
-type Verdict int
-
-// Verdicts, with the meaning of the identity check of the wrapper.
-const (
-	// Gone: no process has the pid.
-	Gone Verdict = iota
-	// Same: a process has the pid and started when it was recorded.
-	Same
-	// Different: the pid was reused, so the process recorded is gone.
-	Different
-	// Unknown: the platform or the record would not say; nothing may be signalled.
-	Unknown
-	// Rebooted: the record is of another boot: nothing of the group is left, and nothing
-	// may be signalled on its account.
-	Rebooted
+	"github.com/Autarquico/codeflock/internal/worker/procident"
 )
 
 // Target is the identity the wrapper recorded of itself.
 type Target struct {
 	PID, PGID int
-	// Start is the opaque token of when the wrapper started (worker/procident).
+	// Start is the opaque token of when the wrapper started (procident).
 	Start string
-}
-
-// Prober looks at the machine. It is given to the Stopper so that this package does
-// not know how a platform tells when a process started.
-type Prober interface {
-	// Verify compares the process that has pid now with the token recorded for it.
-	Verify(pid int, start string) Verdict
-	// GroupEmpty says whether the group has no live process left.
-	GroupEmpty(pgid int) (bool, error)
 }
 
 // State is what is left of the group of a launch.
@@ -67,7 +43,6 @@ const (
 
 // Stopper ends the group of a launch.
 type Stopper struct {
-	Prober Prober
 	// Grace is how long the group has to end after the first signal before it is
 	// killed, and KillWait how long it has after that. Zero is the default.
 	Grace, KillWait time.Duration
@@ -98,11 +73,11 @@ func (s Stopper) signal(pgid int, sig syscall.Signal) error {
 // verdict is what the process with the wrapper's pid is now. The wrapper leads its own
 // group (pgid == pid), which is what lets a verdict about the pid say something about
 // the group; a record where that is not so says nothing.
-func (s Stopper) verdict(t Target) Verdict {
+func (s Stopper) verdict(t Target) procident.Verdict {
 	if t.PGID != t.PID {
-		return Unknown
+		return procident.Unknown
 	}
-	return s.Prober.Verify(t.PID, t.Start)
+	return procident.Verify(t.PID, t.Start)
 }
 
 // Inspect says what is left of the group of t without signalling anything.
@@ -111,18 +86,18 @@ func (s Stopper) Inspect(t Target) State {
 	return st
 }
 
-func (s Stopper) inspect(t Target) (State, Verdict) {
+func (s Stopper) inspect(t Target) (State, procident.Verdict) {
 	v := s.verdict(t)
 	switch v {
-	case Same:
+	case procident.Same:
 		return Alive, v
-	case Gone:
+	case procident.Gone:
 		// The wrapper is gone, so a group with this ID is what it left behind.
-		if empty, err := s.Prober.GroupEmpty(t.PGID); err != nil || !empty {
+		if empty, err := procident.GroupEmpty(t.PGID); err != nil || !empty {
 			return Alive, v // not knowing is not empty
 		}
 		return Empty, v
-	case Rebooted, Different:
+	case procident.Rebooted, procident.Different:
 		// A pid is not reused while a group with its ID has members, and whatever has
 		// this ID now is not ours.
 		return Empty, v
@@ -148,6 +123,9 @@ const (
 // Grace, and gives up KillWait after that. It returns Stopped only when the group is
 // empty, never on the wrapper's exit alone.
 func (s Stopper) Stop(ctx context.Context, t Target) (Outcome, error) {
+	if t.PID <= 1 || t.PGID <= 1 {
+		return NotVerified, fmt.Errorf("runner: refusing to stop pid %d, pgid %d: not a process this peer launched", t.PID, t.PGID)
+	}
 	st, v := s.inspect(t)
 	switch st {
 	case Unverified:
@@ -156,7 +134,7 @@ func (s Stopper) Stop(ctx context.Context, t Target) (Outcome, error) {
 		return Stopped, nil
 	}
 	var killedAt time.Time
-	if v == Same {
+	if v == procident.Same {
 		if err := s.signal(t.PGID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
 			return Survivors, err
 		}
@@ -183,7 +161,7 @@ func (s Stopper) Stop(ctx context.Context, t Target) (Outcome, error) {
 			return Stopped, nil
 		}
 		elapsed := time.Since(start)
-		if killedAt.IsZero() && (elapsed >= s.grace() || v != Same) && s.kill(t) {
+		if killedAt.IsZero() && (elapsed >= s.grace() || v != procident.Same) && s.kill(t) {
 			killedAt = time.Now()
 		}
 		if !killedAt.IsZero() && time.Since(killedAt) >= s.killWait() {
@@ -195,7 +173,7 @@ func (s Stopper) Stop(ctx context.Context, t Target) (Outcome, error) {
 // kill sends SIGKILL to the group, after checking again who leads it: a wrapper that
 // is something else now is not signalled. It says whether it signalled.
 func (s Stopper) kill(t Target) bool {
-	if v := s.verdict(t); v != Same && v != Gone {
+	if v := s.verdict(t); v != procident.Same && v != procident.Gone {
 		return false
 	}
 	_ = s.signal(t.PGID, syscall.SIGKILL)

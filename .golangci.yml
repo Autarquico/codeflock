@@ -108,7 +108,7 @@ linters:
             - github.com/Autarquico/codeflock/internal/support/svcunit
             - github.com/Autarquico/codeflock/internal/support/atomicfile
         # A peer runs Jobs on its own: the harness adapters, the leaf utilities and the
-        # domain are all it needs. Nothing of the Worker. (Tests may stand real survivors up, e.g. worker/procident.)
+        # domain are all it needs, plus the Worker's survivors it shares: procident, execwrap, gitops.
         peer:
           list-mode: strict
           files: ["**/internal/peer/**", "!$test"]
@@ -118,6 +118,9 @@ linters:
             - github.com/Autarquico/codeflock/internal/adapters
             - github.com/Autarquico/codeflock/internal/support
             - github.com/Autarquico/codeflock/internal/domain
+            - github.com/Autarquico/codeflock/internal/worker/procident
+            - github.com/Autarquico/codeflock/internal/worker/execwrap
+            - github.com/Autarquico/codeflock/internal/worker/gitops
         # support is the leaf utilities: it never reaches up to the Worker or an
         # adapter, which inject what they know.
         support:

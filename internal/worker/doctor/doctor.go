@@ -182,7 +182,7 @@ func (d *Doctor) disk() Component {
 	if failing {
 		return Component{
 			Name: "disk", Status: ComponentFail, Message: msg,
-			Action: "libera espacio en " + d.o.Worker + " o baja --disk-min-free",
+			Action: "libera espacio en " + d.o.Worker + "",
 		}
 	}
 	return ok("disk", msg)

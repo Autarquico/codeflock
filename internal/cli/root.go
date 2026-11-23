@@ -29,37 +29,26 @@ const (
 // Options are what the binary composes into the CLI that the CLI cannot reach
 // itself (ADR 0001): only cmd/cflk may know the adapters.
 type Options struct {
-	// Doctor replaces the checks of `cflk doctor`; nil is the checks of this machine.
+	// Doctor replaces the checks of `cflk doctor`; nil answers CF_NOT_IMPLEMENTED.
 	Doctor func(context.Context) ([]doctor.Component, error)
 }
 
-// Execute runs the cf command tree, plus any extra top-level commands the
-// binary composes in (the daemon commands, ADR 0001), and returns the exit code.
-func Execute(extra ...*cobra.Command) int { return ExecuteWith(Options{}, extra...) }
-
-// ExecuteWith is Execute with the composition of the binary.
-func ExecuteWith(opts Options, extra ...*cobra.Command) int {
+// ExecuteWith runs the cf command tree with the composition of the binary and
+// returns the exit code.
+func ExecuteWith(opts Options) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	return RunContextWith(ctx, opts, os.Args[1:], os.Stdin, os.Stdout, os.Stderr, extra...)
+	return RunContextWith(ctx, opts, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 }
 
-// Run is Execute over explicit streams.
-func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, extra ...*cobra.Command) int {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-	return RunContext(ctx, args, stdin, stdout, stderr, extra...)
+// Run is ExecuteWith over explicit streams.
+func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	return RunContextWith(context.Background(), Options{}, args, stdin, stdout, stderr)
 }
 
-// RunContext is Run under a context the caller ends: commands that run until
-// interrupted stop when ctx does, whatever the process gets.
-func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, extra ...*cobra.Command) int {
-	return RunContextWith(ctx, Options{}, args, stdin, stdout, stderr, extra...)
-}
-
-// RunContextWith is RunContext with the composition of the binary.
-func RunContextWith(ctx context.Context, opts Options, args []string, stdin io.Reader, stdout, stderr io.Writer, extra ...*cobra.Command) int {
-	root := CommandTree(opts, extra...)
+// RunContextWith is Run under a context the caller ends, with the composition of the binary.
+func RunContextWith(ctx context.Context, opts Options, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	root := newRootCmd(opts)
 	root.SetArgs(args)
 	root.SetIn(stdin)
 	root.SetOut(stdout)
@@ -74,15 +63,6 @@ func RunContextWith(ctx context.Context, opts Options, args []string, stdin io.R
 		return report(stdout, stderr, err, jsonRequested(root, args), debug)
 	}
 	return 0
-}
-
-// CommandTree builds a fresh cf command tree. Nothing is shared between two
-// trees, so a caller that runs a command from one cannot leak flag or context
-// state into the next. The parity test of the action registry walks it.
-func CommandTree(opts Options, extra ...*cobra.Command) *cobra.Command {
-	root := newRootCmd(opts)
-	addCommands(root, extra)
-	return root
 }
 
 // jsonRequested also looks at the raw arguments: a usage error can stop flag
@@ -182,20 +162,6 @@ func newRootCmd(opts Options) *cobra.Command {
 	flags.Bool(flagDebug, false, "show the details of an error")
 	root.AddCommand(newVersionCmd(), newDoctorCmd(opts))
 	return root
-}
-
-// addCommands composes commands from other packages into root. One that has
-// the name of a command root already has (`worker`) contributes its
-// subcommands to it instead of replacing it.
-func addCommands(root *cobra.Command, extra []*cobra.Command) {
-	for _, cmd := range extra {
-		i := slices.IndexFunc(root.Commands(), func(existing *cobra.Command) bool { return existing.Name() == cmd.Name() })
-		if i < 0 {
-			root.AddCommand(cmd)
-			continue
-		}
-		root.Commands()[i].AddCommand(cmd.Commands()...)
-	}
 }
 
 // reportUsageAsInvalidRequest makes a wrong flag or argument count a

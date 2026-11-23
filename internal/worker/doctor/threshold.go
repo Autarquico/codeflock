@@ -38,7 +38,7 @@ var sizeUnits = []struct {
 // ParseThreshold reads "20%" or a size such as "50GiB" (units are powers of 1024).
 func ParseThreshold(text string) (Threshold, error) {
 	bad := domain.NewError(domain.CodeInvalidRequest,
-		fmt.Sprintf("--disk-min-free must be a percentage such as 20%% or a size such as 50GiB, got %q", text), nil)
+		fmt.Sprintf("disk_min_free must be a percentage such as 20%% or a size such as 50GiB, got %q", text), nil)
 	text = strings.TrimSpace(text)
 	if digits, ok := strings.CutSuffix(text, "%"); ok {
 		p, err := strconv.ParseFloat(digits, 64)
