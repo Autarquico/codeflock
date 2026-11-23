@@ -23,7 +23,7 @@ import (
 // Timings the wrapper uses, all on its clock.
 const (
 	// GateTimeout is how long the wrapper waits for the Runtime to wire the terminal.
-	GateTimeout  = 30 * time.Second
+	GateTimeout = 30 * time.Second
 	// DefaultGrace is how long the wrapper gives the harness after a SIGTERM before it escalates.
 	DefaultGrace = 30 * time.Second
 	// defaultDrainWait is how long the kill path lets the copies drain what the
