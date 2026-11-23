@@ -9,7 +9,6 @@ import (
 
 	"github.com/Autarquico/codeflock/internal/peer/runner"
 	"github.com/Autarquico/codeflock/internal/testutil/fakeharness"
-	"github.com/Autarquico/codeflock/internal/worker/execwrap"
 )
 
 // asWrapper makes the test binary the wrapper of a launch, as `cflk` is in production.
@@ -29,7 +28,7 @@ func TestMain(m *testing.M) {
 	}
 	if dir := os.Getenv(asWrapper); dir != "" {
 		_ = os.Unsetenv(asWrapper)
-		if err := execwrap.Run(execwrap.Options{RunDir: dir, Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr}); err != nil {
+		if err := runner.RunWrapper(dir); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}

@@ -23,7 +23,6 @@ import (
 	"github.com/Autarquico/codeflock/internal/domain"
 	"github.com/Autarquico/codeflock/internal/peer/job"
 	"github.com/Autarquico/codeflock/internal/peer/runner"
-	"github.com/Autarquico/codeflock/internal/worker/execwrap"
 )
 
 // stateDirVar overrides where this peer keeps its Jobs (~/.local/state/cflk).
@@ -340,5 +339,5 @@ func windowArgv(c cfruntime.Command) []string {
 // runWrapper is `cflk internal wrapper`: execwrap on a launch directory, in the
 // terminal of the launch.
 func runWrapper(dir string) error {
-	return execwrap.Run(execwrap.Options{RunDir: dir, Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr})
+	return runner.RunWrapper(dir)
 }

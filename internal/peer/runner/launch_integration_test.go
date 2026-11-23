@@ -41,6 +41,11 @@ type env struct {
 
 func newEnv(t *testing.T, steps ...fakeharness.Step) env {
 	t.Helper()
+	return newEnvWith(t, func(script string) runner.Agent { return fakeAgent{script: script} }, steps...)
+}
+
+func newEnvWith(t *testing.T, agent func(script string) runner.Agent, steps ...fakeharness.Step) env {
+	t.Helper()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux is not installed")
 	}
@@ -76,7 +81,7 @@ func newEnv(t *testing.T, steps ...fakeharness.Step) env {
 	r := runner.New(runner.Config{
 		Store: store, Tmux: rt,
 		Wrapper: func(dir string) []string { return []string{"/usr/bin/env", asWrapper + "=" + dir, os.Args[0]} },
-		Agents:  map[string]runner.Agent{"fake": fakeAgent{script: script}},
+		Agents:  map[string]runner.Agent{"fake": agent(script)},
 		Stopper: runner.Stopper{Grace: 2 * time.Second, KillWait: 2 * time.Second, Poll: 20 * time.Millisecond},
 	})
 	t.Cleanup(func() { _ = r.Stop(context.WithoutCancel(t.Context()), j.ID) })
@@ -181,5 +186,41 @@ func TestLaunchThatDoesNotStartLeavesTheJobAlone(t *testing.T) {
 	j, _ := e.store.Get(e.id)
 	if j.State != job.Stopped || j.Launch != nil {
 		t.Errorf("job changed: %+v", j)
+	}
+}
+
+// envDumpAgent runs a shell that writes its own environment to a file.
+type envDumpAgent struct{ dump string }
+
+func (a envDumpAgent) Prepare(context.Context, runner.Input) (runner.Plan, error) {
+	return runner.Plan{Argv: []string{"/bin/sh", "-c", "env > " + a.dump}, SessionID: "fake-session"}, nil
+}
+
+func (envDumpAgent) Discover(context.Context, runner.Input, time.Time) ([]string, error) {
+	return nil, nil
+}
+
+func TestHarnessStartsWithoutTheSessionMarkersOfTheCaller(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_CHILD_SESSION", "1")
+	t.Setenv("CODEX_THREAD_ID", "thread")
+	t.Setenv("CLAUDE_CONFIG_DIR", "/keep/me")
+	dump := filepath.Join(t.TempDir(), "env")
+	e := newEnvWith(t, func(string) runner.Agent { return envDumpAgent{dump: dump} })
+	if _, err := e.r.Launch(t.Context(), e.id, "x"); err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	eventually(t, "the harness to dump its environment", func() bool {
+		b, err := os.ReadFile(dump) //nolint:gosec // a file of the test
+		got = string(b)
+		return err == nil && strings.Contains(got, "PATH=")
+	})
+	for _, marker := range []string{"CLAUDE_CODE_CHILD_SESSION=", "CODEX_THREAD_ID="} {
+		if strings.Contains(got, marker) {
+			t.Errorf("harness environment has %s", marker)
+		}
+	}
+	if !strings.Contains(got, "CLAUDE_CONFIG_DIR=/keep/me") {
+		t.Error("harness environment lost CLAUDE_CONFIG_DIR")
 	}
 }

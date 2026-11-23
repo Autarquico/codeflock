@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -111,6 +112,14 @@ func TestRealClaudeWaitsAfterATurnAndSendClearsIt(t *testing.T) {
 		t.Fatal("no session id")
 	}
 	exerciseTurns(t, r, id)
+	if screen, _ := r.Screen(t.Context(), id); strings.Contains(string(screen), "Transcript saving is off") {
+		t.Errorf("Claude does not save its transcript:\n%s", screen)
+	}
+	if got, err := r.Reconcile(t.Context(), id); err != nil || got.SessionID == "" {
+		t.Fatalf("no session id after the turn: %+v, %v", got, err)
+	} else if m, _ := filepath.Glob(filepath.Join(os.Getenv("HOME"), ".claude", "projects", "*", got.SessionID+".jsonl")); len(m) == 0 {
+		t.Errorf("no transcript of session %s under ~/.claude/projects", got.SessionID)
+	}
 }
 
 func TestRealCodexWaitsAfterATurnAndSendClearsIt(t *testing.T) {
