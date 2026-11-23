@@ -191,7 +191,7 @@ e imprime `--- PASS: TestScenario_*`).
 | Puertas de la release | `ReleaseGates_*` (`gates_test.sh`: `require-checks.sh` y `tag-in-main.sh`) | `gates` y `sign-publish` (paso «tag must point into main») de `release.yml`; `installer` ejecuta los tests |
 | Conjunto publicado | `PublishedSet_*` (`published_test.sh`: `check.sh` y `verify-release.sh`) | `sign-publish` de `release.yml` (`check.sh`, `verify-release.sh`); `installer` ejecuta los tests |
 | Fórmula derivada | `FormulaDerivada_valid`, `_validWithoutExplicitVersion`, `_invalidSignature`, `_tamperedChecksums`, `_suffixedVersion`, `_suffixedRequestedVersion`, `_missingPlatform`, `_duplicatedPlatform`, `_invalidDigest`, `_headerVersionMismatch` (`brew_test.sh`) | `installer` |
-| Sitio desde la release | `TestScenario_SitioDesdeLaRelease` (nombre de los jobs): tests unitarios de `site/scripts`, build, comandos de instalación (sin publicar en PRs, con el tag en la release), goldens y axe (serious/critical) sobre la landing y una página de docs | `site` de `site.yml` (en PRs) y `build` de `pages.yml` (en la release) |
+| Sitio desde la release | `TestScenario_SitioDesdeLaRelease` (nombre de los jobs): tests unitarios de `site/scripts`, build, comandos de instalación (sin publicar en PRs, con el tag en la release), axe (serious/critical) sobre la landing y una página de docs | `site` de `site.yml` (en PRs) y `build` de `pages.yml` (en la release) |
 
 Lo que no se ha ejercitado con una release real: la firma con la clave del owner, el environment `release` y el
 despliegue de Pages. La cadena completa solo se ha probado con una clave efímera de tests.
