@@ -92,24 +92,34 @@ var resumable = []job.State{job.Stopped, job.Lost, job.Failed}
 // generation. A Job without a session names one (Claude) or has it discovered
 // (Codex); one with a session resumes it, and prompt may then be empty. The Job
 // must be in a state that may become running (stopped, failed or lost). It returns
-// the Job with its new launch, running. If the agent does not start, nothing of the
-// Job changes and nothing is left running.
+// the Job with its new launch, running.
+//
+// The launch is written to the Job, running, before anything starts, so that
+// whatever the wrapper starts is always referenced by job.json. If the agent does
+// not start and its group is verified gone, the Job is as it was. If it cannot be
+// verified gone, the Job is left stopping with the launch recorded, and the error
+// says so: `stop` ends it.
 func (r *Runner) Launch(ctx context.Context, id, prompt string) (job.Job, error) {
 	var out job.Job
-	err := r.cfg.Store.WithLock(id, func(j *job.Job) error {
+	err := r.cfg.Store.WithLockSave(id, func(j *job.Job, save func() error) error {
 		if !slices.Contains(resumable, j.State) {
 			return fmt.Errorf("job %s is %s, it cannot be launched: only a stopped, lost or failed Job is: %w", j.ID, j.State, job.ErrInvalidTransition)
-		}
-		if err := j.Transition(job.Running); err != nil {
-			return err
 		}
 		agent, ok := r.agents[j.Harness]
 		if !ok {
 			return fmt.Errorf("runner: job %s: unknown harness %q", j.ID, j.Harness)
 		}
+		before := *j
 		l := job.NewLaunch(j.ID)
+		if err := j.Transition(job.Running); err != nil {
+			return err
+		}
+		j.Launch = &l
+		if err := save(); err != nil {
+			return err
+		}
 		in := Input{
-			Job:       *j,
+			Job:       before,
 			Worktree:  r.cfg.Store.WorktreeDir(j.ID, j.Gen),
 			LaunchDir: r.cfg.Store.LaunchDir(j.ID, l.ID),
 			Waiting:   r.cfg.Store.WaitingPath(j.ID, l.ID),
@@ -120,13 +130,39 @@ func (r *Runner) Launch(ctx context.Context, id, prompt string) (job.Job, error)
 		in.SessionFile = filepath.Join(in.LaunchDir, SessionFile)
 		session, err := r.start(ctx, agent, in, l)
 		if err != nil {
-			return err
+			return r.failLaunch(j, before, in, save, err)
 		}
-		j.SessionID, j.Launch = session, &l
+		j.SessionID = session
 		out = *j
 		return nil
 	})
 	return out, err
+}
+
+// failLaunch is what becomes of a Job whose launch did not come to be: the Job
+// as it was if the launch left nothing running, stopping with the launch recorded
+// (and the session it ran, if known) if that cannot be verified.
+func (r *Runner) failLaunch(j *job.Job, before job.Job, in Input, save func() error, cause error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*DefaultGrace)
+	defer cancel()
+	left := r.endLaunch(ctx, in.LaunchDir, j.Launch.Session)
+	if left == nil {
+		*j = before
+		if err := save(); err != nil {
+			return errors.Join(cause, err)
+		}
+		return cause
+	}
+	if raw, err := os.ReadFile(in.SessionFile); err == nil && j.SessionID == "" { //nolint:gosec // a file of the launch
+		j.SessionID = string(raw)
+	}
+	if err := j.Transition(job.Stopping); err != nil {
+		return errors.Join(cause, left, err)
+	}
+	if err := save(); err != nil {
+		return errors.Join(cause, left, err)
+	}
+	return fmt.Errorf("%w; its agent may still run (%w), so job %s is stopping: stop it before launching again", cause, left, j.ID)
 }
 
 func (r *Runner) start(ctx context.Context, agent Agent, in Input, l job.Launch) (string, error) {
@@ -154,16 +190,10 @@ func (r *Runner) start(ctx context.Context, agent Agent, in Input, l job.Launch)
 		Name: l.Session, Dir: in.Worktree, Command: r.cfg.Wrapper(in.LaunchDir),
 		Capture: filepath.Join(in.LaunchDir, execwrap.OutputLog), Ready: ready,
 	}
-	handle, err := r.cfg.Tmux.Start(ctx, spec)
-	if err != nil {
+	if _, err := r.cfg.Tmux.Start(ctx, spec); err != nil {
 		return "", fmt.Errorf("runner: starting the session of the launch: %w", err)
 	}
-	session, err := r.settle(ctx, agent, in, l, plan.SessionID)
-	if err != nil {
-		r.abort(in.LaunchDir, handle)
-		return "", err
-	}
-	return session, nil
+	return r.settle(ctx, agent, in, l, plan.SessionID)
 }
 
 // settle waits for the harness to have started and, if its session is not known,
@@ -207,16 +237,6 @@ func (r *Runner) settle(ctx context.Context, agent Agent, in Input, l job.Launch
 		return "", err
 	}
 	return session, markTurnsEndedBefore(in.Waiting, in.SessionFile, session)
-}
-
-// abort ends a launch that did not come to be.
-func (r *Runner) abort(launchDir string, h cfruntime.Handle) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*DefaultGrace)
-	defer cancel()
-	if t, ok := targetOf(launchDir); ok {
-		_, _ = r.cfg.Stopper.Stop(ctx, t)
-	}
-	_ = r.cfg.Tmux.Stop(ctx, h)
 }
 
 func writeSession(path, id string) error {

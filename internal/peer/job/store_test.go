@@ -151,3 +151,49 @@ func TestDefaultRoot(t *testing.T) {
 		t.Fatalf("DefaultRoot = %q, %v", root, err)
 	}
 }
+
+func TestWithLockSaveKeepsWhatWasSavedWhenFnFailsLater(t *testing.T) {
+	s := newTestStore(t)
+	j, err := s.Create(sample())
+	if err != nil {
+		t.Fatal(err)
+	}
+	boom := errors.New("boom")
+	err = s.WithLockSave(j.ID, func(j *Job, save func() error) error {
+		j.State = Waiting
+		if err := save(); err != nil {
+			return err
+		}
+		j.State = Done // not saved: fn fails
+		return boom
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v", err)
+	}
+	if got, _ := s.Get(j.ID); got.State != Waiting {
+		t.Errorf("state = %s, want the saved waiting", got.State)
+	}
+}
+
+func TestWithLockSaveWritesBackWhatFnRestoredAfterSaving(t *testing.T) {
+	s := newTestStore(t)
+	j, err := s.Create(sample())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = s.WithLockSave(j.ID, func(j *Job, save func() error) error {
+		before := *j
+		j.State = Waiting
+		if err := save(); err != nil {
+			return err
+		}
+		*j = before // back to what it was: the disk must follow
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Get(j.ID); got.State != Running {
+		t.Errorf("state = %s, want running", got.State)
+	}
+}

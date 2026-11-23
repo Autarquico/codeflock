@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/Autarquico/codeflock/internal/adapters/harness/claude"
 	"github.com/Autarquico/codeflock/internal/adapters/harness/codex"
 	"github.com/Autarquico/codeflock/internal/adapters/harness/localhost"
@@ -156,6 +158,11 @@ func (l *localJobs) Run(ctx context.Context, req cli.RunRequest) (cli.JobView, e
 	}
 	launched, err := p.runner.Launch(ctx, j.ID, req.Prompt)
 	if err != nil {
+		if left, getErr := p.store.Get(j.ID); getErr != nil || left.State != job.Stopped || left.Launch != nil {
+			// The launch is recorded: its agent may still run, and the Job and
+			// its worktree are what `cflk stop` needs to end it.
+			return cli.JobView{}, fmt.Errorf("%w (job %s is kept)", err, j.ID)
+		}
 		// Nothing runs and nothing was said to the agent: leave no Job behind.
 		bg := context.WithoutCancel(ctx)
 		_, _ = git(bg, top, "worktree", "remove", "--force", worktree)
@@ -330,9 +337,11 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 	return strings.TrimSpace(out.String()), nil
 }
 
+// isTerminal says whether f is a terminal: it answers the window-size request
+// only a terminal does, which /dev/null, a character device, does not.
 func isTerminal(f *os.File) bool {
-	info, err := f.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
+	_, err := unix.IoctlGetWinsize(int(f.Fd()), unix.TIOCGWINSZ) //nolint:gosec // a descriptor fits an int
+	return err == nil
 }
 
 // runAttached runs the tmux client on this terminal until the person leaves it.

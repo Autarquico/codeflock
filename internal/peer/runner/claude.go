@@ -37,12 +37,37 @@ func (a claudeAgent) Prepare(ctx context.Context, in Input) (Plan, error) {
 		return Plan{}, err
 	}
 	run := interactive(in)
-	run.ConfigDir = filepath.Join(a.host.Home(), claude.ConfigDirName)
+	configDir := claudeConfigDir(a.host)
+	run.ConfigDir = configDir
 	l, err := adapter.StartSession(ctx, a.host, run, id)
 	if err != nil {
 		return Plan{}, err
 	}
-	return Plan{Argv: withFlags(l.Argv, "--settings", settings), SessionID: id}, nil
+	return Plan{
+		Argv:      withFlags(l.Argv, "--settings", settings),
+		Env:       harnessEnv(a.host, claudeEnv(a.host)...),
+		SessionID: id,
+	}, nil
+}
+
+// claudeEnv is CLAUDE_CONFIG_DIR as the caller has it, if it has it: set, even to
+// ~/.claude, Claude Code looks for its global state inside it and not in
+// ~/.claude.json, so a caller without it must not be given one.
+func claudeEnv(host harness.Host) []string {
+	if dir := host.Getenv(claude.ConfigHomeEnv); dir != "" {
+		return []string{claude.ConfigHomeEnv + "=" + dir}
+	}
+	return nil
+}
+
+// claudeConfigDir is where Claude Code keeps its sessions for this host:
+// CLAUDE_CONFIG_DIR, or ~/.claude. Planning looks there, and the harness is told
+// to use it, so both always agree.
+func claudeConfigDir(host harness.Host) string {
+	if env := host.Getenv(claude.ConfigHomeEnv); env != "" {
+		return env
+	}
+	return filepath.Join(host.Home(), claude.ConfigDirName)
 }
 
 // Discover is never needed: the session of a Claude launch is named at the start.

@@ -127,6 +127,14 @@ func (s *Store) List() ([]Job, error) {
 // succeeded and changed the Job, writes it back before releasing the lock.
 // Every check and change of a Job belongs inside one WithLock.
 func (s *Store) WithLock(id string, fn func(*Job) error) error {
+	return s.WithLockSave(id, func(j *Job, _ func() error) error { return fn(j) })
+}
+
+// WithLockSave is WithLock for a change that must reach the disk before it is
+// finished: fn may call save to write the Job as it is now, while still holding
+// the lock (a launch records itself before it starts anything). What fn leaves
+// unsaved is written when it succeeds; when it fails, the disk keeps the last save.
+func (s *Store) WithLockSave(id string, fn func(j *Job, save func() error) error) error {
 	if !ValidID(id) {
 		return fmt.Errorf("job: invalid id %q", id)
 	}
@@ -146,19 +154,28 @@ func (s *Store) WithLock(id string, fn func(*Job) error) error {
 	if err != nil {
 		return err
 	}
-	before, err := json.Marshal(j)
+	onDisk, err := json.Marshal(j)
 	if err != nil {
 		return fmt.Errorf("job: encoding %s: %w", id, err)
 	}
-	if err := fn(&j); err != nil {
-		return err
-	}
-	if after, err := json.Marshal(j); err != nil {
-		return fmt.Errorf("job: encoding %s: %w", id, err)
-	} else if string(after) == string(before) {
+	save := func() error {
+		now, err := json.Marshal(j)
+		if err != nil {
+			return fmt.Errorf("job: encoding %s: %w", id, err)
+		}
+		if string(now) == string(onDisk) {
+			return nil
+		}
+		if err := s.write(j); err != nil {
+			return err
+		}
+		onDisk = now
 		return nil
 	}
-	return s.write(j)
+	if err := fn(&j, save); err != nil {
+		return err
+	}
+	return save()
 }
 
 func (s *Store) read(id string) (Job, error) {

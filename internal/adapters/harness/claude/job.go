@@ -9,6 +9,7 @@ import (
 
 	"github.com/Autarquico/codeflock/internal/adapters/harness"
 	"github.com/Autarquico/codeflock/internal/support/atomicfile"
+	"github.com/Autarquico/codeflock/internal/support/flock"
 )
 
 // StartSession builds the interactive process of a Job whose session the caller
@@ -33,7 +34,8 @@ func (a Adapter) StartSession(_ context.Context, host harness.Host, run harness.
 	return l, nil
 }
 
-// TrustFolder marks the worktree as trusted in ~/.claude.json, so that the first
+// TrustFolder marks the worktree as trusted in ~/.claude.json (or in the .claude.json
+// of CLAUDE_CONFIG_DIR when the host sets it), so that the first
 // start there does not stop at "Is this a project you trust?". Only that project's
 // entry is set; the rest of the file is kept. Claude Code keys the trust by the
 // real path of the folder.
@@ -59,15 +61,42 @@ func (Adapter) UntrustFolder(host harness.Host, worktree string) error {
 	})
 }
 
+// stateFilePath is where Claude Code keeps its global state for this host: inside
+// CLAUDE_CONFIG_DIR when the host sets it, ~/.claude.json otherwise.
+func stateFilePath(host harness.Host) string {
+	if dir := host.Getenv(ConfigHomeEnv); dir != "" {
+		return filepath.Join(dir, StateFile)
+	}
+	return filepath.Join(host.Home(), StateFile)
+}
+
+// stateLockPath is the lock every cflk write of ~/.claude.json holds, whichever Job
+// or state root it works for: they share the file, so they share the lock.
+func stateLockPath(host harness.Host) string {
+	return filepath.Join(host.Home(), ".local", "state", "cflk", "claude-json.lock")
+}
+
 // editProject applies change to the projects of ~/.claude.json under the key of the
 // worktree, keeping the rest of the file, and writes it back atomically if change
-// says it changed something.
+// says it changed something. The read-modify-write is serialized with the other
+// cflk processes by a lock and reads the file after taking it. Claude Code itself
+// writes the file without that lock: a change of its own landing between our read
+// and our rename can still be lost (residual, narrow window).
 func editProject(host harness.Host, worktree string, change func(projects object, key string) bool) error {
 	resolved, err := trustedPath(worktree)
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(host.Home(), StateFile)
+	lock := stateLockPath(host)
+	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
+		return fmt.Errorf("claude-code: trusting the folder: %w", err)
+	}
+	release, err := flock.Lock(lock)
+	if err != nil {
+		return fmt.Errorf("claude-code: trusting the folder: %w", err)
+	}
+	defer release()
+	path := stateFilePath(host)
 	state := object{}
 	raw, err := os.ReadFile(path) //nolint:gosec // the state file of the host
 	switch {

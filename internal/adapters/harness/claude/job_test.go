@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
 
 	"github.com/Autarquico/codeflock/internal/adapters/harness"
@@ -112,5 +113,53 @@ func TestUntrustFolderWithoutStateDoesNotCreateIt(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, claude.StateFile)); err == nil {
 		t.Error("untrusting created the state file")
+	}
+}
+
+func TestConcurrentTrustsKeepEveryEntry(t *testing.T) {
+	h, home := jobHost(t)
+	const n = 24
+	var wg sync.WaitGroup
+	paths := make([]string, n)
+	for i := range paths {
+		paths[i] = t.TempDir()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := (claude.Adapter{}).TrustFolder(h, paths[i]); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	raw, _ := os.ReadFile(filepath.Join(home, claude.StateFile)) //nolint:gosec // a file of the test
+	var got struct {
+		Projects map[string]map[string]any `json:"projects"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range paths {
+		resolved, _ := filepath.EvalSymlinks(p)
+		if got.Projects[resolved]["hasTrustDialogAccepted"] != true {
+			t.Errorf("the trust of %s was lost", resolved)
+		}
+	}
+}
+
+func TestTrustFolderWritesTheStateOfCLAUDE_CONFIG_DIRWhenTheHostSetsIt(t *testing.T) {
+	home, cfg := t.TempDir(), t.TempDir()
+	h, err := localhost.New(localhost.Options{Home: home, Env: []string{claude.ConfigHomeEnv + "=" + cfg}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (claude.Adapter{}).TrustFolder(h, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg, claude.StateFile)); err != nil {
+		t.Errorf("no state in the config dir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, claude.StateFile)); err == nil {
+		t.Error("~/.claude.json was written although the host sets CLAUDE_CONFIG_DIR")
 	}
 }

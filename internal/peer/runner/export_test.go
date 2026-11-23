@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"testing"
@@ -38,4 +39,9 @@ func ReadHooks(t *testing.T, path string) map[string][]string {
 		}
 	}
 	return out
+}
+
+// PrepareFor is what the Agent of a harness plans for in.
+func PrepareFor(r *Runner, harnessID string, in Input) (Plan, error) {
+	return r.agents[harnessID].Prepare(context.Background(), in)
 }

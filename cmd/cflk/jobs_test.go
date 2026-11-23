@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/Autarquico/codeflock/internal/cli"
@@ -50,5 +51,16 @@ func TestRunRefusesAnUnknownHarnessAndAnotherPeerBeforeTouchingAnything(t *testi
 	}
 	if jobs, _ := l.List(context.Background()); len(jobs) != 0 {
 		t.Errorf("a refused run left Jobs: %v", jobs)
+	}
+}
+
+func TestDevNullIsNotATerminal(t *testing.T) {
+	f, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if isTerminal(f) {
+		t.Error("/dev/null is a character device, not a terminal")
 	}
 }

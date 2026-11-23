@@ -61,3 +61,15 @@ func withFlags(argv []string, flags ...string) []string {
 	out = append(out, flags...)
 	return append(out, argv[1:]...)
 }
+
+// harnessEnv is the environment a launch gives its harness explicitly: HOME, PATH
+// and the extra variables (the configuration directory discovery and planning look
+// at). Without it the harness would inherit the tmux server's environment, which
+// is that of whoever started the server, not of the caller.
+func harnessEnv(host harness.Host, extra ...string) []string {
+	env := append([]string{"HOME=" + host.Home()}, extra...)
+	if path := host.Getenv("PATH"); path != "" {
+		env = append(env, "PATH="+path)
+	}
+	return env
+}

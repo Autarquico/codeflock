@@ -39,7 +39,8 @@ func (a codexAgent) Prepare(ctx context.Context, in Input) (Plan, error) {
 		return Plan{}, err
 	}
 	run := interactive(in)
-	run.ConfigDir = codex.ConfigDir(a.host)
+	configDir := codex.ConfigDir(a.host)
+	run.ConfigDir = configDir
 	l, err := codex.Adapter{}.StartSession(ctx, a.host, run, in.SessionID)
 	if err != nil {
 		return Plan{}, err
@@ -48,7 +49,7 @@ func (a codexAgent) Prepare(ctx context.Context, in Input) (Plan, error) {
 		"-c", "projects."+trust+`.trust_level="trusted"`,
 		"-c", "notify="+notify,
 	)
-	return Plan{Argv: argv, SessionID: in.SessionID}, nil
+	return Plan{Argv: argv, Env: harnessEnv(a.host, codex.ConfigHomeEnv+"="+configDir), SessionID: in.SessionID}, nil
 }
 
 func (a codexAgent) Discover(ctx context.Context, in Input, after time.Time) ([]string, error) {
