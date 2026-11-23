@@ -203,3 +203,13 @@ func FuzzReadResponse(f *testing.F) {
 		}
 	})
 }
+
+func TestAHelloAnswerWithABodyIsNotTheAnswerToHello(t *testing.T) {
+	req := Request{Op: OpHello}
+	if err := (Response{Hello: &Hello{Name: "mac-mini"}}).Expect(req); err != nil {
+		t.Fatalf("a plain hello: %v", err)
+	}
+	if err := (Response{Hello: &Hello{Name: "mac-mini"}, Size: 3}).Expect(req); err == nil {
+		t.Error("a hello with a body was accepted")
+	}
+}

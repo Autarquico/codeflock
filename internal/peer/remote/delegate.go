@@ -180,6 +180,9 @@ func delegationError(err error, id string, peer discovery.Peer, o outcome, retry
 }
 
 func runGit(ctx context.Context, dir string, argv []string) error {
+	// The protected configuration is off, and with it the caller's safe.directory:
+	// the repository was already trusted when it was resolved, so say so.
+	argv = append([]string{argv[0], "-c", "safe.directory=" + dir}, argv[1:]...)
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) //nolint:gosec // PushArgv: a fixed argv, no shell
 	cmd.Dir = dir
 	cmd.Env = pushEnv(os.Environ())

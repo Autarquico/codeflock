@@ -188,12 +188,41 @@ func TestARunForAnIdThatIsAlreadyThereAnswersThatJobAndOnlyForTheSameRepo(t *tes
 	}
 	runGit(t, repo, "push", "-q", other.Mirror, "HEAD:refs/cflk/"+id+"/g1")
 	run.Repo = "example.com/o/other"
-	if _, _, err := tp.call(t, run, "work"); codeOf(err) != domain.CodeInvalidRequest {
+	if _, _, err := tp.call(t, run, "work"); codeOf(err) != domain.CodeIdempotencyMismatch {
 		t.Errorf("the id of a Job of another repo: %v", err)
 	}
 }
 
-func TestARunThatFailsAndKeepsNothingTakesBackTheRefItWasPushedUnder(t *testing.T) {
+func TestARunForAnIdThatIsThereWithAnotherHarnessOrCommitIsAMismatch(t *testing.T) {
+	repo := repoWithOrigin(t)
+	tp := newTwoPeers(t, fakeharness.Step{WaitFile: &fakeharness.WaitFile{Path: filepath.Join(t.TempDir(), "never"), TimeoutMS: 120000}})
+	head := runGit(t, repo, "rev-parse", "HEAD")
+	mirror, _, err := tp.call(t, wire.Request{Op: wire.OpMirror, Repo: "example.com/o/r"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := job.NewID()
+	runGit(t, repo, "push", "-q", mirror.Mirror, "HEAD:refs/cflk/"+id+"/g1")
+	run := wire.Request{Op: wire.OpRun, Job: id, Harness: "claude", Repo: "example.com/o/r", Commit: head, CreatedBy: "laptop"}
+	if _, _, err := tp.call(t, run, "work"); err != nil {
+		t.Fatal(err)
+	}
+	other := run
+	other.Harness = "codex"
+	if _, _, err := tp.call(t, other, "work"); codeOf(err) != domain.CodeIdempotencyMismatch {
+		t.Errorf("another harness: %v", err)
+	}
+	runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "next")
+	next := runGit(t, repo, "rev-parse", "HEAD")
+	runGit(t, repo, "push", "-q", mirror.Mirror, "HEAD:refs/cflk/"+id+"/g1")
+	other = run
+	other.Commit = next
+	if _, _, err := tp.call(t, other, "work"); codeOf(err) != domain.CodeIdempotencyMismatch {
+		t.Errorf("a descendant commit: %v", err)
+	}
+}
+
+func TestARunThatFailsLeavesTheRefItWasPushedUnder(t *testing.T) {
 	repo := repoWithOrigin(t)
 	l := peerNamed(t, "mac-mini", func(string) fakeAgent { return fakeAgent{missing: true} })
 	tp := twoPeers{
@@ -204,8 +233,8 @@ func TestARunThatFailsAndKeepsNothingTakesBackTheRefItWasPushedUnder(t *testing.
 		t.Fatal("a launch whose agent does not start succeeded")
 	}
 	p, _ := l.open()
-	if refs := runGit(t, p.mirrorDir("example.com/o/r"), "for-each-ref", "refs/cflk/"); refs != "" {
-		t.Errorf("the refused delegation left its ref in the mirror:\n%s", refs)
+	if refs := runGit(t, p.mirrorDir("example.com/o/r"), "for-each-ref", "refs/cflk/"); refs == "" {
+		t.Error("the failed start took back a ref an overlapping retry may have pushed")
 	}
 }
 

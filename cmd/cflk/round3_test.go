@@ -66,7 +66,7 @@ func TestARunFindsTheJobAnEarlierStartLeftWithNoLaunchAndStartsItAgain(t *testin
 	tp := newTwoPeers(t, neverEnds)
 	run, id := pushedRun(t, tp, repo)
 	p, _ := tp.remote.open()
-	if _, err := p.store.CreateAs(id, job.Job{Repo: run.Repo, Harness: harnessIDs["claude"], Gen: 1, Peer: "mac-mini", State: job.Stopped}); err != nil {
+	if _, err := p.store.CreateAs(id, job.Job{Repo: run.Repo, Harness: harnessIDs["claude"], Gen: 1, Peer: "mac-mini", State: job.Stopped, History: []job.Entry{{Gen: 1, Peer: "mac-mini", Commit: run.Commit}}}); err != nil {
 		t.Fatal(err)
 	}
 	resp, _, err := remote.Call(t.Context(), tp.dialer, tp.peer, run, []byte("work"))
@@ -216,5 +216,25 @@ func TestAStopIsGivenTheWindowOfTheStopperAndTheOtherOrdersTheUsualOne(t *testin
 	f.orderTimeout = time.Second
 	if f.timeoutOf(wire.OpStop) != time.Second {
 		t.Errorf("a configured order timeout is not honoured: %v", f.timeoutOf(wire.OpStop))
+	}
+}
+
+func TestAWorktreeThatCouldNotRunLeavesABranchThatWasAlreadyThere(t *testing.T) {
+	repo := repoWithOrigin(t)
+	l := peerWith(t, fake, neverEnds)
+	p, err := l.open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := runGit(t, repo, "rev-parse", "HEAD")
+	j := job.Job{ID: "job-aaaaaaaaaa", Branch: "cflk/job-aaaaaaaaaa", Gen: 1}
+	runGit(t, repo, "branch", j.Branch, head)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := p.addWorktree(ctx, repo, j, head); err == nil {
+		t.Fatal("a cancelled context created a worktree")
+	}
+	if got := runGit(t, repo, "branch", "--list", j.Branch); got == "" {
+		t.Error("the branch that was already there was deleted")
 	}
 }

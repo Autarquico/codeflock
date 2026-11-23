@@ -484,3 +484,16 @@ func TestAnErrorFromAPeerCarriesNoControlCharactersAndAnOddCodeIsAProtocolError(
 		t.Errorf("a code of no shape: %v", err)
 	}
 }
+
+func TestPsOfAnotherPeerShowsNoLocalJobsWhenThatPeerOutlastsTheBudget(t *testing.T) {
+	tf := newTestFleet(t, []fakeharness.Step{neverEnds}, "hung")
+	tf.budget = 300 * time.Millisecond
+	tf.timeout = time.Minute
+	if _, err := tf.Run(t.Context(), cli.RunRequest{Prompt: "here"}); err != nil {
+		t.Fatal(err)
+	}
+	list, err := tf.List(t.Context(), "hung")
+	if err != nil || len(list.Jobs) != 0 || len(list.Unreachable) != 1 {
+		t.Fatalf("ps --peer hung = %+v, %v", list, err)
+	}
+}

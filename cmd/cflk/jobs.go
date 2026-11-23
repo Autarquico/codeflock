@@ -197,7 +197,10 @@ type startSpec struct {
 // nothing was started it leaves nothing behind.
 func (p *peer) start(ctx context.Context, sp startSpec) (cli.JobView, error) {
 	top := sp.repoDir
-	proto := job.Job{Repo: sp.repo, Harness: sp.harness, Gen: 1, Peer: p.name, State: job.Stopped, CreatedBy: sp.createdBy}
+	proto := job.Job{
+		Repo: sp.repo, Harness: sp.harness, Gen: 1, Peer: p.name, State: job.Stopped, CreatedBy: sp.createdBy,
+		History: []job.Entry{{Gen: 1, Peer: p.name, Commit: sp.commit}},
+	}
 	create := p.store.Create
 	if sp.id != "" {
 		create = func(j job.Job) (job.Job, error) { return p.store.CreateAs(sp.id, j) }
@@ -243,8 +246,10 @@ func (p *peer) start(ctx context.Context, sp startSpec) (cli.JobView, error) {
 // before and is at the commit, which is where `worktree add -b` put it.
 func (p *peer) addWorktree(ctx context.Context, top string, j job.Job, commit string) error {
 	worktree := p.store.WorktreeDir(j.ID, j.Gen)
-	_, lookErr := git(ctx, top, "rev-parse", "--verify", "--quiet", "--end-of-options", "refs/heads/"+j.Branch)
-	existed := lookErr == nil
+	// Only a lookup that answered "no such branch" lets cleanup delete it; a
+	// lookup that failed, or found it, leaves the branch alone.
+	found, lookErr := git(context.WithoutCancel(ctx), top, "for-each-ref", "--format=%(refname)", "refs/heads/"+j.Branch)
+	existed := lookErr != nil || found != ""
 	_, err := git(ctx, top, "worktree", "add", "-b", j.Branch, worktree, commit)
 	if err == nil {
 		return nil

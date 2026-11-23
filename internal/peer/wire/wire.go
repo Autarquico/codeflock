@@ -333,7 +333,7 @@ func (r Response) Expect(req Request) error {
 	var ok bool
 	switch req.Op {
 	case OpHello:
-		ok = r.Hello != nil && r.Job == nil && !r.Listing && r.Mirror == ""
+		ok = r.Hello != nil && r.Job == nil && !r.Listing && r.Mirror == "" && r.Size == 0
 	case OpPS:
 		ok = r.Listing && r.Hello == nil && r.Job == nil && r.Mirror == ""
 	case OpShow, OpStop, OpResume, OpSend, OpRun:

@@ -135,21 +135,23 @@ func (f *fleet) List(ctx context.Context, only string) (cli.JobList, error) {
 		err   error
 	}
 	localDone := make(chan localRead, 1)
-	go func() {
-		var r localRead
-		if wantLocal {
+	if wantLocal {
+		go func() {
+			var r localRead
 			r.views, r.err = f.local.List(ctx)
-		}
-		localDone <- r
-	}()
+			localDone <- r
+		}()
+	}
 	replies := f.ask(budget, peers, wire.Request{Op: wire.OpPS})
 	var local localRead
-	select {
-	case local = <-localDone:
-	case <-budget.Done():
-		// A command that holds a Job's lock (a stop that waits for its agent)
-		// must not hold the listing: show the records as they are on disk.
-		local.views, local.err = f.local.Stored(localBusy)
+	if wantLocal {
+		select {
+		case local = <-localDone:
+		case <-budget.Done():
+			// A command that holds a Job's lock (a stop that waits for its agent)
+			// must not hold the listing: show the records as they are on disk.
+			local.views, local.err = f.local.Stored(localBusy)
+		}
 	}
 	if local.err != nil {
 		return cli.JobList{}, local.err
