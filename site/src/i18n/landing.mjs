@@ -103,13 +103,13 @@ export const landing = {
 		verified: [
 			'A Claude Code session exported on one machine and imported on another, in a different directory and with a new session id, is resumed by Claude Code and remembers the conversation.',
 			'A Codex session does the same across directories, on one machine.',
+			'By hand on two Macs and a Linux box: a Claude Code Job run on another peer, moved here and back again, remembering the conversation; a Codex Job run on another peer, moved here and finished into the repository.',
 			'Claude Code and Codex, in tmux, signal that they wait for a person: Claude Code through its hooks, Codex through its notify program. Both were observed with the real CLIs.',
 			"The installer's signature and checksum checks are tested in CI against a throwaway key.",
 		],
 		notVerifiedTitle: 'Not verified',
 		notVerified: [
-			{ text: 'Codex moved between two machines has not been tried: no peer had Codex.' },
-			{ text: 'Checked by hand on three real machines: running a Job on another peer, moving it there and back with Claude Code and Codex, and finishing it. Entering a Job has not been checked by hand yet.' },
+			{ text: 'Not checked by hand: entering a Job (attach, tui), a Codex Job moved back to the peer it came from, and moves between every pair of machines.' },
 			{ text: 'Opening an attach in a new window: iTerm2, tmux and Terminal.app have not been checked for this version.' },
 			{ text: 'The installer has not yet been run on a clean machine against a published release.' },
 			{ text: 'Every peer trusts every other one fully: what a peer can do on another is what you could do by ssh. Add a machine only if you would let it do that.' },
@@ -165,13 +165,13 @@ export const landing = {
 		verified: [
 			'Una sesión de Claude Code exportada en una máquina e importada en otra, en otro directorio y con un id de sesión nuevo, la reanuda Claude Code y recuerda la conversación.',
 			'Una sesión de Codex hace lo mismo entre directorios, en una sola máquina.',
+			'A mano en dos Macs y un Linux: un Job de Claude Code lanzado en otro peer, movido aquí y de vuelta, que recuerda la conversación; un Job de Codex lanzado en otro peer, movido aquí y terminado en el repositorio.',
 			'Claude Code y Codex, en tmux, avisan de que esperan a una persona: Claude Code con sus hooks, Codex con su programa notify. Los dos se observaron con los CLIs reales.',
 			'Las comprobaciones de firma y checksum del instalador se prueban en CI con una clave desechable.',
 		],
 		notVerifiedTitle: 'Sin verificar',
 		notVerified: [
-			{ text: 'Mover Codex entre dos máquinas no se ha probado: ningún peer tenía Codex.' },
-			{ text: 'Comprobado a mano en tres máquinas reales: lanzar un Job en otro peer, moverlo allí y traerlo de vuelta con Claude Code y con Codex, y terminarlo. Entrar en un Job aún no se ha comprobado a mano.' },
+			{ text: 'Sin comprobar a mano: entrar en un Job (attach, tui), devolver un Job de Codex al peer del que vino y mover entre todos los pares de máquinas.' },
 			{ text: 'Abrir un attach en una ventana nueva: iTerm2, tmux y Terminal.app no se han comprobado para esta versión.' },
 			{ text: 'El instalador aún no se ha ejecutado en una máquina limpia contra una release publicada.' },
 			{ text: 'Cada peer confía por completo en los demás: lo que un peer puede hacer en otro es lo que tú harías por ssh. Añade una máquina solo si la dejarías hacerlo.' },
