@@ -4,63 +4,105 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"reflect"
-	"regexp"
 	"slices"
-	"strings"
-	"sync"
 	"testing"
-	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	v1 "github.com/Autarquico/codeflock/internal/api/v1"
-	"github.com/Autarquico/codeflock/internal/client"
+	"github.com/Autarquico/codeflock/internal/cli"
 	"github.com/Autarquico/codeflock/internal/domain"
 	"github.com/Autarquico/codeflock/internal/mcp"
-	"github.com/Autarquico/codeflock/internal/support/clock"
 )
 
-// fake is the Client of the tests: the methods a test sets answer, any other panics.
-type fake struct {
-	mcp.Client
-
-	mu      sync.Mutex
-	cancels []string
-
-	task   func(ref string) (v1.Task, error)
-	events func(client.EventQuery) (v1.EventPage, error)
-	follow func(context.Context, client.EventQuery, func(v1.Event) error) error
+// fakeJobs is a peer network of one Job that records what the tools asked.
+type fakeJobs struct {
+	state    string
+	screen   string
+	sent     []string
+	runs     []cli.RunRequest
+	attached []bool
+	attach   error
+	moves    []cli.MoveRequest
+	pulls    []cli.PullRequest
+	cleaned  []string
 }
 
-func (f *fake) Task(_ context.Context, ref, _ string) (v1.Task, error) { return f.task(ref) }
-
-func (f *fake) CancelTask(_ context.Context, _, _, requestID string) (v1.Task, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.cancels = append(f.cancels, requestID)
-	return v1.Task{}, nil
+func (f *fakeJobs) job(id string) cli.JobView {
+	return cli.JobView{ID: id, Peer: "omarch01", Repo: "web", Branch: "cflk/" + id, Harness: "claude", State: f.state}
 }
 
-func (f *fake) Events(_ context.Context, q client.EventQuery) (v1.EventPage, error) {
-	return f.events(q)
+func (f *fakeJobs) Run(_ context.Context, req cli.RunRequest) (cli.JobView, error) {
+	f.runs = append(f.runs, req)
+	f.state = "running"
+	return f.job("job-0000000001"), nil
 }
 
-func (f *fake) FollowEvents(ctx context.Context, q client.EventQuery, fn func(v1.Event) error) error {
-	return f.follow(ctx, q, fn)
+func (f *fakeJobs) List(_ context.Context, peer string) (cli.JobList, error) {
+	if peer == "none" {
+		return cli.JobList{}, nil
+	}
+	return cli.JobList{
+		Jobs:        []cli.JobView{f.job("job-0000000001")},
+		Unreachable: []cli.UnreachablePeer{{Peer: "mac-mini", Problem: "ssh: timeout"}},
+	}, nil
 }
 
-func connect(t *testing.T, profile mcp.Profile, c mcp.Client, clk clock.Clock) *sdk.ClientSession {
-	t.Helper()
-	return connectWith(t, profile, c, nil, clk)
+func (f *fakeJobs) Peers(context.Context) ([]cli.PeerView, error) {
+	return []cli.PeerView{{Name: "omarch01", This: true, Reachable: true, Harnesses: []string{"claude"}, Jobs: 1}}, nil
 }
 
-func connectWith(t *testing.T, profile mcp.Profile, c mcp.Client, a mcp.Attacher, clk clock.Clock) *sdk.ClientSession {
+func (f *fakeJobs) Show(_ context.Context, id string) (cli.JobView, error) {
+	if id == "job-gone" {
+		return cli.JobView{}, domain.NewError(domain.CodeNotFound, "no such Job", nil)
+	}
+	return f.job(id), nil
+}
+
+func (f *fakeJobs) Stop(_ context.Context, id string) (cli.JobView, error) {
+	f.state = "stopped"
+	return f.job(id), nil
+}
+
+func (f *fakeJobs) Resume(_ context.Context, id string) (cli.JobView, error) {
+	f.state = "running"
+	return f.job(id), nil
+}
+
+func (f *fakeJobs) Screen(context.Context, string) (string, error) { return f.screen, nil }
+
+func (f *fakeJobs) Send(_ context.Context, id, text string) (cli.JobView, error) {
+	f.sent = append(f.sent, text)
+	f.state = "running"
+	return f.job(id), nil
+}
+
+func (f *fakeJobs) Move(_ context.Context, req cli.MoveRequest) (cli.JobView, error) {
+	f.moves = append(f.moves, req)
+	f.state = "moved"
+	return f.job(req.ID), nil
+}
+
+func (f *fakeJobs) Pull(_ context.Context, req cli.PullRequest) (cli.JobView, error) {
+	f.pulls = append(f.pulls, req)
+	f.state = "done"
+	return f.job(req.ID), nil
+}
+
+func (f *fakeJobs) Clean(_ context.Context, id string, _ bool) (cli.JobView, error) {
+	f.cleaned = append(f.cleaned, id)
+	return f.job(id), nil
+}
+
+func (f *fakeJobs) Attach(_ context.Context, _ string, readOnly bool) error {
+	f.attached = append(f.attached, readOnly)
+	return f.attach
+}
+
+func connect(t *testing.T, profile mcp.Profile, jobs mcp.Jobs) *sdk.ClientSession {
 	t.Helper()
 	ctx := t.Context()
 	serverSide, clientSide := sdk.NewInMemoryTransports()
-	server := mcp.NewServer(profile, c, a, clk, "/work", io.Discard)
-	if _, err := server.Connect(ctx, serverSide, nil); err != nil {
+	if _, err := mcp.NewServer(profile, jobs, io.Discard).Connect(ctx, serverSide, nil); err != nil {
 		t.Fatal(err)
 	}
 	session, err := sdk.NewClient(&sdk.Implementation{Name: "test", Version: "0"}, nil).Connect(ctx, clientSide, nil)
@@ -69,6 +111,28 @@ func connectWith(t *testing.T, profile mcp.Profile, c mcp.Client, a mcp.Attacher
 	}
 	t.Cleanup(func() { _ = session.Close() })
 	return session
+}
+
+func call(t *testing.T, s *sdk.ClientSession, tool string, args map[string]any) *sdk.CallToolResult {
+	t.Helper()
+	res, err := s.CallTool(t.Context(), &sdk.CallToolParams{Name: tool, Arguments: args})
+	if err != nil {
+		t.Fatalf("%s: %v", tool, err)
+	}
+	return res
+}
+
+func structured(t *testing.T, res *sdk.CallToolResult) map[string]any {
+	t.Helper()
+	b, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	return m
 }
 
 func toolNames(t *testing.T, s *sdk.ClientSession) []string {
@@ -84,338 +148,177 @@ func toolNames(t *testing.T, s *sdk.ClientSession) []string {
 	return names
 }
 
-func call(t *testing.T, s *sdk.ClientSession, name string, args map[string]any) *sdk.CallToolResult {
-	t.Helper()
-	res, err := s.CallTool(t.Context(), &sdk.CallToolParams{Name: name, Arguments: args})
-	if err != nil {
-		t.Fatalf("%s: %v", name, err)
-	}
-	return res
-}
-
-func structured(t *testing.T, res *sdk.CallToolResult) map[string]any {
-	t.Helper()
-	m, ok := res.StructuredContent.(map[string]any)
-	if !ok {
-		t.Fatalf("structured content = %#v", res.StructuredContent)
-	}
-	return m
-}
-
-var readTools = []string{
-	"events_query", "events_wait", "inbox_list", "logs_query", "projects_get", "projects_list", "runs_attach", "runs_get", "runs_list",
-	"runs_logs", "search", "tasks_get", "tasks_list", "workers_get", "workers_list", "workflows_diff", "workflows_get", "workflows_list",
-}
-
-func TestServerIdentifiesItselfAsCodeflock(t *testing.T) {
-	s := connect(t, mcp.Read, &fake{}, clock.Real{})
-	if got := s.InitializeResult().ServerInfo.Name; got != "codeflock" {
-		t.Errorf("Implementation.Name = %q, want codeflock", got)
-	}
-}
-
-func TestToolsByProfile(t *testing.T) {
-	execute := append([]string{"tasks_create", "tasks_respond"}, readTools...)
-	modify := append([]string{"tasks_cancel", "workers_drain", "workers_undrain"}, execute...)
-	for profile, want := range map[mcp.Profile][]string{mcp.Read: readTools, mcp.Execute: execute, mcp.Modify: modify} {
-		got := toolNames(t, connect(t, profile, &fake{}, clock.Real{}))
-		slices.Sort(want)
-		if !slices.Equal(got, want) {
-			t.Errorf("%s: tools = %v, want %v", profile, got, want)
-		}
-		for _, name := range got {
-			if !regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`).MatchString(name) {
-				t.Errorf("%s: %q is not a valid wire name", profile, name)
-			}
-			if strings.Contains(name, "shell") || strings.HasPrefix(name, "secrets") {
-				t.Errorf("%s: %q must not be offered", profile, name)
-			}
+func TestParseProfile(t *testing.T) {
+	for _, ok := range []string{"read", "write"} {
+		if _, err := mcp.ParseProfile(ok); err != nil {
+			t.Errorf("%s: %v", ok, err)
 		}
 	}
+	if _, err := mcp.ParseProfile("execute"); err == nil {
+		t.Error("execute is not a profile any more")
+	}
 }
 
-// TestSchemasAreFlat: clients that cap schemas reject null in a type, unions and
-// references, for the input and the output of every tool of every profile.
-func TestSchemasAreFlat(t *testing.T) {
-	for _, profile := range []mcp.Profile{mcp.Read, mcp.Execute, mcp.Modify} {
-		for tool, err := range connect(t, profile, &fake{}, clock.Real{}).Tools(t.Context(), nil) {
-			if err != nil {
-				t.Fatal(err)
-			}
-			for kind, schema := range map[string]any{"input": tool.InputSchema, "output": tool.OutputSchema} {
-				raw, err := json.Marshal(schema)
-				if err != nil {
-					t.Fatal(err)
-				}
-				var tree any
-				if err := json.Unmarshal(raw, &tree); err != nil {
-					t.Fatal(err)
-				}
-				if bad := forbidden(tree); bad != "" {
-					t.Errorf("%s: %s %s schema has %s: %s", profile, tool.Name, kind, bad, raw)
-				}
-			}
+// Scenario: Todo desde Claude Code.
+func TestWriteProfileDrivesAJobFromRunToAnswer(t *testing.T) {
+	f := &fakeJobs{state: "waiting", screen: "Which database?"}
+	s := connect(t, mcp.Write, f)
+
+	run := structured(t, call(t, s, "jobs_run", map[string]any{"prompt": "fix the bug", "on": "any", "harness": "codex"}))
+	if run["id"] != "job-0000000001" || run["state"] != "running" {
+		t.Errorf("jobs_run = %v", run)
+	}
+	if len(f.runs) != 1 || f.runs[0] != (cli.RunRequest{Prompt: "fix the bug", On: "any", Harness: "codex"}) {
+		t.Errorf("run request = %+v", f.runs)
+	}
+
+	f.state = "waiting"
+	list := structured(t, call(t, s, "jobs_list", nil))
+	jobs, _ := list["jobs"].([]any)
+	unreachable, _ := list["unreachable"].([]any)
+	if len(jobs) != 1 || len(unreachable) != 1 || jobs[0].(map[string]any)["state"] != "waiting" {
+		t.Errorf("jobs_list = %v", list)
+	}
+
+	if screen := structured(t, call(t, s, "jobs_screen", map[string]any{"job": "job-0000000001"})); screen["screen"] != "Which database?" {
+		t.Errorf("jobs_screen = %v", screen)
+	}
+	sent := structured(t, call(t, s, "jobs_send", map[string]any{"job": "job-0000000001", "text": "postgres"}))
+	if sent["state"] != "running" || !slices.Equal(f.sent, []string{"postgres"}) {
+		t.Errorf("jobs_send = %v, sent %v", sent, f.sent)
+	}
+
+	if stopped := structured(t, call(t, s, "jobs_stop", map[string]any{"job": "job-0000000001"})); stopped["state"] != "stopped" {
+		t.Errorf("jobs_stop = %v", stopped)
+	}
+	if resumed := structured(t, call(t, s, "jobs_resume", map[string]any{"job": "job-0000000001"})); resumed["state"] != "running" {
+		t.Errorf("jobs_resume = %v", resumed)
+	}
+	if got := structured(t, call(t, s, "jobs_get", map[string]any{"job": "job-0000000001"})); got["peer"] != "omarch01" {
+		t.Errorf("jobs_get = %v", got)
+	}
+}
+
+func TestListsAreArraysWhenEmpty(t *testing.T) {
+	s := connect(t, mcp.Read, &fakeJobs{})
+	list := structured(t, call(t, s, "jobs_list", map[string]any{"peer": "none"}))
+	if jobs, ok := list["jobs"].([]any); !ok || len(jobs) != 0 {
+		t.Errorf("jobs = %#v", list["jobs"])
+	}
+	if un, ok := list["unreachable"].([]any); !ok || len(un) != 0 {
+		t.Errorf("unreachable = %#v", list["unreachable"])
+	}
+	peers := structured(t, call(t, s, "peers_list", nil))
+	if p, _ := peers["peers"].([]any); len(p) != 1 {
+		t.Errorf("peers_list = %v", peers)
+	}
+}
+
+// The read profile has no tool that changes anything, and asking for one is an unknown tool.
+func TestReadProfileExposesOnlyReadTools(t *testing.T) {
+	s := connect(t, mcp.Read, &fakeJobs{})
+	want := []string{"jobs_attach", "jobs_get", "jobs_list", "jobs_screen", "peers_list"}
+	if got := toolNames(t, s); !slices.Equal(got, want) {
+		t.Errorf("tools = %v, want %v", got, want)
+	}
+	for _, tool := range []string{"jobs_run", "jobs_send", "jobs_stop", "jobs_resume", "jobs_move", "jobs_pull", "jobs_clean"} {
+		if _, err := s.CallTool(t.Context(), &sdk.CallToolParams{Name: tool, Arguments: map[string]any{"job": "job-0000000001"}}); err == nil {
+			t.Errorf("%s answered in the read profile", tool)
 		}
 	}
 }
 
-// forbidden names the first thing a flat schema may not hold, or "".
-func forbidden(node any) string {
-	switch n := node.(type) {
-	case map[string]any:
-		for k, v := range n {
-			switch k {
-			case "oneOf", "anyOf", "$ref":
-				return k
-			case "type":
-				if list, ok := v.([]any); ok && slices.Contains(list, any("null")) || v == "null" {
-					return "null in type"
-				}
-			}
-			if bad := forbidden(v); bad != "" {
-				return bad
-			}
-		}
-	case []any:
-		for _, v := range n {
-			if bad := forbidden(v); bad != "" {
-				return bad
-			}
-		}
-	}
-	return ""
-}
-
-func TestToolOutsideTheProfileIsUnknown(t *testing.T) {
-	s := connect(t, mcp.Read, &fake{}, clock.Real{})
-	_, err := s.CallTool(t.Context(), &sdk.CallToolParams{Name: "tasks_create", Arguments: map[string]any{"request_id": "r1", "prompt": "x"}})
-	if err == nil {
-		t.Fatal("a tool the profile does not list was called")
+func TestWriteProfileExposesEveryTool(t *testing.T) {
+	want := []string{"jobs_attach", "jobs_clean", "jobs_get", "jobs_list", "jobs_move", "jobs_pull", "jobs_resume", "jobs_run", "jobs_screen", "jobs_send", "jobs_stop", "peers_list"}
+	if got := toolNames(t, connect(t, mcp.Write, &fakeJobs{})); !slices.Equal(got, want) {
+		t.Errorf("tools = %v, want %v", got, want)
 	}
 }
 
-func TestDomainErrorKeepsItsCode(t *testing.T) {
-	f := &fake{task: func(string) (v1.Task, error) {
-		return v1.Task{}, domain.NewError(domain.CodeNotFound, "no such task", map[string]any{"ref": "x"})
-	}}
-	res := call(t, connect(t, mcp.Read, f, clock.Real{}), "tasks_get", map[string]any{"ref": "x"})
-	if !res.IsError {
-		t.Fatal("a domain error must be a tool error")
+// Scenario: Entrar desde Claude Code.
+func TestAttachOpensAWindowAndReadIsAlwaysReadOnly(t *testing.T) {
+	f := &fakeJobs{}
+	res := structured(t, call(t, connect(t, mcp.Write, f), "jobs_attach", map[string]any{"job": "job-0000000001"}))
+	if res["job"] != "job-0000000001" || res["read_only"] != false || !slices.Equal(f.attached, []bool{false}) {
+		t.Errorf("write: %v, attached %v", res, f.attached)
 	}
-	got := structured(t, res)
-	if got["code"] != string(domain.CodeNotFound) || got["message"] != "no such task" {
-		t.Errorf("structured = %v", got)
-	}
-	if details, _ := got["details"].(map[string]any); details["ref"] != "x" {
-		t.Errorf("details = %v", got["details"])
+
+	f = &fakeJobs{}
+	res = structured(t, call(t, connect(t, mcp.Read, f), "jobs_attach", map[string]any{"job": "job-0000000001", "read_only": false}))
+	if res["read_only"] != true || !slices.Equal(f.attached, []bool{true}) {
+		t.Errorf("read: %v, attached %v", res, f.attached)
 	}
 }
 
-func TestMutatingToolRequiresRequestID(t *testing.T) {
-	f := &fake{}
-	s := connect(t, mcp.Modify, f, clock.Real{})
-
-	missing := call(t, s, "tasks_cancel", map[string]any{"ref": "t1"})
-	if !missing.IsError || !strings.Contains(missing.Content[0].(*sdk.TextContent).Text, "request_id") {
-		t.Errorf("a call without request_id = %+v", missing)
-	}
-	empty := call(t, s, "tasks_cancel", map[string]any{"ref": "t1", "request_id": " "})
-	if !empty.IsError || structured(t, empty)["code"] != string(domain.CodeInvalidRequest) {
-		t.Errorf("a blank request_id = %+v", empty)
-	}
-	if len(f.cancels) != 0 {
-		t.Fatalf("a rejected call reached the Client: %v", f.cancels)
-	}
-
-	if res := call(t, s, "tasks_cancel", map[string]any{"ref": "t1", "request_id": "r1"}); res.IsError {
-		t.Fatalf("a call with request_id failed: %+v", res)
-	}
-	if !slices.Equal(f.cancels, []string{"r1"}) {
-		t.Errorf("request ids sent = %v", f.cancels)
-	}
-}
-
-func TestEveryMutatingToolRequiresRequestID(t *testing.T) {
-	s := connect(t, mcp.Modify, &fake{}, clock.Real{})
-	for tool := range s.Tools(t.Context(), nil) {
-		if !slices.Contains([]string{"tasks_create", "tasks_respond", "tasks_cancel", "workers_drain", "workers_undrain"}, tool.Name) {
+func TestErrorsKeepTheirCode(t *testing.T) {
+	f := &fakeJobs{attach: domain.NewError(domain.CodeRunNotAttachable, "there is no terminal here", nil)}
+	s := connect(t, mcp.Write, f)
+	for tool, args := range map[string]map[string]any{
+		"jobs_get":    {"job": "job-gone"},
+		"jobs_attach": {"job": "job-0000000001"},
+	} {
+		res := call(t, s, tool, args)
+		if !res.IsError {
+			t.Errorf("%s did not fail", tool)
 			continue
 		}
-		schema, _ := tool.InputSchema.(map[string]any)
-		if required, _ := schema["required"].([]any); !slices.Contains(required, any("request_id")) {
-			t.Errorf("%s: request_id is not required by %v", tool.Name, schema["required"])
+		if code := structured(t, res)["code"]; code == "" || code == nil {
+			t.Errorf("%s: no code in %v", tool, res.StructuredContent)
 		}
 	}
 }
 
-func event(seq uint64) v1.Event {
-	return v1.Event{Sequence: seq, Type: domain.EventType("RunCompleted"), TaskID: "t1"}
-}
+// Scenario: Todo desde Claude Code (mover, traer y limpiar).
+func TestMovePullAndCleanMapToTheirRequests(t *testing.T) {
+	f := &fakeJobs{}
+	s := connect(t, mcp.Write, f)
+	id := "job-0000000001"
 
-func TestEventsWaitFromNowReturnsTheEventAndItsCursor(t *testing.T) {
-	var followed client.EventQuery
-	f := &fake{
-		events: func(q client.EventQuery) (v1.EventPage, error) {
-			if q.Tail != 1 {
-				t.Errorf("the cursor of now is the tail 1: %+v", q)
-			}
-			return v1.EventPage{Cursor: "7"}, nil
-		},
-		follow: func(_ context.Context, q client.EventQuery, fn func(v1.Event) error) error {
-			followed = q
-			return fn(event(9))
-		},
+	if got := structured(t, call(t, s, "jobs_move", map[string]any{"job": id, "to": "mac-mini"})); got["state"] != "moved" {
+		t.Errorf("jobs_move = %v", got)
 	}
-	res := call(t, connect(t, mcp.Read, f, clock.NewFake(time.Unix(0, 0))), "events_wait", map[string]any{
-		"types":  []string{"RunCompleted"},
-		"filter": map[string]any{"task": "t1", "project": "p", "run": "r", "worker": "w"},
-	})
-	if res.IsError {
-		t.Fatalf("%+v", res)
+	call(t, s, "jobs_move", map[string]any{"job": id, "retry": true})
+	call(t, s, "jobs_move", map[string]any{"job": id, "abort": true})
+	wantMoves := []cli.MoveRequest{{ID: id, To: "mac-mini"}, {ID: id, Retry: true}, {ID: id, Abort: true}}
+	if !slices.Equal(f.moves, wantMoves) {
+		t.Errorf("moves = %+v", f.moves)
 	}
-	got := structured(t, res)
-	if got["cursor"] != "9" || len(got["events"].([]any)) != 1 {
-		t.Errorf("result = %v", got)
+
+	call(t, s, "jobs_pull", map[string]any{"job": id})
+	call(t, s, "jobs_pull", map[string]any{"job": id, "finish": true, "push": true})
+	call(t, s, "jobs_pull", map[string]any{"job": id, "finish": true, "abort": true})
+	wantPulls := []cli.PullRequest{{ID: id}, {ID: id, Finish: true, Push: true}, {ID: id, Finish: true, Abort: true}}
+	if !slices.Equal(f.pulls, wantPulls) {
+		t.Errorf("pulls = %+v", f.pulls)
 	}
-	want := client.EventQuery{After: "7", Types: []string{"RunCompleted"}, Project: "p", Task: "t1", Run: "r", Worker: "w"}
-	if followed.After != want.After || followed.Task != want.Task || followed.Project != want.Project ||
-		followed.Run != want.Run || followed.Worker != want.Worker || !slices.Equal(followed.Types, want.Types) {
-		t.Errorf("followed %+v, want %+v", followed, want)
+
+	call(t, s, "jobs_clean", map[string]any{"job": id})
+	if !slices.Equal(f.cleaned, []string{id}) {
+		t.Errorf("cleaned = %v", f.cleaned)
 	}
 }
 
-func TestEventsWaitResumesFromTheCursorItIsGiven(t *testing.T) {
-	f := &fake{follow: func(_ context.Context, q client.EventQuery, fn func(v1.Event) error) error {
-		if q.After != "4" {
-			t.Errorf("after = %q", q.After)
-		}
-		return fn(event(5))
-	}}
-	res := call(t, connect(t, mcp.Read, f, clock.NewFake(time.Unix(0, 0))), "events_wait", map[string]any{"after_cursor": "4"})
-	if structured(t, res)["cursor"] != "5" {
-		t.Errorf("result = %v", structured(t, res))
-	}
-}
-
-// waits for ever: the stream of a filter that matches nothing.
-func silence(ctx context.Context, _ client.EventQuery, _ func(v1.Event) error) error {
-	<-ctx.Done()
-	return ctx.Err()
-}
-
-func TestEventsWaitTimesOutWithAResumableCursor(t *testing.T) {
-	for name, tc := range map[string]struct {
-		args    map[string]any
-		advance time.Duration
-		cursor  string
+func TestMoveAndPullRejectWhatTheCLIRejects(t *testing.T) {
+	f := &fakeJobs{}
+	s := connect(t, mcp.Write, f)
+	id := "job-0000000001"
+	for name, c := range map[string]struct {
+		tool string
+		args map[string]any
 	}{
-		"given":   {map[string]any{"timeout": "30s"}, 30 * time.Second, "7"},
-		"default": {map[string]any{}, 5 * time.Minute, "7"},
-		"resumed": {map[string]any{"timeout": "1m", "after_cursor": "3"}, time.Minute, "3"},
+		"move without destination":  {"jobs_move", map[string]any{"job": id}},
+		"move retry and abort":      {"jobs_move", map[string]any{"job": id, "retry": true, "abort": true}},
+		"move retry with to":        {"jobs_move", map[string]any{"job": id, "retry": true, "to": "mac-mini"}},
+		"pull push without finish":  {"jobs_pull", map[string]any{"job": id, "push": true}},
+		"pull abort without finish": {"jobs_pull", map[string]any{"job": id, "abort": true}},
+		"pull push and abort":       {"jobs_pull", map[string]any{"job": id, "finish": true, "push": true, "abort": true}},
 	} {
-		t.Run(name, func(t *testing.T) {
-			clk := clock.NewFake(time.Unix(0, 0))
-			f := &fake{
-				events: func(client.EventQuery) (v1.EventPage, error) { return v1.EventPage{Cursor: "7"}, nil },
-				follow: silence,
-			}
-			s := connect(t, mcp.Read, f, clk)
-			done := make(chan *sdk.CallToolResult, 1)
-			go func() {
-				res, err := s.CallTool(t.Context(), &sdk.CallToolParams{Name: "events_wait", Arguments: tc.args})
-				if err != nil {
-					t.Error(err)
-				}
-				done <- res
-			}()
-			if err := clk.BlockUntil(t.Context(), 1); err != nil {
-				t.Fatal(err)
-			}
-			select {
-			case <-done:
-				t.Fatal("the wait ended before its timeout")
-			default:
-			}
-			clk.Advance(tc.advance)
-			res := <-done
-			if res == nil || res.IsError {
-				t.Fatalf("%+v", res)
-			}
-			got := structured(t, res)
-			if events, ok := got["events"].([]any); !ok || len(events) != 0 {
-				t.Errorf("events = %#v, want []", got["events"])
-			}
-			if got["cursor"] != tc.cursor {
-				t.Errorf("cursor = %v, want %s", got["cursor"], tc.cursor)
-			}
-		})
-	}
-}
-
-func TestEventsWaitRejectsWhatIsLongerThanTenMinutes(t *testing.T) {
-	s := connect(t, mcp.Read, &fake{}, clock.NewFake(time.Unix(0, 0)))
-	for _, timeout := range []string{"10m1s", "1h", "0s", "soon"} {
-		res := call(t, s, "events_wait", map[string]any{"timeout": timeout})
+		res := call(t, s, c.tool, c.args)
 		if !res.IsError || structured(t, res)["code"] != string(domain.CodeInvalidRequest) {
-			t.Errorf("timeout %q = %+v", timeout, res)
+			t.Errorf("%s: %v", name, res.StructuredContent)
 		}
 	}
-}
-
-func TestEventsWaitExpiredCursor(t *testing.T) {
-	f := &fake{follow: func(context.Context, client.EventQuery, func(v1.Event) error) error {
-		return domain.NewError(domain.CodeCursorExpired, "the cursor is outside the history this Controller holds",
-			map[string]any{"purged_through": 10, "latest": 20})
-	}}
-	res := call(t, connect(t, mcp.Read, f, clock.NewFake(time.Unix(0, 0))), "events_wait", map[string]any{"after_cursor": "2"})
-	if !res.IsError {
-		t.Fatalf("%+v", res)
+	if len(f.moves)+len(f.pulls) != 0 {
+		t.Errorf("an invalid request reached the peer: %+v %+v", f.moves, f.pulls)
 	}
-	got := structured(t, res)
-	details, _ := got["details"].(map[string]any)
-	if got["code"] != string(domain.CodeCursorExpired) || details["purged_through"] != float64(10) || details["latest"] != float64(20) {
-		t.Errorf("structured = %v", got)
-	}
-}
-
-func TestTasksCreateMapsHarnessModelPermissionsAndCompletion(t *testing.T) {
-	var got v1.CreateTaskRequest
-	c := &createFake{create: func(req v1.CreateTaskRequest) { got = req }}
-	s := connect(t, mcp.Execute, c, clock.Real{})
-	res := call(t, s, "tasks_create", map[string]any{
-		"request_id": "r1", "prompt": "p", "harness": "claude-code", "model": "opus", "permissions": "ask", "completion": "manual",
-	})
-	if res.IsError {
-		t.Fatalf("tasks_create failed: %s", res.Content)
-	}
-	want := v1.Requirements{Harness: "claude-code", Model: "opus", Permissions: "ask"}
-	if !reflect.DeepEqual(got.Requirements, want) || got.Completion != domain.CompletionManual || got.RequestID != "r1" || got.Prompt != "p" {
-		t.Fatalf("request = %+v", got)
-	}
-}
-
-func TestTasksCreateWithoutHarnessIsRefusedUnlessNoStart(t *testing.T) {
-	calls := 0
-	c := &createFake{create: func(v1.CreateTaskRequest) { calls++ }}
-	s := connect(t, mcp.Execute, c, clock.Real{})
-	res, err := s.CallTool(t.Context(), &sdk.CallToolParams{Name: "tasks_create", Arguments: map[string]any{"request_id": "r1", "prompt": "p"}})
-	if err == nil && !res.IsError {
-		t.Fatal("tasks_create with no harness succeeded")
-	}
-	if calls != 0 {
-		t.Fatalf("NewTask called %d times for an invalid request", calls)
-	}
-	if res := call(t, s, "tasks_create", map[string]any{"request_id": "r2", "prompt": "p", "no_start": true}); res.IsError || calls != 1 {
-		t.Fatalf("no_start without harness: error=%v calls=%d", res.IsError, calls)
-	}
-}
-
-type createFake struct {
-	mcp.Client
-	create func(v1.CreateTaskRequest)
-}
-
-func (f *createFake) NewTask(_ context.Context, _ string, req v1.CreateTaskRequest) (v1.CreateTaskResponse, error) {
-	f.create(req)
-	return v1.CreateTaskResponse{}, nil
 }

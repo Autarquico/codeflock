@@ -1,5 +1,7 @@
 # Runbook: publicar una release
 
+Code Flock: [autarquico.github.io/codeflock](https://autarquico.github.io/codeflock/).
+
 Spec: [release-installer-site](../specs/release-installer-site.md). Todo lo que sigue es manual salvo lo que
 hacen `release.yml` y `pages.yml` una vez empujado el tag. Los pasos 1 a 4 bloquean el tag `v0.2.0`, no los PRs.
 
@@ -84,6 +86,52 @@ Un tag con `-` (`v0.2.0-rc.1`) sale como prerelease. `latest` ignora prereleases
    Si la verificación falla, borra el borrador.
 
 Aprueba el despliegue solo tras comprobar que el tag y el commit son los esperados.
+
+### v0.5.0-beta.1 (la red de peers, sin Controller)
+
+Es la primera release sin Controller ni Worker. El flujo, en orden, con los pasos 1 a 4 ya hechos:
+
+1. La rama de trabajo es `next`. Comprueba antes que la prueba real de la flota está documentada y que
+   [retire-controller](retire-controller.md) está al día con `cflk doctor --fix`.
+2. Abre el PR `next` → `main` (`gh pr create --base main --head next`). Todos los checks de
+   `packaging/release/required-checks.txt` deben quedar en verde en el commit que va a ser el tag. El tag se pone
+   sobre `main` después del merge (`tag-in-main.sh` lo exige).
+3. `git switch main && git pull --ff-only && git tag v0.5.0-beta.1 && git push origin v0.5.0-beta.1`. Lleva `-`:
+   sale como prerelease y `latest` no cambia.
+4. `release.yml` se detiene en `sign-publish` esperando la aprobación del environment `release`. Abre el run
+   (`gh run list --workflow release.yml --limit 1`), comprueba que el tag y el commit son los esperados y aprueba.
+5. Verifica la release publicada (paso 6) en una máquina limpia y en otra con el Controller 0.4 todavía en marcha:
+   el instalador sustituye `cflk` y **no** toca el Controller ni el Worker, y `cflk doctor` los lista como avisos.
+6. El Controller sigue en marcha hasta que valides la red de peers. Cuando lo hagas, cada máquina ejecuta
+   `cflk doctor --fix` y el host del Controller sigue [retire-controller](retire-controller.md).
+
+#### Prueba real de la flota (2026-11-24, `next` en 392d36d)
+
+Con `cflk` de `next` instalado como `~/.local/bin/cflk-next` (y `[cflk_path]` apuntando a él) en un MacBook
+(darwin-arm64), omarch01 (linux-amd64) y un Mac mini (darwin-amd64), sobre el repo de pruebas `cflk-sandbox`:
+
+| Paso | Resultado |
+| --- | --- |
+| `cflk peers` | los tres `reachable` |
+| `run --on omarch01` (Claude), `screen`, `send` | ok |
+| `pull` (omarch01 → MacBook) y `move --to omarch01` | ok: la conversación y los ficheros sin commit viajan en los dos sentidos |
+| `run --on omarch01 --harness codex`, `pull`, `pull --finish`, `clean` | ok: la rama `cflk/<job>` llega al repo sin tocar el checkout |
+| `cflk mcp serve`: `tools/list`, `jobs_list` | ok |
+
+Lo que encontró y se arregló en #230:
+
+- Un Job que volvía a un peer donde ya había estado se quedaba en `moving`.
+- Claude, arrancado por ssh en un Mac, abría "Not logged in": su login está en el llavero. La guía explica el
+  remedio.
+
+Sin probar en la flota:
+
+- moves entre el Mac mini y omarch01: sin ssh entre ellos;
+- devolver un Job de Codex al peer del que vino;
+- `attach`, `tui` y `cflk mcp install`;
+- omarch02.
+
+La release publica solo `cflk` para linux y darwin, amd64 y arm64 (`.goreleaser.yaml`); no hay binario `cf`.
 
 Después `pages.yml` construye y despliega el sitio con la versión del tag.
 
@@ -191,7 +239,7 @@ e imprime `--- PASS: TestScenario_*`).
 | Puertas de la release | `ReleaseGates_*` (`gates_test.sh`: `require-checks.sh` y `tag-in-main.sh`) | `gates` y `sign-publish` (paso «tag must point into main») de `release.yml`; `installer` ejecuta los tests |
 | Conjunto publicado | `PublishedSet_*` (`published_test.sh`: `check.sh` y `verify-release.sh`) | `sign-publish` de `release.yml` (`check.sh`, `verify-release.sh`); `installer` ejecuta los tests |
 | Fórmula derivada | `FormulaDerivada_valid`, `_validWithoutExplicitVersion`, `_invalidSignature`, `_tamperedChecksums`, `_suffixedVersion`, `_suffixedRequestedVersion`, `_missingPlatform`, `_duplicatedPlatform`, `_invalidDigest`, `_headerVersionMismatch` (`brew_test.sh`) | `installer` |
-| Sitio desde la release | `TestScenario_SitioDesdeLaRelease` (nombre de los jobs): tests unitarios de `site/scripts`, build, comandos de instalación (sin publicar en PRs, con el tag en la release), goldens y axe (serious/critical) sobre la landing y una página de docs | `site` de `site.yml` (en PRs) y `build` de `pages.yml` (en la release) |
+| Sitio desde la release | `TestScenario_SitioDesdeLaRelease` (nombre de los jobs): tests unitarios de `site/scripts`, build, comandos de instalación (sin publicar en PRs, con el tag en la release), axe (serious/critical) sobre la landing y una página de docs | `site` de `site.yml` (en PRs) y `build` de `pages.yml` (en la release) |
 
 Lo que no se ha ejercitado con una release real: la firma con la clave del owner, el environment `release` y el
 despliegue de Pages. La cadena completa solo se ha probado con una clave efímera de tests.

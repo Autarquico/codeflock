@@ -3,10 +3,10 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFil
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { GUIDE_PAGES, OPTIONAL_PAGES, guidePagesIn, splitFrontMatter, syncDocs, transformPage } from './sync-docs.mjs';
+import { GUIDE_PAGES, splitFrontMatter, syncDocs, transformPage } from './sync-docs.mjs';
 
-const known = new Set(['docs/guide/img/a.webp', 'docs/guide/cli.md', 'docs/guide/tui.md', 'docs/guide/mcp.md', 'docs/guide/concepts.md', 'docs/guide/getting-started.md', 'docs/codefabric-spec.md', 'internal/tui', 'README.md']);
-const kindOf = (p) => (!known.has(p) ? null : p === 'internal/tui' ? 'dir' : 'file');
+const known = new Set(['docs/guide/img/a.webp', 'docs/guide/cli.md', 'docs/guide/mcp.md', 'docs/guide/concepts.md', 'docs/guide/getting-started.md', 'docs/codefabric-spec.md', 'internal/peer', 'README.md']);
+const kindOf = (p) => (!known.has(p) ? null : p === 'internal/peer' ? 'dir' : 'file');
 const FM = '---\ntitle: T\ndescription: D\n---\n';
 const page = (source, file = 'concepts.md') => transformPage({ file, source: source.startsWith('---') ? source : FM + source, base: '/codeflock/', ref: 'v0.2.0', kindOf });
 
@@ -27,11 +27,11 @@ test('a body "# " heading is demoted (the title is the front matter\'s); code is
 });
 
 test('links between guide pages become site routes, others point at the tag', () => {
-  const out = page('# T\nSee [CLI](cli.md#flags), [TUI](./tui.md), [Concepts](../concepts/), [tui source](../../internal/tui) and [home](https://example.com).');
+  const out = page('# T\nSee [CLI](cli.md#flags), [MCP](./mcp.md), [Concepts](../concepts/), [peer source](../../internal/peer) and [home](https://example.com).');
   assert.match(out, /\]\(\/codeflock\/cli\/#flags\)/);
-  assert.match(out, /\]\(\/codeflock\/tui\/\)/);
+  assert.match(out, /\]\(\/codeflock\/mcp\/\)/);
   assert.match(out, /\]\(\/codeflock\/concepts\/\)/);
-  assert.match(out, /\]\(https:\/\/github\.com\/Autarquico\/codeflock\/tree\/v0\.2\.0\/internal\/tui\)/);
+  assert.match(out, /\]\(https:\/\/github\.com\/Autarquico\/codeflock\/tree\/v0\.2\.0\/internal\/peer\)/);
   assert.match(out, /\]\(https:\/\/example\.com\)/);
 });
 
@@ -65,19 +65,6 @@ test('syncDocs publishes exactly the guide pages and nothing else from docs/', (
   assert.deepEqual(readdirSync(out).sort(), [...GUIDE_PAGES].sort());
   assert.match(readFileSync(path.join(out, 'cli.md'), 'utf8'), /^---\ntitle: cli\.md\ndescription: d\n---/);
   assert.equal(existsSync(path.join(out, 'codefabric-spec.md')), false);
-});
-
-test('a tag from before the upgrade page still syncs, with the pages it has', () => {
-  const older = GUIDE_PAGES.filter((f) => !OPTIONAL_PAGES.includes(f));
-  const { root, out } = fixture(older);
-  assert.deepEqual(syncDocs({ root, out, ref: 'v0.3.0' }), older);
-  assert.deepEqual(readdirSync(out).sort(), [...older].sort());
-});
-
-test('the sidebar lists only the pages the tag has', () => {
-  const older = GUIDE_PAGES.filter((f) => !OPTIONAL_PAGES.includes(f));
-  assert.deepEqual(guidePagesIn(fixture(older).root), older);
-  assert.deepEqual(guidePagesIn(fixture(GUIDE_PAGES).root), GUIDE_PAGES);
 });
 
 test('syncDocs fails clearly when a guide page is missing', () => {

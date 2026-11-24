@@ -4,15 +4,11 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
-
-	v1 "github.com/Autarquico/codeflock/internal/api/v1"
 )
 
-// MaxText is the longest Name, Message or Action, in bytes, that the Controller
-// accepts in a heartbeat. A text of the machine (a file name, a list of
-// components) can be anything, and one that is refused would take the whole
-// heartbeat with it.
-const MaxText = v1.MaxHealthText
+// MaxText is the longest Name, Message or Action, in bytes. A text of the
+// machine (a file name, a list of components) can be anything.
+const MaxText = 256
 
 const ellipsis = "…"
 
@@ -37,7 +33,7 @@ func Clean(s string) string {
 }
 
 // CleanComponent applies Clean to every text of c.
-func CleanComponent(c v1.ComponentHealth) v1.ComponentHealth {
+func CleanComponent(c Component) Component {
 	c.Name, c.Message, c.Action = Clean(c.Name), Clean(c.Message), Clean(c.Action)
 	return c
 }

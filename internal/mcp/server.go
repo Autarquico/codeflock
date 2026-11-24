@@ -1,7 +1,6 @@
-// Package mcp serves CodeFabric to a model over the Model Context Protocol.
-// It is a client of the Controller like the CLI and the TUI (ADR 0001): every
-// tool is one call of the Client SDK, and the profile decides which tools
-// exist at all.
+// Package mcp serves the peer network to a model over the Model Context
+// Protocol. Every tool is one of the use cases of the CLI (cli.Jobs), and the
+// profile decides which tools exist at all.
 package mcp
 
 import (
@@ -10,125 +9,63 @@ import (
 	"fmt"
 	"io"
 	"slices"
-	"strings"
-	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	v1 "github.com/Autarquico/codeflock/internal/api/v1"
 	"github.com/Autarquico/codeflock/internal/buildinfo"
-	"github.com/Autarquico/codeflock/internal/client"
+	"github.com/Autarquico/codeflock/internal/cli"
 	"github.com/Autarquico/codeflock/internal/domain"
-	"github.com/Autarquico/codeflock/internal/support/clock"
 )
 
-// Profile is what a model may do (§16.3). Each includes the one before it.
+// Profile is what a model may do. Write includes Read.
 type Profile string
 
 // The profiles of `cflk mcp serve`.
 const (
-	Read    Profile = "read"
-	Execute Profile = "execute"
-	Modify  Profile = "modify"
+	Read  Profile = "read"
+	Write Profile = "write"
 )
 
 // ParseProfile reads the value of --profile.
 func ParseProfile(s string) (Profile, error) {
 	switch p := Profile(s); p {
-	case Read, Execute, Modify:
+	case Read, Write:
 		return p, nil
 	}
 	return "", domain.NewError(domain.CodeInvalidRequest,
-		fmt.Sprintf("unknown profile %q: use read, execute or modify", s), nil)
+		fmt.Sprintf("unknown profile %q: use read or write", s), nil)
 }
 
-func (p Profile) rank() int {
-	switch p {
-	case Read:
-		return 0
-	case Execute:
-		return 1
-	case Modify:
-		return 2
-	default:
-		return -1 // an unknown profile is offered nothing
-	}
+// Jobs is what the tools use of a peer: the use cases of the CLI, which
+// cli.Jobs implements.
+type Jobs interface {
+	Run(ctx context.Context, req cli.RunRequest) (cli.JobView, error)
+	List(ctx context.Context, peer string) (cli.JobList, error)
+	Peers(ctx context.Context) ([]cli.PeerView, error)
+	Show(ctx context.Context, id string) (cli.JobView, error)
+	Stop(ctx context.Context, id string) (cli.JobView, error)
+	Resume(ctx context.Context, id string) (cli.JobView, error)
+	Screen(ctx context.Context, id string) (string, error)
+	Send(ctx context.Context, id, text string) (cli.JobView, error)
+	Move(ctx context.Context, req cli.MoveRequest) (cli.JobView, error)
+	Pull(ctx context.Context, req cli.PullRequest) (cli.JobView, error)
+	Clean(ctx context.Context, id string, force bool) (cli.JobView, error)
+	// Attach opens a window attached to the Job: the server has no terminal.
+	Attach(ctx context.Context, id string, readOnly bool) error
 }
 
-// Client is what the tools use of *client.Client.
-type Client interface {
-	Projects(ctx context.Context) ([]v1.Project, error)
-	Project(ctx context.Context, ref string) (v1.Project, error)
-	Tasks(ctx context.Context, q client.TaskQuery) ([]v1.Task, error)
-	Task(ctx context.Context, ref, project string) (v1.Task, error)
-	Runs(ctx context.Context, q client.RunQuery) ([]v1.Run, error)
-	Run(ctx context.Context, ref string) (v1.Run, error)
-	RunOutput(ctx context.Context, ref string, q client.OutputQuery) (v1.RunOutput, error)
-	Workers(ctx context.Context, includeRemoved bool) ([]v1.Worker, error)
-	Worker(ctx context.Context, ref string) (v1.Worker, error)
-	ListWorkflows(ctx context.Context) ([]v1.WorkflowSummary, error)
-	ShowWorkflow(ctx context.Context, ref string) (v1.WorkflowVersion, error)
-	WorkflowApply(ctx context.Context, id string) (v1.WorkflowApply, error)
-	ApplyWorkflow(ctx context.Context, req v1.ApplyWorkflowRequest) (v1.ApplyWorkflowResponse, error)
-	Inbox(ctx context.Context) (v1.InboxResponse, error)
-	Search(ctx context.Context, q client.SearchQuery) (v1.SearchResponse, error)
-	Logs(ctx context.Context, q client.LogQuery) (v1.LogPage, error)
-	Events(ctx context.Context, q client.EventQuery) (v1.EventPage, error)
-	FollowEvents(ctx context.Context, q client.EventQuery, fn func(v1.Event) error) error
-	NewTask(ctx context.Context, dir string, req v1.CreateTaskRequest) (v1.CreateTaskResponse, error)
-	RespondTask(ctx context.Context, ref, project string, req v1.RespondRequest) (v1.RespondResponse, error)
-	CancelTask(ctx context.Context, ref, project, requestID string) (v1.Task, error)
-	DrainWorker(ctx context.Context, ref, requestID string) (v1.Worker, error)
-	UndrainWorker(ctx context.Context, ref, requestID string) (v1.Worker, error)
-}
-
-var _ Client = (*client.Client)(nil)
-
-const (
-	defaultWait = 5 * time.Minute
-	maxWait     = 10 * time.Minute
-)
-
-// Attacher opens the live session of a Run in a window of the person's own
-// terminal. Whoever composes the server decides how: the MCP package does not
-// reach terminals. A *domain.Error it returns reaches the model with its code
-// and details.
-type Attacher interface {
-	Attach(ctx context.Context, req AttachRequest) (AttachResult, error)
-}
-
-// AttachRequest is what runs_attach asks of an Attacher.
-type AttachRequest struct {
-	Ref      string
-	Project  string
-	ReadOnly bool
-}
-
-// AttachResult is where the window opened and the Run it shows.
-type AttachResult struct {
-	Opened string `json:"opened"`
-	Run    string `json:"run"`
-}
+var _ Jobs = cli.Jobs(nil)
 
 // NewServer builds the MCP server of a profile. Only the tools the profile
-// allows are registered, so asking for another is an unknown tool. Wire names
-// have no dots (the Anthropic API admits ^[a-zA-Z0-9_-]{1,128}$); the
-// permissions and the docs keep the names of §17.2. dir is the directory that
-// decides the Project of a Task the model creates without naming one; diag
-// receives the text of the errors the model is not shown. attach may be nil:
-// runs_attach then answers CF_NOT_IMPLEMENTED.
-func NewServer(profile Profile, c Client, a Attacher, clk clock.Clock, dir string, diag io.Writer) *sdk.Server {
+// allows are registered, so asking for another is an unknown tool. diag
+// receives the text of the errors the model is not shown.
+func NewServer(profile Profile, jobs Jobs, diag io.Writer) *sdk.Server {
 	s := sdk.NewServer(&sdk.Implementation{Name: "codeflock", Version: buildinfo.Get().Version}, nil)
-	t := tools{c: c, attacher: a, profile: profile, clk: clk, dir: dir, diag: diag}
-	if profile.rank() >= Read.rank() {
-		t.read(s)
-	}
-	if profile.rank() >= Execute.rank() {
-		t.execute(s)
-	}
-	if profile.rank() >= Modify.rank() {
-		t.modify(s)
+	t := tools{jobs: jobs, profile: profile, diag: diag}
+	t.read(s)
+	if profile == Write {
+		t.write(s)
 	}
 	return s
 }
@@ -140,8 +77,7 @@ func NewServer(profile Profile, c Client, a Attacher, clk clock.Clock, dir strin
 // optional field is mistaken, and clients reject schemas with unions. A
 // *domain.Error comes back as a tool error that keeps its code and details; a
 // cancelled call propagates as a cancellation; any other error is CF_INTERNAL
-// for the model, and its text goes to t.diag, since it can carry URLs and
-// local paths.
+// for the model, and its text goes to t.diag, since it can carry paths.
 func add[In any](t tools, s *sdk.Server, name, description string, out *jsonschema.Schema, h func(context.Context, In) (any, error)) {
 	in, err := jsonschema.For[In](nil)
 	if err != nil {
@@ -199,8 +135,6 @@ func toolError(e *domain.Error) *sdk.CallToolResult {
 }
 
 // objectOf is the schema of an object with the named properties, all required.
-// Types are the JSON ones; what is inside an array or an entity is documented
-// by the description of the tool, not nested here.
 func objectOf(props map[string]string) *jsonschema.Schema {
 	s := &jsonschema.Schema{Type: "object", Properties: map[string]*jsonschema.Schema{}}
 	for name, typ := range props {
@@ -209,9 +143,6 @@ func objectOf(props map[string]string) *jsonschema.Schema {
 	}
 	return s
 }
-
-// entity is the schema of one Controller entity as the API shows it.
-var entity = &jsonschema.Schema{Type: "object"}
 
 // Serve runs s over in and out until in ends or ctx is done. out carries only
 // JSON-RPC: whatever else there is to say goes to the diagnostics of the caller.
@@ -222,17 +153,3 @@ func Serve(ctx context.Context, s *sdk.Server, in io.Reader, out io.Writer) erro
 type nopWriteCloser struct{ io.Writer }
 
 func (nopWriteCloser) Close() error { return nil }
-
-func requireRequestID(id string) error {
-	if strings.TrimSpace(id) == "" {
-		return domain.NewError(domain.CodeInvalidRequest, "request_id is required for a tool that changes something", nil)
-	}
-	return nil
-}
-
-func nonNil[T any](s []T) []T {
-	if s == nil {
-		return []T{}
-	}
-	return s
-}

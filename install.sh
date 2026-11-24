@@ -8,8 +8,7 @@
 # Exit: 2 invalid arguments, 3 unsupported platform, 4 prerequisite failure, 5 download/checksum/signature failure
 #
 # It verifies the signed checksum list, then the tarball, and only then installs cflk and validates it.
-# Only after that does it look at an existing cf: the cf of a Code Flock beta (or an older transition cf) is replaced
-# by the transition cf (which runs cflk); any other cf is left alone. A cf elsewhere on the PATH is only reported, never run.
+# An existing cf (the Code Flock beta's, or any other tool's) is never read, run or touched: cflk is the only command installed.
 # The trust root is the allowed_signers block below. While it holds the PLACEHOLDER no signature verifies,
 # so the installer fails closed. Review-first users verify this file with install.sh.sig.
 set -eu
@@ -20,9 +19,6 @@ DEFAULT_BASE_URL='https://github.com/Autarquico/codeflock/releases/download'
 LATEST_URL='https://github.com/Autarquico/codeflock/releases/latest'
 NAMESPACE='codefabric-release'
 PRINCIPAL='release@codefabric'
-
-TRANSITION_ANSWER='code-flock-cf-transition'
-PROBE_SECONDS=5
 
 log() { printf 'install.sh: %s\n' "$*" >&2; }
 die() { code=$1; shift; log "error: $*"; exit "$code"; }
@@ -71,7 +67,7 @@ detect_platform() {
 }
 
 require_commands() {
-	for c in curl tar awk sed grep mktemp ssh-keygen cp chmod mv mkdir rm cat wc tr basename dirname readlink cmp id ls; do
+	for c in curl tar awk sed grep mktemp ssh-keygen cp chmod mv mkdir rm cat wc tr basename dirname; do
 		have "$c" || die 4 "required command not found: $c"
 	done
 	have sha256sum || have shasum || die 4 'required command not found: sha256sum or shasum'
@@ -169,16 +165,14 @@ check_checksums() {
 	fi
 }
 
-# Only the regular files `cflk` and `cf` leave the tarball, and they land in WORK, never in the install dir.
+# Only the regular file `cflk` leaves the tarball, and it lands in WORK, never in the install dir.
 extract_binaries() {
 	tar -tzf "$1" >"$WORK/members" || die 5 "$(basename "$1") is not readable"
 	if grep -Eq '(^/|(^|/)\.\.(/|$))' "$WORK/members"; then die 5 "$(basename "$1") has an unsafe member path"; fi
 	mkdir "$WORK/unpacked"
-	for bin in cflk cf; do
-		[ "$(grep -cx "$bin" "$WORK/members")" -eq 1 ] || die 5 "$(basename "$1") does not contain exactly one $bin"
-		tar -xzf "$1" -C "$WORK/unpacked" "$bin" || die 5 "could not extract $bin from $(basename "$1")"
-		if [ ! -f "$WORK/unpacked/$bin" ] || [ -L "$WORK/unpacked/$bin" ]; then die 5 "$bin in $(basename "$1") is not a regular file"; fi
-	done
+	[ "$(grep -cx cflk "$WORK/members")" -eq 1 ] || die 5 "$(basename "$1") does not contain exactly one cflk"
+	tar -xzf "$1" -C "$WORK/unpacked" cflk || die 5 "could not extract cflk from $(basename "$1")"
+	if [ ! -f "$WORK/unpacked/cflk" ] || [ -L "$WORK/unpacked/cflk" ]; then die 5 "cflk in $(basename "$1") is not a regular file"; fi
 }
 
 download_tarball() {
@@ -213,210 +207,16 @@ install_cflk() {
 	log "installed $DIR/cflk ($VERSION)"
 }
 
-# resolve_link PATH: PATH with every symlink followed, made absolute; fails on a loop or a dangling link.
-resolve_link() {
-	p=$1
-	hops=0
-	while [ -L "$p" ]; do
-		hops=$((hops + 1))
-		[ "$hops" -le 20 ] || return 1
-		target=$(readlink "$p") || return 1
-		case $target in
-			/*) p=$target ;;
-			*) p=$(dirname "$p")/$target ;;
-		esac
-	done
-	[ -e "$p" ] || return 1
-	parent=$(cd -P "$(dirname "$p")" && pwd -P) || return 1
-	printf '%s/%s\n' "$parent" "$(basename "$p")"
-}
-
-# run_limited SECONDS CMD...: CMD with its own stdio, killed when it does not finish in time (so a foreign cf that
-# waits for a terminal cannot hang the installer). Uses timeout(1) when there is one; macOS has none.
-run_limited() {
-	secs=$1
-	shift
-	if have timeout; then
-		timeout -s KILL "$secs" "$@"
-		return
-	fi
-	"$@" &
-	cmd_pid=$!
-	(
-		trap 'kill "$sleep_pid"; exit 0' TERM
-		sleep "$secs" &
-		sleep_pid=$!
-		wait "$sleep_pid"
-		kill -9 "$cmd_pid"
-	) >/dev/null 2>&1 &
-	killer_pid=$!
-	status=0
-	wait "$cmd_pid" || status=$?
-	kill "$killer_pid" >/dev/null 2>&1 || true
-	wait "$killer_pid" >/dev/null 2>&1 || true
-	return "$status"
-}
-
-# The version of a Code Flock beta from what its `version --json` printed: exactly {"version","commit","date"}, and
-# the version is 0.4.0-beta.N or older. Prints it, or fails.
-beta_version_of() {
-	json=$(printf '%s\n' "$1" | tr -d ' \t\r\n')
-	printf '%s\n' "$json" | grep -Eq '^\{"version":"[^"]*","commit":"[0-9a-f]{7,40}","date":"[0-9]{4}-[0-9]{2}-[0-9]{2}T[^"]*"\}$' || return 1
-	beta_found=$(printf '%s\n' "$json" | sed 's/^{"version":"\([^"]*\)".*$/\1/')
-	printf "%s\n" "$beta_found" | grep -Eq '^v?0\.([0-3]\.[0-9]+([-+][0-9A-Za-z.+-]*)?|4\.0-beta\.[0-9]+)$' || return 1
-	printf "%s\n" "$beta_found"
-}
-
-# classify_cf FILE: what a cf says of itself, given PROBE_SECONDS to answer. Sets CF_KIND:
-#   transition  it answers the probe: a transition cf of any release
-#   beta        its `version --json` is that of a Code Flock beta (CF_BETA is the version)
-#   foreign     anything else, a cf that does not run or does not answer in time included
-classify_cf() {
-	CF_KIND=foreign
-	CF_BETA=
-	run_limited "$PROBE_SECONDS" env CF_TRANSITION_PROBE=1 "$1" version --json >"$WORK/probe.out" 2>/dev/null </dev/null || return 0
-	answer=$(cat "$WORK/probe.out")
-	if [ "$answer" = "$TRANSITION_ANSWER" ]; then
-		CF_KIND=transition
-	elif CF_BETA=$(beta_version_of "$answer"); then
-		CF_KIND=beta
-	fi
-}
-
-# replace_cf DEST: the transition cf over DEST.
-replace_cf() {
-	place "$WORK/unpacked/cf" "$1" || return 1
-	mv -f "$TMP_BIN" "$1" || return 1
-	TMP_BIN=
-}
-
-# closed_to_others PATH: PATH belongs to the user running the installer or to root, and neither its group, nor
-# others, nor an ACL entry can write it. A sticky directory such as /tmp counts as closed: others can add to it but
-# not rename what is ours. Read from `ls -ldn` (the same on macOS and Linux): mode in field 1, owner id in field 3;
-# only its first line counts, and a name with a newline is never closed. No metadata means not closed.
-closed_to_others() {
-	case $1 in *'
-'*) return 1 ;; esac
-	# shellcheck disable=SC2012 # the mode and owner of one path; find has no portable equivalent
-	ls -ldn "$1" 2>/dev/null | awk -v me="$(id -u)" 'NR == 1 {
-		seen = 1
-		m = $1
-		sticky = substr(m, 1, 1) == "d" && substr(m, 10, 1) == "t"
-		writable = substr(m, 6, 1) == "w" || substr(m, 9, 1) == "w"
-		ok = ($3 == me || $3 == 0) && (!writable || sticky)
-	} END { exit !(seen && ok) }' || return 1
-	acl_closed "$1"
-}
-
-# acl_closed PATH: no ACL entry lets anyone else write PATH. macOS lists its entries with `ls -lde` (an `allow` with
-# a write-class right opens it; the `deny delete` of every home does not); elsewhere a `+` after the mode is a POSIX
-# ACL, which counts as open.
-acl_closed() {
-	if [ "$(uname -s)" = Darwin ]; then
-		# shellcheck disable=SC2012 # the ACL of one path; nothing else prints it on macOS
-		acl=$(ls -lden "$1" 2>/dev/null) && [ -n "$acl" ] || return 1
-		printf '%s\n' "$acl" | awk 'NR > 1 && / allow .*(write|append|add_file|add_subdirectory|delete|chown)/ { open = 1 }
-			END { exit !(NR >= 1 && !open) }'
-	else
-		# shellcheck disable=SC2012 # see closed_to_others
-		acl=$(ls -ldn "$1" 2>/dev/null) && [ -n "$acl" ] || return 1
-		# no marker, `.` (an SELinux context only) or `@` (extended attributes, macOS): anything else, `+` or the `?` of
-		# an unknown status, is open
-		printf '%s\n' "$acl" | awk 'NR == 1 { m = substr($1, 11, 1); exit !(m == "" || m == "." || m == "@") }'
-	fi
-}
-
-# closed_path PATH: every directory from / down to PATH, and PATH itself, is closed to others, so nobody else can
-# swap what PATH names between the check and its use. Checked top down: each step stands on one already closed.
-closed_path() {
-	[ "$1" = / ] || closed_path "$(dirname "$1")" || return 1
-	closed_to_others "$1"
-}
-
-# $DIR/cf exists and is not a directory.
-transition_cf_in_dir() {
-	if ! real=$(resolve_link "$DIR/cf"); then
-		log "left $DIR/cf alone: it is a symlink that does not resolve to a file"
-		return 0
-	fi
-	shown=$DIR/cf
-	dest=$real
-	if [ -L "$DIR/cf" ]; then
-		shown=$real
-		log "$DIR/cf is a symlink to $real"
-	fi
-	real_dir=$(cd -P "$DIR" && pwd -P)
-	if [ "$real" = "$real_dir/cflk" ]; then
-		log "$DIR/cf already runs cflk; nothing to change"
-		return 0
-	fi
-	# Nothing is run, read or replaced until it is a regular file that only the user or root can change.
-	if [ ! -f "$real" ]; then
-		log "left $shown alone: it is not a regular file"
-		return 0
-	fi
-	if ! closed_path "$real"; then
-		log "left $shown alone: it, or a directory above it, is not owned by you or root, or can be written by others. Use cflk for Code Flock"
-		return 0
-	fi
-	if cmp -s "$real" "$WORK/unpacked/cf"; then
-		log "$shown is already the transition cf; nothing to change"
-		return 0
-	fi
-	classify_cf "$real"
-	case $CF_KIND in
-		foreign)
-			log "left $shown alone: it is not the cf of Code Flock (a different tool, one too new to be sure, or one that did not answer). Use cflk for Code Flock"
-			return 0
-			;;
-		transition) done_message="updated the transition cf at $shown; it runs cflk and goes away in 0.5" ;;
-		beta) done_message="replaced the cf of Code Flock $CF_BETA at $shown with the transition cf: it runs cflk and goes away in 0.5. Use cflk from now on" ;;
-	esac
-	# A link to another directory is replaced itself: a cf outside $DIR is never touched.
-	if [ -L "$DIR/cf" ] && [ "$(dirname "$real")" != "$real_dir" ]; then
-		dest=$DIR/cf
-		done_message="replaced the cf link at $dest with the transition cf: it runs cflk and goes away in 0.5. Use cflk from now on"
-	fi
-	replace_cf "$dest" ||
-		die 4 "cflk $VERSION is installed at $DIR/cflk, but $dest could not be replaced (no write access to $(dirname "$dest")?). cflk is installed; remove or replace $dest by hand (with sudo if its directory belongs to the system), or just use cflk"
-	[ "$dest" = "$real" ] || log "$real was left alone; it is no longer reached through $dest"
-	log "$done_message"
-}
-
-# The cf that a shell would run, when it is not the one handled in $DIR: said, never run or touched. A relative
-# result (an empty or relative PATH entry) is not reported.
-report_cf_on_path() {
-	found=$(command -v cf 2>/dev/null) || return 0
-	case $found in /*) ;; *) return 0 ;; esac
-	[ -f "$found" ] || return 0
-	[ "$(cd -P "$(dirname "$found")" && pwd -P)" != "$(cd -P "$DIR" && pwd -P)" ] || return 0
-	if handled=$(resolve_link "$DIR/cf") && real=$(resolve_link "$found") && [ "$real" = "$handled" ]; then
-		return 0
-	fi
-	log "another cf is first on PATH at $found; it was left alone. The Code Flock command is cflk; if that cf is an older Code Flock, remove it."
-}
-
-# After cflk is in place, the cf of Code Flock gets replaced by the transition cf. Anything else stays.
-transition_cf() {
-	if [ -d "$DIR/cf" ]; then
-		log "left $DIR/cf alone: it is a directory (or a link to one). Code Flock is cflk"
-	elif [ -e "$DIR/cf" ] || [ -L "$DIR/cf" ]; then
-		transition_cf_in_dir
-	fi
-	report_cf_on_path
-}
-
 install_binaries() {
 	DIR=${INSTALL_DIR%/}
 	mkdir -p "$DIR" || die 4 "cannot create $DIR"
 	[ ! -d "$DIR/cflk" ] || die 4 "$DIR/cflk is a directory (or a link to one); move it away and run the installer again"
 	install_cflk
-	transition_cf
 	case ":$PATH:" in
 		*":$DIR:"*) ;;
 		*) log "$DIR is not on your PATH; add this line to your shell profile (~/.profile, ~/.zshrc): export PATH=\"$DIR:\$PATH\"" ;;
 	esac
-	log "next: 'cflk controller init' on the machine that will be the Controller, or 'cflk setup' to join an existing one"
+	log "next: set up your peers (docs/guide/getting-started.md) and run 'cflk doctor'; it also lists what a 0.4 Controller or Worker left here, and 'cflk doctor --fix' removes the services once you have checked the peer network"
 }
 
 main() {

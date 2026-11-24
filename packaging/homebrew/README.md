@@ -1,7 +1,7 @@
 # Distribución con Homebrew
 
 Code Flock se publica en un tap propio, `autarquico/homebrew-tap`, como la fórmula
-**`codeflock`**, que instala solo el binario `cflk` (no el `cf` de transición: choca con `cf-cli`). Los assets son
+**`codeflock`**, que instala solo el binario `cflk`. Los assets son
 `cflk_<ver>_<os>_<arch>.tar.gz` de `Autarquico/codeflock`. Plataformas: macOS arm64 y amd64, Linux amd64 y Linux arm64
 (las mismas que `install.sh`).
 

@@ -61,9 +61,9 @@ func TestResolveKeepsTheOldDirectoriesWhileTheNewOnesDoNotExist(t *testing.T) {
 	}
 	resolve(nil)
 	resolve(nil)
-	if n := strings.Count(warned.String(), "install-service"); n != 1 || !strings.Contains(warned.String(), strings.TrimSuffix(strings.TrimSuffix(oldWorkerUnit(), ".service"), ".plist")) ||
-		!strings.Contains(warned.String(), "cflk worker install-service") {
-		t.Errorf("one line naming the unit and its install-service per process, got:\n%s", warned)
+	if n := strings.Count(warned.String(), "doctor --fix"); n != 1 || !strings.Contains(warned.String(), strings.TrimSuffix(strings.TrimSuffix(oldWorkerUnit(), ".service"), ".plist")) ||
+		strings.Contains(warned.String(), "install-service") {
+		t.Errorf("one line naming the unit and `cflk doctor --fix` per process, got:\n%s", warned)
 	}
 }
 
@@ -88,13 +88,13 @@ func TestResolveKeepsWhatAVariableSaysEvenIfTheOldDirectoryExists(t *testing.T) 
 	}
 }
 
-func TestOldUnitsFindsSuffixedAndStoppedOnes(t *testing.T) {
+func TestOldUnitsFindsTheExactNamesOf04(t *testing.T) {
 	home, _ := oldHome(t, "")
 	dir := filepath.Join(home, ".config", "systemd", "user")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range []string{"cf-worker-t1.service", "cf-controller.service", "other.service"} {
+	for _, f := range []string{"cf-worker.service", "cf-worker-backup.service", "cf-controller.service", "codeflock-worker.service", "other.service"} {
 		if err := os.WriteFile(filepath.Join(dir, f), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -103,7 +103,7 @@ func TestOldUnitsFindsSuffixedAndStoppedOnes(t *testing.T) {
 	for _, u := range OldUnits(home, "linux") {
 		got = append(got, u.Kind+":"+u.Name)
 	}
-	if strings.Join(got, ",") != "worker:cf-worker-t1,controller:cf-controller" {
+	if strings.Join(got, ",") != "worker:cf-worker,controller:cf-controller,worker:codeflock-worker" {
 		t.Errorf("%v", got)
 	}
 }

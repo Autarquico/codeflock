@@ -70,8 +70,8 @@ TestScenario_VerifiedInstall_darwinRosettaPicksArm64() {
 	! grep -q "darwin_amd64" "$T/requests" || fail "the Intel tarball was requested under Rosetta"
 }
 
-# The real cflk and transition cf, built with the GoReleaser ldflags and packed like its archive (LICENSE, README.md,
-# cflk, cf), signed and installed over HTTP: proves the version injection and the archive layout, which the fake
+# The real cflk, built with the GoReleaser ldflags and packed like its archive (LICENSE, README.md,
+# cflk), signed and installed over HTTP: proves the version injection and the archive layout, which the fake
 # fixtures cannot.
 TestScenario_VerifiedInstall_realBinary() {
 	command -v go >/dev/null 2>&1 || fail "go is required for the real-binary test (the CI installer job needs setup-go)"
@@ -85,11 +85,10 @@ TestScenario_VerifiedInstall_realBinary() {
 	mkdir -p "$T/real"
 	(cd "$ROOT" && CGO_ENABLED=0 go build -trimpath \
 		-ldflags "-s -w -X $pkg.version=$BARE_VERSION -X $pkg.commit=abc1234 -X $pkg.date=2026-01-01T00:00:00Z" \
-		-o "$T/real/cflk" ./cmd/cflk &&
-		CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "$T/real/cf" ./cmd/cf-transition) || fail "go build failed"
+		-o "$T/real/cflk" ./cmd/cflk) || fail "go build failed"
 	cp "$ROOT/LICENSE" "$ROOT/README.md" "$T/real/"
 	make_dist "$T/dist"
-	tar -C "$T/real" -czf "$T/dist/cflk_${BARE_VERSION}_${goos}_${goarch}.tar.gz" LICENSE README.md cflk cf
+	tar -C "$T/real" -czf "$T/dist/cflk_${BARE_VERSION}_${goos}_${goarch}.tar.gz" LICENSE README.md cflk
 	finalize_dist "$T/dist" "$KEY_A"
 	serve_dist
 	rc=0
@@ -279,8 +278,6 @@ TestScenario_Hardening_tarMemberWithDotDot() { tarball_variant_is_rejected dotdo
 TestScenario_Hardening_tarMemberDotDotCflk() { tarball_variant_is_rejected dotdot_cflk; }
 TestScenario_Hardening_tarMemberNotCflk() { tarball_variant_is_rejected notcflk; }
 TestScenario_Hardening_tarCflkIsSymlink() { tarball_variant_is_rejected symlink; }
-TestScenario_Hardening_tarWithoutCf() { tarball_variant_is_rejected nocf; }
-TestScenario_Hardening_tarCfIsSymlink() { tarball_variant_is_rejected cfsymlink; }
 
 TestScenario_Hardening_missingPrerequisite() {
 	good_release "$KEY_A"
@@ -411,32 +408,6 @@ TestScenario_PortableAwk_noRegexIntervalInAwk() {
 }
 
 # --- Install target problems ----------------------------------------------------
-
-# $T/bin/cf is a directory: it is some other tool's cf, so cflk is installed and the directory stays as it is.
-assert_cf_dir_left_alone() { # dir that $T/bin/cf is or points to
-	run_install "$KEY_A/install.sh"
-	assert_rc 0
-	[ "$("$T/bin/cflk" version)" = "$BARE_VERSION" ] || fail "cflk was not installed"
-	assert_out_contains "left $T/bin/cf alone: it is a directory"
-	[ -z "$(ls -A "$1")" ] || fail "something landed inside the directory: $(ls -A "$1")"
-}
-
-TestScenario_InstallTarget_cfIsDirectory() {
-	good_release "$KEY_A"
-	serve_dist
-	mkdir -p "$T/bin/cf"
-	assert_cf_dir_left_alone "$T/bin/cf"
-	[ "$(find "$T/bin" -mindepth 1 | wc -l | tr -d ' ')" -eq 2 ] || fail "unexpected files in the install dir: $(ls -A "$T/bin")"
-}
-
-TestScenario_InstallTarget_cfIsSymlinkToDirectory() {
-	good_release "$KEY_A"
-	serve_dist
-	mkdir -p "$T/bin" "$T/elsewhere"
-	ln -s "$T/elsewhere" "$T/bin/cf"
-	assert_cf_dir_left_alone "$T/elsewhere"
-	[ "$(find "$T/bin" -mindepth 1 | wc -l | tr -d ' ')" -eq 2 ] || fail "unexpected files in the install dir: $(ls -A "$T/bin")"
-}
 
 TestScenario_InstallTarget_mktempFails() {
 	good_release "$KEY_A"

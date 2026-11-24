@@ -2773,6 +2773,9 @@ CF_IN_PROGRESS
 CF_CURSOR_EXPIRED
 CF_CONFIRMATION_STALE
 CF_NOT_IMPLEMENTED
+CF_PEER_UNREACHABLE
+CF_PEER_NO_ANSWER
+CF_NO_CANDIDATE_PEER
 ```
 
 CLI puede mapearlos a exit codes/documentación; TUI a acciones recuperables.
@@ -2787,9 +2790,9 @@ Exit codes del CLI:
 | 3 | no encontrado / ambiguo | `CF_NOT_FOUND`, `CF_AMBIGUOUS_REF` |
 | 4 | conflicto de estado | `CF_INVALID_TRANSITION`, `CF_WORKFLOW_CONFLICT`, `CF_STALE_LEASE`, `CF_IDEMPOTENCY_MISMATCH`, `CF_CONFIRMATION_STALE`, `CF_CURSOR_EXPIRED`, `CF_DEPENDENCY_CYCLE` |
 | 5 | denegado por policy/budget | `CF_POLICY_DENIED`, `CF_BUDGET_EXCEEDED`, `CF_SECRET_UNAVAILABLE` |
-| 6 | Controller inaccesible / auth | `CF_CONTROLLER_UNREACHABLE`, `CF_UNAUTHENTICATED` |
+| 6 | Controller o peer inaccesible / auth | `CF_CONTROLLER_UNREACHABLE`, `CF_UNAUTHENTICATED`, `CF_PEER_UNREACHABLE` (no se pudo alcanzar), `CF_PEER_NO_ANSWER` (se alcanzó y no respondió a tiempo) |
 | 7 | requiere confirmación | `CF_CONFIRMATION_REQUIRED` |
-| 8 | capacidad no disponible | `CF_NO_ELIGIBLE_WORKER`, `CF_HARNESS_UNAVAILABLE`, `CF_CHECKPOINT_UNSUPPORTED`, `CF_RUN_NOT_RESPONDABLE`, `CF_WORKER_CAPACITY`, `CF_WORKER_BUSY`, `CF_NOT_IMPLEMENTED`, `CF_WORKER_OFFLINE`, `CF_RUN_NOT_ATTACHABLE`, `CF_VERSION_INCOMPATIBLE`, `CF_PROVIDER_USAGE_UNAVAILABLE` |
+| 8 | capacidad no disponible | `CF_NO_ELIGIBLE_WORKER`, `CF_HARNESS_UNAVAILABLE`, `CF_CHECKPOINT_UNSUPPORTED`, `CF_RUN_NOT_RESPONDABLE`, `CF_WORKER_CAPACITY`, `CF_WORKER_BUSY`, `CF_NOT_IMPLEMENTED`, `CF_WORKER_OFFLINE`, `CF_RUN_NOT_ATTACHABLE`, `CF_VERSION_INCOMPATIBLE`, `CF_PROVIDER_USAGE_UNAVAILABLE`, `CF_NO_CANDIDATE_PEER` (ningún peer alcanzable puede tomar el Job) |
 | 9 | reintentable | `CF_IN_PROGRESS` |
 
 Con `--json`, los errores se emiten como `{"error": {"code": "...", "message": "...", "details": {...}}}` en stdout.

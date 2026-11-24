@@ -93,11 +93,15 @@ tmux sesiones que sobreviven y en las que se puede entrar, y git el transporte d
   necesita `cflk stop`. Los demás estados no
   los cambia la reconciliación. Nada se reinicia solo: `lost` se reanuda con
   `cflk resume`.
-- **`waiting`:** Claude, con hooks instalados solo para el Job: `Notification` de tipo `permission_prompt` o `idle_prompt` pone el marcador `waiting` en el
-  directorio del launch y `UserPromptSubmit` lo quita. Codex, con su programa `notify` al acabar cada turno (en modo
-  interactivo, acabar el turno es esperar a la persona); lo quitan `cflk send` o que el rollout crezca después del
-  marcador. Se valida contra los CLIs reales en la
-  primera fase; si un harness no lo permite, ese harness no muestra `waiting`.
+- **`waiting`:** Claude, con hooks instalados solo para el Job: `Stop` (fin del turno) pone el marcador `waiting` en
+  el directorio del launch y `UserPromptSubmit` lo quita (también llega con `tmux send-keys`). `Notification` no se
+  usa: `idle_prompt` llega unos 60 s tarde y con `bypassPermissions` no hay `permission_prompt`. Codex, con su
+  programa `notify` (`agent-turn-complete`) solo si su `thread-id` es el `session_id` del Job (Codex también lo
+  dispara para hilos internos, como el que genera el título); lo quitan `cflk send` o que el rollout crezca después
+  del marcador. Comprobado con los CLIs reales (spike F0, 2026-11-23).
+- **Confianza de la carpeta:** los dos CLIs piden confiar en una carpeta nueva antes de arrancar en modo
+  interactivo. El launch marca el worktree como de confianza antes de arrancar: Claude como ya hace su adapter
+  (`internal/adapters/harness/claude/apply.go`), Codex con `[projects."<ruta>"] trust_level = "trusted"`.
 - **Session ID:** Claude lo fija al lanzar con `--session-id` (`internal/adapters/harness/claude/sessionid.go:28`).
   Codex no: tras lanzar, se toma el único rollout de `CODEX_HOME/sessions` cuyo cwd es el worktree del Job y que es
   posterior al `started`; ninguno o más de uno es un error del launch.
@@ -127,7 +131,8 @@ devuelve ese resultado antes de aplicar cualquier otra regla.
 
 1. **Parar.** A escribe `stopping`, manda la señal de parada al grupo de procesos del launch (como hoy el executor,
    comprobando la identidad del wrapper; `Adapter.Stop` no lo implementa ningún adapter) y espera a que **el grupo
-   entero** haya desaparecido (no basta el `exit` del wrapper). Si a los 30 s sigue, lo mata y espera otros 10 s.
+   entero** haya desaparecido (no basta el `exit` del wrapper). Si a los 40 s sigue (los 30 s que el wrapper da al harness antes de escalar, más 10 s de margen
+   para que escriba `exit`), lo mata y espera otros 10 s.
    Solo con el grupo vacío escribe `stopped`. Si queda algo, aborta y el Job se queda en `stopping`: no se reanuda ni
    se mueve hasta que un `cflk stop` (que repite la parada) lo deje `stopped`. Lo mismo vale para `cflk stop` solo.
 2. **Sellar.** A hace commit de lo rastreado y lo no rastreado que no esté ignorado (con las guardas de
@@ -160,7 +165,8 @@ el peer las rechaza si su Job no tiene esa `gen` o está `moved`.
 Que el agente abra de verdad la sesión importada no se comprueba más allá de que arranque: si no la abre, el Job está
 en B y la conversación sigue en el transcript importado, y `cflk resume` en B la reintenta. No se pierde nada.
 
-Al importar siempre con un `session_id` nuevo no hay colisiones: un Job que vuelve a un peer donde ya estuvo
+El `session_id` nuevo tiene el formato de cada harness: UUIDv4 para Claude, UUIDv7 para Codex (Codex rechaza un
+UUIDv4 al reanudar). Al importar siempre con un `session_id` nuevo no hay colisiones: un Job que vuelve a un peer donde ya estuvo
 (A→B→A) no toca su transcript viejo. Un import a medias (caída entre instalar y escribir el Job) deja un transcript
 con un id que nadie referencia, sin efecto.
 
@@ -173,7 +179,9 @@ cadena muestra el Job como «en `<peer>`, sin confirmar».
 - `cflk pull <job> --finish` lo para y sella en el peer que lo tiene (pasos 1 y 2), que escribe `finishing {finish: <aleatorio>, commit}`:
   mientras dure, ese Job no se reanuda ni se mueve. Este peer trae ese commit exacto como rama `cflk/<id>` al repo del
   directorio actual (`git fetch`) y avisa al dueño con ese `finish`, que solo entonces lo marca `done`; un aviso o un abort con otro `finish` se
-  rechaza. No cambia mi checkout: dice
+  rechaza. Si `cflk/<id>` ya existe aquí y va por detrás del `commit` sellado (un trabajo anterior del mismo Job), `pull --finish`
+  lo avanza (fast-forward) a ese commit; si un worktree de este peer, del mismo Job, lo tiene en checkout (el primero que creó `cflk run`),
+  lo deja en HEAD desacoplado, sin tocar sus ficheros; el worktree de cualquier otro nunca se toca. No cambia mi checkout: dice
   cómo hacerlo. Rechaza si el repo del directorio no es el del Job o si `cflk/<id>` ya existe aquí con otro commit.
   Si algo falla o no hay respuesta, el Job se queda en `finishing`: `pull --finish` lo reintenta y
   `pull --finish --abort` lo devuelve a `stopped`.
@@ -189,7 +197,7 @@ cadena muestra el Job como «en `<peer>`, sin confirmar».
 | `cflk show <job>` | `jobs_get` | Un Job |
 | `cflk run [--on p\|any] [--harness h] -- "prompt"` | `jobs_run` | Lanza un Job sobre la rama actual |
 | `cflk screen <job>` | `jobs_screen` | Lo que muestra su terminal ahora (`tmux capture-pane`) |
-| `cflk send <job> "texto"` | `jobs_send` | Escribe en el agente (`Adapter.SendInput`) |
+| `cflk send <job> "texto"` | `jobs_send` | Escribe en el agente (pega el texto en su panel de tmux y pulsa Enter) |
 | `cflk attach <job> [--read-only]` | `jobs_attach` | Entra (local: `tmux attach`; remoto: `ssh -t`) |
 | `cflk stop <job>` / `cflk resume <job>` | `jobs_stop` / `jobs_resume` | Para / reanuda en el mismo peer |
 | `cflk clean <job>` | `jobs_clean` | Borra lo que queda de un Job `moved` o `done` en este peer |

@@ -1,0 +1,50 @@
+package runner
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"testing"
+)
+
+// WriteClaudeSettings exposes the hooks writer to the tests.
+var WriteClaudeSettings = writeClaudeSettings
+
+// MarkTurnsEndedBefore exposes the launch's look at the turns kept before its session was known.
+var MarkTurnsEndedBefore = markTurnsEndedBefore
+
+// ReadHooks is the commands of each event of a settings file.
+func ReadHooks(t *testing.T, path string) map[string][]string {
+	t.Helper()
+	raw, err := os.ReadFile(path) //nolint:gosec // a file of the test
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s struct {
+		Hooks map[string][]struct {
+			Hooks []struct {
+				Command string `json:"command"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(raw, &s); err != nil {
+		t.Fatal(err)
+	}
+	out := map[string][]string{}
+	for event, groups := range s.Hooks {
+		for _, g := range groups {
+			for _, h := range g.Hooks {
+				out[event] = append(out[event], h.Command)
+			}
+		}
+	}
+	return out
+}
+
+// PrepareFor is what the Agent of a harness plans for in.
+func PrepareFor(r *Runner, harnessID string, in Input) (Plan, error) {
+	return r.agents[harnessID].Prepare(context.Background(), in)
+}
+
+// RestoreMarker exposes the undoing of a send that failed.
+var RestoreMarker = restoreMarker

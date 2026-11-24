@@ -59,8 +59,11 @@ const (
 // stdout of a headless harness to EventsFile instead of OutputLog (stderr stays
 // in OutputLog); interactive mode ignores it, as the terminal is one stream.
 type Launch struct {
-	Argv      []string      `json:"argv"`
-	Env       []string      `json:"env,omitempty"`
+	Argv []string `json:"argv"`
+	Env  []string `json:"env,omitempty"`
+	// UnsetEnv names variables the harness must not inherit from the wrapper's
+	// own environment (Env sets, this removes).
+	UnsetEnv  []string      `json:"unset_env,omitempty"`
 	SecretEnv []SecretEnv   `json:"secret_env,omitempty"`
 	Dir       string        `json:"dir"`
 	Mode      string        `json:"mode"`

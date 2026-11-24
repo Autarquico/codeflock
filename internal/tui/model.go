@@ -2,285 +2,275 @@ package tui
 
 import (
 	"context"
-	"fmt"
+	"io"
+	"slices"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-)
 
-// Options compose the shell. The zero value is a working shell on a dark
-// terminal, the wall clock and the local time zone.
-type Options struct {
-	// Clock is the only source of "now" (injectable, like every clock here).
-	Clock func() time.Time
-	// Location is the time zone that times are shown in.
-	Location *time.Location
-	// Backend runs the actions of the views. Without one the shell has only the
-	// home, and the keys of the views say they are not available.
-	Backend Backend
-	// Feeds follow the lists of the views while they are open.
-	Feeds Feeds
-	// DetachKey is how the key that leaves a session reads, "Ctrl-]": the live
-	// view says it next to the key that enters. "" says nothing.
-	DetachKey string
-}
+	"github.com/Autarquico/codeflock/internal/cli"
+)
 
 type (
-	updateMsg OverviewUpdate
-	// fatalMsg is the subscription giving up: trying again would fail the same.
-	fatalMsg struct{ err error }
+	listMsg struct {
+		list cli.JobList
+		err  error
+	}
+	screenMsg struct {
+		seq  int
+		id   string
+		text string
+		err  error
+	}
+	// doneMsg is an order (send, stop, resume, attach) finished.
+	doneMsg struct {
+		verb string
+		err  error
+	}
+	tickMsg struct{}
 )
 
-// Model is the root of the shell: it owns the state, the router and the theme,
-// and turns messages into changes of them.
+// Model is the TUI: the fleet list, the selection, and the detail of the
+// selected Job.
 type Model struct {
-	opts   Options
-	state  State
-	router *Router
-	theme  Theme
-	width  int
-	height int
-	status string // one line of feedback for the last key, cleared by the next
-	fatal  error
+	ctx      context.Context
+	jobs     Jobs
+	interval time.Duration
+	theme    Theme
+	width    int
+	height   int
 
-	views   map[Route]viewSpec
-	ctx     context.Context
-	end     context.CancelFunc // ends ctx: the TUI's own, whatever the caller's does
-	send    func(tea.Msg)
-	feeding map[Route]context.CancelFunc
-	pal     paletteHost
-	prefs   *livePrefs // what the live view remembers for the session
+	list      cli.JobList
+	loaded    bool
+	listErr   error
+	cursor    int
+	screen    string
+	screenID  string // the Job the screen belongs to
+	screenErr error
+
+	// One list fetch is in flight at a time: a tick or an order that asks for
+	// another while one runs only marks that a fresh one is due when it returns.
+	listing   bool
+	relist    bool
+	screening int // screen fetches in flight
+	screenSeq int // the last one asked for: older answers are dropped
+
+	typing bool
+	target string // the Job the draft is for: the cursor may move to another while it is typed
+	input  []rune
+	status string
 }
 
-// New builds the shell, at home.
-func New(opts Options) *Model {
-	if opts.Clock == nil {
-		opts.Clock = time.Now
+// New builds the model. ctx bounds every call it makes.
+func New(ctx context.Context, jobs Jobs, opts Options) *Model {
+	if opts.Interval <= 0 {
+		opts.Interval = DefaultInterval
 	}
-	if opts.Location == nil {
-		opts.Location = time.Local
-	}
-	m := &Model{opts: opts, router: NewRouter(Home{}), theme: NewTheme(true), views: specs(), ctx: context.Background(), feeding: map[Route]context.CancelFunc{}, prefs: &livePrefs{leave: opts.DetachKey}}
-	env := screenEnv{Backend: opts.Backend, Feeds: opts.Feeds, ctx: func() context.Context { return m.ctx }, send: m.tell, prefs: m.prefs}
-	for route, spec := range m.views {
-		switch {
-		case spec.open != nil:
-			m.router.Register(route, func() Screen { return spec.open(env) })
-		case opts.Backend != nil:
-			m.router.Register(route, func() Screen {
-				b := newBrowser(spec, opts.Backend)
-				b.prefs = m.prefs
-				return b
-			})
-		}
-	}
-	m.registerPalette()
-	return m
+	return &Model{ctx: ctx, jobs: jobs, interval: opts.Interval, theme: NewTheme(true), width: 80, height: 24}
 }
 
-// bind connects the shell to the program that runs it: send delivers what the
-// feeds produce, and ctx ends them.
-func (m *Model) bind(ctx context.Context, send func(tea.Msg)) {
-	m.stop()
-	m.ctx, m.end = context.WithCancel(ctx)
-	m.send = send
+// Init asks the terminal for its background and reads the fleet.
+func (m *Model) Init() tea.Cmd {
+	return tea.Batch(tea.RequestBackgroundColor, m.fetchList(), m.tick())
 }
 
-// tell delivers a message to the program; before the shell is bound to one
-// there is nobody to tell.
-func (m *Model) tell(msg tea.Msg) {
-	if m.send != nil {
-		m.send(msg)
+func (m *Model) tick() tea.Cmd {
+	return tea.Tick(m.interval, func(time.Time) tea.Msg { return tickMsg{} })
+}
+
+func (m *Model) fetchList() tea.Cmd {
+	if m.listing {
+		m.relist = true
+		return nil
+	}
+	m.listing = true
+	return func() tea.Msg {
+		list, err := m.jobs.List(m.ctx, "")
+		return listMsg{list, err}
 	}
 }
 
-// stop ends every feed and everything the screens follow under the context of
-// the shell, so nothing outlives the TUI when the caller's context stays alive.
-func (m *Model) stop() {
-	if m.end != nil {
-		m.end()
+func (m *Model) fetchScreen() tea.Cmd {
+	j, ok := m.selected()
+	if !ok {
+		return nil
 	}
-	for route, cancel := range m.feeding {
-		cancel()
-		delete(m.feeding, route)
+	m.screenSeq++
+	m.screening++
+	seq := m.screenSeq
+	return func() tea.Msg {
+		text, err := m.jobs.Screen(m.ctx, j.ID)
+		return screenMsg{seq, j.ID, text, err}
 	}
-	m.router.CloseAll() // the screens' streams end with the shell
 }
 
-// Router is the stack of screens, for the milestones that add some.
-func (m *Model) Router() *Router { return m.router }
+// selected is the Job under the cursor. While the list is in error the rows
+// shown are stale, so nothing is selected and no order can reach them.
+func (m *Model) selected() (cli.JobView, bool) {
+	if m.listErr != nil || m.cursor < 0 || m.cursor >= len(m.list.Jobs) {
+		return cli.JobView{}, false
+	}
+	return m.list.Jobs[m.cursor], true
+}
 
-// Err is why the shell ended, if the subscription gave up.
-func (m *Model) Err() error { return m.fatal }
-
-// Init asks the terminal which background it has.
-func (m *Model) Init() tea.Cmd { return tea.RequestBackgroundColor }
+// order runs an action on the selected Job and then reads the fleet again.
+func (m *Model) order(verb string, do func(id string) error) tea.Cmd {
+	j, ok := m.selected()
+	if !ok {
+		return nil
+	}
+	m.status = verb + " " + j.ID + "…"
+	return func() tea.Msg { return doneMsg{verb, do(j.ID)} }
+}
 
 // Update handles one message.
-//
-// The screen in view sees every message. A key press is offered to it before
-// the global keys, so a view that takes text input keeps "q" and "t".
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	return m, tea.Batch(m.update(msg), m.settle())
-}
-
-// settle follows the feeds of the screens in the stack and lets the screen in
-// view ask for what it needs from the state it now has.
-func (m *Model) settle() tea.Cmd {
-	m.syncFeeds()
-	// A screen under another follows nothing of the live view: it is not seen.
-	for _, s := range m.router.Covered() {
-		if p, ok := s.(interface{ Park() }); ok {
-			p.Park()
-		}
-	}
-	if s, ok := m.router.Top().(interface {
-		Sync(RenderContext) tea.Cmd
-	}); ok {
-		return s.Sync(m.context())
-	}
-	return nil
-}
-
-func (m *Model) update(msg tea.Msg) tea.Cmd {
-	if cmd, handled := m.paletteMsg(msg); handled {
-		return cmd
-	}
 	switch msg := msg.(type) {
-	case tea.KeyPressMsg:
-		m.status = ""
-		if cmd, handled := m.router.Update(msg); handled {
-			return cmd
-		}
-		return m.press(msg.String())
-	case updateMsg:
-		m.state.apply(OverviewUpdate(msg))
-	case feedMsg:
-		if spec, ok := m.views[msg.route]; ok {
-			spec.apply(&m.state, msg.update)
-		}
-	case feedFailedMsg:
-		if spec, ok := m.views[msg.route]; ok {
-			spec.fail(&m.state, msg.err)
-		}
-	case fatalMsg:
-		m.fatal = msg.err
-		return tea.Quit
-	case openGridMsg:
-		if m.router.Has(RouteGrid) {
-			m.router.Open(RouteGrid)
-		}
-		return nil
-	case answer:
-		// The answer of an asynchronous call goes to the screen that asked,
-		// wherever it is in the stack; if it is gone, nobody wants it. A prepared
-		// attach that nobody runs holds nothing (its process was never started).
-		cmd, found := m.router.Deliver(msg.origin(), msg)
-		if opened, ok := msg.(screenOpenedMsg); ok && !found && opened.stream != nil {
-			_ = opened.stream.Close() // the screen that asked for it is gone
-		}
-		if done, ok := msg.(paletteDoneMsg); ok && !found {
-			m.status = done.summary()
-		}
-		return cmd
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 	case tea.BackgroundColorMsg:
 		m.theme = NewTheme(msg.IsDark())
+	case tickMsg:
+		var screen tea.Cmd
+		if m.screening == 0 {
+			screen = m.fetchScreen()
+		}
+		return m, tea.Batch(m.fetchList(), screen, m.tick())
+	case listMsg:
+		m.listing = false
+		cmds := []tea.Cmd{m.applyList(msg)}
+		if m.relist {
+			m.relist = false
+			cmds = append(cmds, m.fetchList())
+		}
+		return m, tea.Batch(cmds...)
+	case screenMsg:
+		m.screening--
+		if j, ok := m.selected(); ok && j.ID == msg.id && msg.seq == m.screenSeq {
+			m.screenID, m.screenErr = msg.id, msg.err
+			if msg.err == nil {
+				m.screen = msg.text
+			}
+		}
+	case doneMsg:
+		if msg.err != nil {
+			m.status = msg.verb + " failed: " + msg.err.Error()
+		} else {
+			m.status = msg.verb + " done"
+		}
+		return m, tea.Batch(m.fetchList(), m.fetchScreen())
+	case tea.KeyPressMsg:
+		return m.key(msg)
 	}
-	cmd, _ := m.router.Update(msg)
-	return cmd
+	return m, nil
 }
 
-func (m *Model) press(key string) tea.Cmd {
-	if key == ":" {
-		return m.openPalette(true)
+// applyList keeps the selection on the same Job when the list changes under it.
+func (m *Model) applyList(msg listMsg) tea.Cmd {
+	m.loaded, m.listErr = true, msg.err
+	if msg.err != nil {
+		return nil
 	}
-	action, route := resolve(key)
-	switch action {
-	case ActionQuit:
-		m.stop()
-		return tea.Quit
-	case ActionBack:
-		m.router.Back()
-	case ActionOpen:
-		if m.router.Has(route) {
-			m.router.Open(route)
-		} else {
-			m.status = labelOf(route) + " is not available yet"
+	var keep string
+	if j, ok := m.selected(); ok {
+		keep = j.ID
+	}
+	m.list = msg.list
+	m.cursor = 0
+	for i, j := range m.list.Jobs {
+		if j.ID == keep {
+			m.cursor = i
 		}
+	}
+	if j, ok := m.selected(); !ok || j.ID != m.screenID {
+		m.screen, m.screenID, m.screenErr = "", "", nil
+		return m.fetchScreen()
 	}
 	return nil
 }
 
-// View draws the screen in view.
-func (m *Model) View() tea.View {
-	v := tea.NewView(m.Frame())
-	v.AltScreen = true
-	return v
+func (m *Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.typing {
+		return m, m.typingKey(msg)
+	}
+	switch msg.String() {
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	case "j", "down":
+		return m, m.move(1)
+	case "k", "up":
+		return m, m.move(-1)
+	case "r":
+		m.status = ""
+		return m, tea.Batch(m.fetchList(), m.fetchScreen())
+	case "s":
+		if j, ok := m.selected(); ok {
+			m.typing, m.target, m.input, m.status = true, j.ID, nil, ""
+		}
+	case "x":
+		return m, m.order("stop", func(id string) error { _, err := m.jobs.Stop(m.ctx, id); return err })
+	case "u":
+		return m, m.order("resume", func(id string) error { _, err := m.jobs.Resume(m.ctx, id); return err })
+	case "a":
+		return m, m.attach()
+	}
+	return m, nil
 }
 
-// Frame is the text of the screen in view, without the program around it.
-func (m *Model) Frame() string { return m.router.Top().Render(m.context()) }
-
-func (m *Model) context() RenderContext {
-	return RenderContext{
-		State: &m.state, Theme: m.theme, Router: m.router,
-		Width: m.width, Height: m.height, Status: m.status, Now: m.opts.Clock(), Loc: m.opts.Location,
+func (m *Model) move(delta int) tea.Cmd {
+	if n := len(m.list.Jobs); n > 0 {
+		m.cursor = max(0, min(n-1, m.cursor+delta))
 	}
+	m.screen, m.screenID, m.screenErr = "", "", nil
+	return m.fetchScreen()
 }
 
-// syncFeeds follows the list of every view in the stack and lets go of the
-// ones that left it.
-func (m *Model) syncFeeds() {
-	want := map[Route]bool{}
-	for _, route := range m.router.Routes() {
-		want[route] = true
-		for _, needed := range m.views[route].needs {
-			want[needed] = true
+func (m *Model) typingKey(msg tea.KeyPressMsg) tea.Cmd {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		m.typing = false
+	case "enter":
+		text := string(m.input)
+		m.typing = false
+		if text == "" {
+			return nil
 		}
-	}
-	for route, cancel := range m.feeding {
-		if !want[route] {
-			cancel()
-			delete(m.feeding, route)
+		target := m.target
+		if m.listErr != nil || !slices.ContainsFunc(m.list.Jobs, func(j cli.JobView) bool { return j.ID == target }) {
+			m.status = "send: " + target + " is not in the list now, nothing was sent"
+			return nil
 		}
-	}
-	for route := range want {
-		if _, on := m.feeding[route]; !on {
-			m.follow(route)
+		m.status = "send " + target + "…"
+		return func() tea.Msg {
+			_, err := m.jobs.Send(m.ctx, target, text)
+			return doneMsg{"send", err}
 		}
+	case "backspace":
+		if n := len(m.input); n > 0 {
+			m.input = m.input[:n-1]
+		}
+	default:
+		m.input = append(m.input, []rune(msg.Text)...)
 	}
+	return nil
 }
 
-func (m *Model) follow(route Route) {
-	if m.send == nil {
-		return
-	}
-	spec, ok := m.views[route]
+// attach hands the terminal to the Job's session and takes it back on leaving.
+func (m *Model) attach() tea.Cmd {
+	j, ok := m.selected()
 	if !ok {
-		return
+		return nil
 	}
-	if spec.follow == nil {
-		return
-	}
-	run := spec.follow(m.opts.Feeds, m.send)
-	if run == nil {
-		return
-	}
-	spec.reset(&m.state)
-	ctx, cancel := context.WithCancel(m.ctx)
-	m.feeding[route] = cancel
-	send := m.send
-	go func() {
-		// A panic in a feed must not end the process with the terminal in raw mode.
-		defer func() {
-			if r := recover(); r != nil {
-				send(feedFailedMsg{route, fmt.Errorf("%v", r)})
-			}
-		}()
-		if err := run(ctx); err != nil && ctx.Err() == nil {
-			send(feedFailedMsg{route, err})
-		}
-	}()
+	m.status = ""
+	return tea.Exec(attachCmd{func() error { return m.jobs.Attach(m.ctx, j.ID, false) }},
+		func(err error) tea.Msg { return doneMsg{"attach", err} })
 }
+
+// attachCmd is a tea.ExecCommand over a function: Attach drives the terminal
+// itself, so the streams bubbletea offers are not needed.
+type attachCmd struct{ run func() error }
+
+func (c attachCmd) Run() error        { return c.run() }
+func (attachCmd) SetStdin(io.Reader)  {}
+func (attachCmd) SetStdout(io.Writer) {}
+func (attachCmd) SetStderr(io.Writer) {}

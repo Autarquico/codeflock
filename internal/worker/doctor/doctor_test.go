@@ -3,7 +3,6 @@ package doctor_test
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,13 +15,8 @@ import (
 	"github.com/Autarquico/codeflock/internal/adapters/harness/claude"
 	"github.com/Autarquico/codeflock/internal/adapters/harness/codex"
 	"github.com/Autarquico/codeflock/internal/adapters/harness/command"
-	"github.com/Autarquico/codeflock/internal/adapters/secrets"
-	secretsfile "github.com/Autarquico/codeflock/internal/adapters/secrets/file"
-	"github.com/Autarquico/codeflock/internal/adapters/secrets/secretstest"
-	v1 "github.com/Autarquico/codeflock/internal/api/v1"
 	"github.com/Autarquico/codeflock/internal/support/clock"
 	"github.com/Autarquico/codeflock/internal/worker/doctor"
-	"github.com/Autarquico/codeflock/internal/worker/globalapply"
 	"github.com/Autarquico/codeflock/internal/worker/sysinfo"
 )
 
@@ -67,17 +61,15 @@ func plenty(string) (sysinfo.Disk, error) {
 	return sysinfo.Disk{FreeBytes: 60, TotalBytes: 100}, nil
 }
 
-func newDoctor(t *testing.T, h *host, adapters ...harness.Adapter) (*doctor.Doctor, *secretsfile.Store) {
+func newDoctor(t *testing.T, h *host, adapters ...harness.Adapter) *doctor.Doctor {
 	t.Helper()
-	store := secretsfile.New(filepath.Join(t.TempDir(), "secrets.json"), clock.Real{})
 	return doctor.New(doctor.Options{
-		Host: h, Adapters: adapters, Worker: "box", DataDir: t.TempDir(), Secrets: store,
+		Host: h, Adapters: adapters, Worker: "box", DataDir: t.TempDir(),
 		Runtime: func(context.Context) error { return nil }, Disk: plenty, GOOS: "linux",
-		Applied: func(context.Context, harness.Adapter) ([]globalapply.Applied, error) { return nil, nil },
-	}), store
+	})
 }
 
-func find(t *testing.T, cs []v1.ComponentHealth, name string) v1.ComponentHealth {
+func find(t *testing.T, cs []doctor.Component, name string) doctor.Component {
 	t.Helper()
 	for _, c := range cs {
 		if c.Name == name {
@@ -85,7 +77,7 @@ func find(t *testing.T, cs []v1.ComponentHealth, name string) v1.ComponentHealth
 		}
 	}
 	t.Fatalf("no component %q in %+v", name, cs)
-	return v1.ComponentHealth{}
+	return doctor.Component{}
 }
 
 func writeFile(t *testing.T, path, content string) {
@@ -100,10 +92,10 @@ func writeFile(t *testing.T, path, content string) {
 
 func TestGlobalChecks(t *testing.T) {
 	h := newHost(t)
-	d, _ := newDoctor(t, h)
+	d := newDoctor(t, h)
 	cs := d.Check(t.Context())
 	for _, name := range []string{"runtime", "git", "disk"} {
-		if c := find(t, cs, name); c.Status != v1.ComponentOK {
+		if c := find(t, cs, name); c.Status != doctor.ComponentOK {
 			t.Errorf("%s = %+v, want ok", name, c)
 		}
 	}
@@ -115,28 +107,20 @@ func TestGlobalChecks(t *testing.T) {
 func TestRuntimeAndGitFail(t *testing.T) {
 	h := newHost(t)
 	delete(h.commands, "git")
-	store := secretsfile.New(filepath.Join(t.TempDir(), "s.json"), clock.Real{})
 	d := doctor.New(doctor.Options{
-		Host: h, Worker: "box", DataDir: t.TempDir(), Secrets: store, Disk: plenty,
+		Host: h, Worker: "box", DataDir: t.TempDir(), Disk: plenty,
 		Runtime: func(context.Context) error { return errors.New("tmux: not available") },
 	})
 	cs := d.Check(t.Context())
 	rt, git := find(t, cs, "runtime"), find(t, cs, "git")
-	if rt.Status != v1.ComponentFail || !strings.Contains(rt.Action, "tmux") || !strings.Contains(rt.Action, "box") {
+	if rt.Status != doctor.ComponentFail || !strings.Contains(rt.Action, "tmux") || !strings.Contains(rt.Action, "box") {
 		t.Errorf("runtime = %+v", rt)
 	}
-	if git.Status != v1.ComponentFail || !strings.Contains(git.Action, "git") {
+	if git.Status != doctor.ComponentFail || !strings.Contains(git.Action, "git") {
 		t.Errorf("git = %+v", git)
 	}
-	if h := doctor.Health(cs); h.Status != v1.HealthDegraded || doctor.Failing(cs) != 2 {
-		t.Errorf("health = %+v, failing %d", h, doctor.Failing(cs))
-	}
-}
-
-func TestHealthIsOKWithoutFailures(t *testing.T) {
-	cs := []v1.ComponentHealth{{Name: "a", Status: v1.ComponentOK}, {Name: "b", Status: v1.ComponentWarn}}
-	if h := doctor.Health(cs); h.Status != v1.HealthOK || h.Message != "" || len(h.Components) != 2 {
-		t.Errorf("health = %+v", h)
+	if doctor.Failing(cs) != 2 {
+		t.Errorf("failing %d", doctor.Failing(cs))
 	}
 }
 
@@ -153,13 +137,13 @@ func TestDiskFailsBelowTheThresholdAndRecoversWithHysteresis(t *testing.T) {
 		free uint64
 		want string
 	}{
-		{25, v1.ComponentOK},
-		{19, v1.ComponentFail},
-		{20, v1.ComponentFail},
-		{21, v1.ComponentFail},
-		{22, v1.ComponentOK},
-		{21, v1.ComponentOK},
-		{19, v1.ComponentFail},
+		{25, doctor.ComponentOK},
+		{19, doctor.ComponentFail},
+		{20, doctor.ComponentFail},
+		{21, doctor.ComponentFail},
+		{22, doctor.ComponentOK},
+		{21, doctor.ComponentOK},
+		{19, doctor.ComponentFail},
 	} {
 		free = step.free
 		if got := status(); got != step.want {
@@ -184,7 +168,7 @@ func TestDiskThresholdInBytes(t *testing.T) {
 			return sysinfo.Disk{FreeBytes: 40 * gib, TotalBytes: 1000 * gib}, nil
 		},
 	})
-	if c := find(t, d.Check(t.Context()), "disk"); c.Status != v1.ComponentFail {
+	if c := find(t, d.Check(t.Context()), "disk"); c.Status != doctor.ComponentFail {
 		t.Errorf("40GiB free of a 50GiB minimum = %+v", c)
 	}
 }
@@ -194,7 +178,7 @@ func TestDiskThatCannotBeMeasuredWarns(t *testing.T) {
 		Host: newHost(t), DataDir: t.TempDir(), Runtime: func(context.Context) error { return nil },
 		Disk: func(string) (sysinfo.Disk, error) { return sysinfo.Disk{}, errors.New("statfs") },
 	})
-	if c := find(t, d.Check(t.Context()), "disk"); c.Status != v1.ComponentWarn {
+	if c := find(t, d.Check(t.Context()), "disk"); c.Status != doctor.ComponentWarn {
 		t.Errorf("disk = %+v", c)
 	}
 }
@@ -202,7 +186,7 @@ func TestDiskThatCannotBeMeasuredWarns(t *testing.T) {
 func TestHarnessNotInstalledIsNotOffered(t *testing.T) {
 	h := newHost(t)
 	h.binaries = nil
-	d, _ := newDoctor(t, h, claude.Adapter{}, codex.Adapter{})
+	d := newDoctor(t, h, claude.Adapter{}, codex.Adapter{})
 	for _, c := range d.Check(t.Context()) {
 		if strings.Contains(c.Name, ":") {
 			t.Errorf("%+v for a harness that is not installed", c)
@@ -217,43 +201,28 @@ func TestClaudeAuth(t *testing.T) {
 	cases := []struct {
 		name   string
 		goos   string
-		setup  func(t *testing.T, h *host, s *secretsfile.Store)
+		setup  func(t *testing.T, h *host)
 		want   string
 		action string
 	}{
-		{name: "nothing", want: v1.ComponentFail, action: "claude login en box"},
-		{name: "secret in the store", want: v1.ComponentOK, setup: func(t *testing.T, _ *host, s *secretsfile.Store) {
-			if err := s.Set(t.Context(), claude.OAuthTokenRef, []byte(secretValue), nil, secrets.BackendFile); err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{name: "stored with a bad format", want: v1.ComponentWarn, action: "vuelve a guardarlo con la línea que imprime `claude setup-token`: cflk worker secrets set claude/oauth-token en box", setup: func(t *testing.T, _ *host, s *secretsfile.Store) {
-			if err := s.Set(t.Context(), claude.OAuthTokenRef, []byte(secretValue), nil, secrets.BackendFile, secrets.WithBadFormat()); err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{name: "credentials file", want: v1.ComponentOK, setup: func(t *testing.T, h *host, _ *secretsfile.Store) { login(t, h) }},
-		{name: "keychain on macOS", goos: "darwin", want: v1.ComponentOK, setup: func(_ *testing.T, h *host, _ *secretsfile.Store) { h.commands["security"] = 0 }},
-		{name: "no keychain item on macOS", goos: "darwin", want: v1.ComponentFail, setup: func(_ *testing.T, h *host, _ *secretsfile.Store) { h.commands["security"] = 44 }, action: "claude login en box"},
-		{name: "keychain is not asked on linux", goos: "linux", want: v1.ComponentFail, setup: func(_ *testing.T, h *host, _ *secretsfile.Store) { h.commands["security"] = 0 }, action: "claude login en box"},
+		{name: "nothing", want: doctor.ComponentFail, action: "claude login en box"},
+		{name: "credentials file", want: doctor.ComponentOK, setup: func(t *testing.T, h *host) { login(t, h) }},
+		{name: "keychain on macOS", goos: "darwin", want: doctor.ComponentOK, setup: func(_ *testing.T, h *host) { h.commands["security"] = 0 }},
+		{name: "no keychain item on macOS", goos: "darwin", want: doctor.ComponentFail, setup: func(_ *testing.T, h *host) { h.commands["security"] = 44 }, action: "claude login en box"},
+		{name: "keychain is not asked on linux", goos: "linux", want: doctor.ComponentFail, setup: func(_ *testing.T, h *host) { h.commands["security"] = 0 }, action: "claude login en box"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHost(t)
-			dir := filepath.Join(t.TempDir(), "private")
-			if err := os.Mkdir(dir, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			store := secretsfile.New(filepath.Join(dir, "secrets.json"), clock.Real{})
 			if tc.setup != nil {
-				tc.setup(t, h, store)
+				tc.setup(t, h)
 			}
 			goos := tc.goos
 			if goos == "" {
 				goos = "linux"
 			}
 			d := doctor.New(doctor.Options{
-				Host: h, Adapters: []harness.Adapter{claude.Adapter{}}, Worker: "box", DataDir: t.TempDir(), Secrets: store, GOOS: goos,
+				Host: h, Adapters: []harness.Adapter{claude.Adapter{}}, Worker: "box", DataDir: t.TempDir(), GOOS: goos,
 				Runtime: func(context.Context) error { return nil }, Disk: plenty,
 			})
 			c := find(t, d.Check(t.Context()), "auth:claude-code")
@@ -275,14 +244,14 @@ func TestClaudeAuth(t *testing.T) {
 
 func TestCodexAuth(t *testing.T) {
 	h := newHost(t)
-	d, _ := newDoctor(t, h, codex.Adapter{})
+	d := newDoctor(t, h, codex.Adapter{})
 	c := find(t, d.Check(t.Context()), "auth:codex")
-	if c.Status != v1.ComponentFail || c.Action != "codex login en box" {
+	if c.Status != doctor.ComponentFail || c.Action != "codex login en box" {
 		t.Errorf("without auth.json: %+v", c)
 	}
 	writeFile(t, filepath.Join(h.home, ".codex", "auth.json"), `{"OPENAI_API_KEY":"`+secretValue+`"}`)
 	c = find(t, d.Check(t.Context()), "auth:codex")
-	if c.Status != v1.ComponentOK || strings.Contains(c.Message+c.Action, secretValue) {
+	if c.Status != doctor.ComponentOK || strings.Contains(c.Message+c.Action, secretValue) {
 		t.Errorf("with auth.json: %+v", c)
 	}
 }
@@ -300,79 +269,40 @@ func (a sharedClaude) Capabilities() harness.Capabilities {
 func TestHarnessConfigIssuesFailOnlyWithoutIsolation(t *testing.T) {
 	h := newHost(t)
 	writeFile(t, filepath.Join(h.home, ".claude", "settings.json"), "{not json")
-	d, _ := newDoctor(t, h, sharedClaude{})
+	d := newDoctor(t, h, sharedClaude{})
 	cs := d.Check(t.Context())
-	if c := find(t, cs, "harness:claude-code"); c.Status != v1.ComponentFail || c.Action == "" {
+	if c := find(t, cs, "harness:claude-code"); c.Status != doctor.ComponentFail || c.Action == "" {
 		t.Errorf("harness = %+v", c)
 	}
-	if h := doctor.Health(cs); h.Status != v1.HealthDegraded {
-		t.Errorf("an invalid configuration must degrade the Worker: %+v", h)
+	if doctor.Failing(cs) == 0 {
+		t.Error("an invalid configuration must fail the check")
 	}
 	// With ConfigIsolation each Run gets its own configuration: the host's is
 	// only worth a warning.
-	isolated, _ := newDoctor(t, h, claude.Adapter{})
-	if c := find(t, isolated.Check(t.Context()), "harness:claude-code"); c.Status != v1.ComponentWarn {
+	isolated := newDoctor(t, h, claude.Adapter{})
+	if c := find(t, isolated.Check(t.Context()), "harness:claude-code"); c.Status != doctor.ComponentWarn {
 		t.Errorf("isolated harness = %+v, want warn", c)
 	}
 	h2 := newHost(t)
-	d2, _ := newDoctor(t, h2, claude.Adapter{})
-	if c := find(t, d2.Check(t.Context()), "harness:claude-code"); c.Status != v1.ComponentOK {
+	d2 := newDoctor(t, h2, claude.Adapter{})
+	if c := find(t, d2.Check(t.Context()), "harness:claude-code"); c.Status != doctor.ComponentOK {
 		t.Errorf("clean config = %+v", c)
 	}
 }
 
-func TestWorkflowComponent(t *testing.T) {
-	cases := []struct {
-		name    string
-		applied []globalapply.Applied
-		err     error
-		want    string
-	}{
-		{name: "nothing applied", want: v1.ComponentOK},
-		{name: "clean", applied: []globalapply.Applied{{Name: "AGENTS.md", Ownership: harness.Managed}}, want: v1.ComponentOK},
-		{name: "drift", applied: []globalapply.Applied{{Name: "AGENTS.md", Ownership: harness.Managed, Drift: true}}, want: v1.ComponentWarn},
-		{name: "partial", applied: []globalapply.Applied{{Name: "skills", Ownership: harness.Managed, Missing: true}}, want: v1.ComponentWarn},
-		{name: "local components are the person's", applied: []globalapply.Applied{{Name: "x", Ownership: harness.Local, Drift: true}}, want: v1.ComponentOK},
-		{name: "unreadable baseline", err: errors.New("corrupt"), want: v1.ComponentWarn},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			d := doctor.New(doctor.Options{
-				Host: newHost(t), Adapters: []harness.Adapter{codex.Adapter{}}, Worker: "box", DataDir: t.TempDir(),
-				Runtime: func(context.Context) error { return nil }, Disk: plenty,
-				Applied: func(context.Context, harness.Adapter) ([]globalapply.Applied, error) { return tc.applied, tc.err },
-			})
-			c := find(t, d.Check(t.Context()), "workflow:codex")
-			if c.Status != tc.want {
-				t.Errorf("workflow = %+v, want %s", c, tc.want)
-			}
-			if tc.want == v1.ComponentWarn && tc.err == nil && c.Action != "cflk workflow status --worker box" {
-				t.Errorf("action = %q", c.Action)
-			}
-		})
-	}
-}
-
-func TestCheckTextsFitAHeartbeat(t *testing.T) {
-	var drifted []globalapply.Applied
-	for i := range 1000 {
-		drifted = append(drifted, globalapply.Applied{Name: fmt.Sprintf("skills/with\nnewline-%d", i), Ownership: harness.Managed, Drift: true})
-	}
+func TestCheckTextsFitATerminal(t *testing.T) {
 	d := doctor.New(doctor.Options{
-		Host: newHost(t), Adapters: []harness.Adapter{codex.Adapter{}}, Worker: "box", DataDir: t.TempDir(),
-		Runtime: func(context.Context) error { return errors.New("tmux\x1b[2J broke") }, Disk: plenty,
-		Applied: func(context.Context, harness.Adapter) ([]globalapply.Applied, error) { return drifted, nil },
+		Host: newHost(t), Worker: "box", DataDir: t.TempDir(),
+		Runtime: func(context.Context) error { return errors.New("tmux\x1b[2J broke\n" + strings.Repeat("x", 1000)) }, Disk: plenty,
 	})
-	cs := d.Check(t.Context())
-	for _, c := range append(cs, v1.ComponentHealth{Name: "summary", Message: doctor.Health(cs).Message}) {
-		for _, s := range []string{c.Name, c.Message, c.Action} {
-			if len(s) > doctor.MaxText || !utf8.ValidString(s) || strings.ContainsAny(s, "\n\x1b") {
-				t.Errorf("%s: %q", c.Name, s)
-			}
+	rt := find(t, d.Check(t.Context()), "runtime")
+	for _, s := range []string{rt.Name, rt.Message, rt.Action} {
+		if len(s) > doctor.MaxText || !utf8.ValidString(s) || strings.ContainsAny(s, "\n\x1b") {
+			t.Errorf("%q", s)
 		}
 	}
-	if c := find(t, cs, "workflow:codex"); !strings.HasSuffix(c.Message, "…") {
-		t.Errorf("a long text ends in an ellipsis: %q", c.Message)
+	if !strings.HasSuffix(rt.Message, "…") {
+		t.Errorf("a long text ends in an ellipsis: %q", rt.Message)
 	}
 }
 
@@ -393,14 +323,14 @@ func (unisolated) Capabilities() harness.Capabilities { return harness.Capabilit
 
 func TestBypassWithoutIsolationWarns(t *testing.T) {
 	h := newHost(t)
-	d, _ := newDoctor(t, h, unisolated{})
+	d := newDoctor(t, h, unisolated{})
 	if _, ok := findOpt(d.Check(t.Context()), "isolation:claude-code"); ok {
 		t.Error("warned without a bypass")
 	}
 	writeFile(t, filepath.Join(h.home, ".claude", "settings.json"), `{"permissions":{"defaultMode":"bypassPermissions"}}`)
 	cs := d.Check(t.Context())
 	c, ok := findOpt(cs, "isolation:claude-code")
-	if !ok || c.Status != v1.ComponentWarn || c.Action == "" {
+	if !ok || c.Status != doctor.ComponentWarn || c.Action == "" {
 		t.Fatalf("component = %+v, %v", c, ok)
 	}
 	writeFile(t, filepath.Join(h.home, ".claude", ".credentials.json"), "{}")
@@ -412,7 +342,7 @@ func TestBypassWithoutIsolationWarns(t *testing.T) {
 func TestBypassIsOnlyAWarningForAHarnessThatIsolatesItsConfig(t *testing.T) {
 	h := newHost(t)
 	writeFile(t, filepath.Join(h.home, ".claude", "settings.json"), `{"permissions":{"defaultMode":"bypassPermissions"}}`)
-	d, _ := newDoctor(t, h, claude.Adapter{})
+	d := newDoctor(t, h, claude.Adapter{})
 	c, ok := findOpt(d.Check(t.Context()), "isolation:claude-code")
 	if !ok || strings.Contains(c.Message, "bypass)") {
 		t.Errorf("the host configuration is not read by its Runs: %+v, %v", c, ok)
@@ -422,16 +352,16 @@ func TestBypassIsOnlyAWarningForAHarnessThatIsolatesItsConfig(t *testing.T) {
 func TestPreapprovedPermissionsOnTheHostWarn(t *testing.T) {
 	for _, a := range []harness.Adapter{claude.Adapter{}, codex.Adapter{}} {
 		h := newHost(t)
-		d, _ := newDoctor(t, h, a)
+		d := newDoctor(t, h, a)
 		c, ok := findOpt(d.Check(t.Context()), "isolation:"+a.ID())
-		if !ok || c.Status != v1.ComponentWarn || c.Action == "" || !strings.Contains(c.Message, "preaprobados") {
+		if !ok || c.Status != doctor.ComponentWarn || c.Action == "" || !strings.Contains(c.Message, "preaprobados") {
 			t.Errorf("%s: component = %+v, %v", a.ID(), c, ok)
 		}
 	}
 }
 
 func TestCommandHarnessDoesNotWarnOfIsolation(t *testing.T) {
-	d, _ := newDoctor(t, newHost(t), command.Adapter{})
+	d := newDoctor(t, newHost(t), command.Adapter{})
 	if c, ok := findOpt(d.Check(t.Context()), "isolation:command"); ok {
 		t.Errorf("warned: %+v", c)
 	}
@@ -443,7 +373,6 @@ func TestIsolatedRuntimeDoesNotWarn(t *testing.T) {
 		d := doctor.New(doctor.Options{
 			Host: h, Adapters: []harness.Adapter{a}, Worker: "box", DataDir: t.TempDir(),
 			Runtime: func(context.Context) error { return nil }, Disk: plenty, GOOS: "linux", RuntimeIsolated: true,
-			Applied: func(context.Context, harness.Adapter) ([]globalapply.Applied, error) { return nil, nil },
 		})
 		if c, ok := findOpt(d.Check(t.Context()), "isolation:"+a.ID()); ok {
 			t.Errorf("%s warned on an isolated runtime: %+v", a.ID(), c)
@@ -454,7 +383,7 @@ func TestIsolatedRuntimeDoesNotWarn(t *testing.T) {
 func TestHostBypassAndPreapprovedShareOneComponent(t *testing.T) {
 	h := newHost(t)
 	writeFile(t, filepath.Join(h.home, ".claude", "settings.json"), `{"permissions":{"defaultMode":"bypassPermissions"}}`)
-	d, _ := newDoctor(t, h, preapproved{})
+	d := newDoctor(t, h, preapproved{})
 	n := 0
 	var msg string
 	for _, c := range d.Check(t.Context()) {
@@ -488,49 +417,11 @@ func TestCodexBypassIsDetected(t *testing.T) {
 	}
 }
 
-func findOpt(cs []v1.ComponentHealth, name string) (v1.ComponentHealth, bool) {
+func findOpt(cs []doctor.Component, name string) (doctor.Component, bool) {
 	for _, c := range cs {
 		if c.Name == name {
 			return c, true
 		}
 	}
-	return v1.ComponentHealth{}, false
-}
-
-func TestClaudeAuth_AKeyringTokenIsReportedByItsState(t *testing.T) {
-	cases := []struct {
-		name    string
-		prepare func(v *secretstest.Vault)
-		want    string
-		says    string
-	}{
-		{name: "fine", prepare: func(*secretstest.Vault) {}, want: v1.ComponentOK},
-		{name: "locked", prepare: func(v *secretstest.Vault) { v.Lock() }, want: v1.ComponentOK, says: "llavero no responde"},
-		{name: "broken", prepare: func(v *secretstest.Vault) { v.Lose(claude.OAuthTokenRef) }, want: v1.ComponentFail, says: "está roto"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			vault := secretstest.New()
-			dir := filepath.Join(t.TempDir(), "private")
-			if err := os.Mkdir(dir, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			store := secretsfile.New(filepath.Join(dir, "secrets.json"), clock.Real{}, secretsfile.WithVault(vault))
-			if err := store.Set(t.Context(), claude.OAuthTokenRef, []byte(secretValue), nil, secrets.BackendKeyring); err != nil {
-				t.Fatal(err)
-			}
-			tc.prepare(vault)
-			d := doctor.New(doctor.Options{
-				Host: newHost(t), Adapters: []harness.Adapter{claude.Adapter{}}, Worker: "box", DataDir: t.TempDir(), Secrets: store, GOOS: "linux",
-				Runtime: func(context.Context) error { return nil }, Disk: plenty,
-			})
-			c := find(t, d.Check(t.Context()), "auth:claude-code")
-			if c.Status != tc.want || !strings.Contains(c.Message, tc.says) {
-				t.Errorf("auth = %+v, want %s saying %q", c, tc.want, tc.says)
-			}
-			if strings.Contains(c.Message+c.Action, secretValue) {
-				t.Errorf("the check revealed a secret: %+v", c)
-			}
-		})
-	}
+	return doctor.Component{}, false
 }

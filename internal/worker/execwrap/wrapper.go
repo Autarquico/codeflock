@@ -23,8 +23,9 @@ import (
 // Timings the wrapper uses, all on its clock.
 const (
 	// GateTimeout is how long the wrapper waits for the Runtime to wire the terminal.
-	GateTimeout  = 30 * time.Second
-	defaultGrace = 30 * time.Second
+	GateTimeout = 30 * time.Second
+	// DefaultGrace is how long the wrapper gives the harness after a SIGTERM before it escalates.
+	DefaultGrace = 30 * time.Second
 	// defaultDrainWait is how long the kill path lets the copies drain what the
 	// survivors still write before it cuts them.
 	defaultDrainWait = 2 * time.Second
@@ -128,7 +129,7 @@ func (w *wrapper) grace() time.Duration {
 	if w.launch.Grace > 0 {
 		return w.launch.Grace
 	}
-	return defaultGrace
+	return DefaultGrace
 }
 
 // fail leaves an exit.json that says why nothing ran, and returns the same cause.
@@ -176,7 +177,7 @@ func (w *wrapper) run() error {
 
 	cmd := exec.Command(w.launch.Argv[0], w.launch.Argv[1:]...) //nolint:gosec,noctx // the argv is what the Run asked for; nothing ends the harness but the wrapper
 	cmd.Dir = w.launch.Dir
-	cmd.Env = append(append(envutil.WithoutTmux(os.Environ()), w.launch.Env...), secrets...)
+	cmd.Env = append(append(envutil.Without(envutil.WithoutTmux(os.Environ()), w.launch.UnsetEnv...), w.launch.Env...), secrets...)
 	copied, parentEnds, err := w.wire(cmd, log, set)
 	if err != nil {
 		return w.fail("wiring the output: %v", err)
