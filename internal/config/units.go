@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -14,32 +15,30 @@ type Unit struct {
 	System bool   // a LaunchDaemon of the system, which a user cannot manage
 }
 
-// OldUnits are the services of 0.4 installed under the names before the rename,
-// running or not, with the suffixes the tests use: the unit files of systemd
-// --user on Linux, the LaunchAgents of the user and the LaunchDaemons of the
-// system on macOS. They are found by their files, which are what survives a
-// stopped unit.
+// OldUnits are the services of 0.4 installed under the exact names it gave
+// them, running or not: the unit files of systemd --user on Linux, the
+// LaunchAgents of the user and the LaunchDaemons of the system on macOS. They
+// are found by their files, which are what survives a stopped unit. A unit that
+// merely starts with the same prefix (cf-worker-backup.service) is the user's.
 func OldUnits(home, goos string) []Unit {
-	var patterns []string
+	var units []Unit
+	add := func(dir, name, suffix string) {
+		path := filepath.Join(dir, name+suffix)
+		if _, err := os.Stat(path); err == nil {
+			units = append(units, Unit{Name: name, Kind: KindOf(name), Path: path, System: dir == launchDaemonsDir})
+		}
+	}
 	switch goos {
 	case "linux":
 		dir := filepath.Join(home, ".config", "systemd", "user")
-		for _, prefix := range []string{"cf", "codeflock"} {
-			patterns = append(patterns, filepath.Join(dir, prefix+"-worker*.service"), filepath.Join(dir, prefix+"-controller*.service"))
+		for _, name := range []string{"cf-worker", "cf-controller", "codeflock-worker", "codeflock-controller"} {
+			add(dir, name, ".service")
 		}
 	case "darwin":
 		for _, dir := range []string{filepath.Join(home, "Library", "LaunchAgents"), launchDaemonsDir} {
-			for _, prefix := range []string{"com.codefabric", "com.codeflock"} {
-				patterns = append(patterns, filepath.Join(dir, prefix+".worker*.plist"), filepath.Join(dir, prefix+".controller*.plist"))
+			for _, name := range []string{"com.codefabric.worker", "com.codefabric.controller", "com.codeflock.worker", "com.codeflock.controller"} {
+				add(dir, name, ".plist")
 			}
-		}
-	}
-	var units []Unit
-	for _, pattern := range patterns {
-		matches, _ := filepath.Glob(pattern)
-		for _, m := range matches {
-			name := strings.TrimSuffix(strings.TrimSuffix(filepath.Base(m), ".service"), ".plist")
-			units = append(units, Unit{Name: name, Kind: KindOf(name), Path: m, System: filepath.Dir(m) == launchDaemonsDir})
 		}
 	}
 	return units

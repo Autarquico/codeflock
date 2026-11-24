@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -15,9 +16,24 @@ import (
 // fakeManager records the calls to the service manager.
 type fakeManager struct{ calls []string }
 
-func (f *fakeManager) run(_ context.Context, name string, args ...string) error {
-	f.calls = append(f.calls, name+" "+strings.Join(args, " "))
-	return nil
+// exitError is a tool that ran and refused, with its exit code.
+type exitError int
+
+func (e exitError) Error() string { return "exit " + strconv.Itoa(int(e)) }
+func (e exitError) ExitCode() int { return int(e) }
+
+// run answers like a healthy machine: a Worker unit that keeps its processes,
+// and an agent that is gone from launchd as soon as it is asked.
+func (f *fakeManager) run(_ context.Context, name string, args ...string) (string, error) {
+	call := name + " " + strings.Join(args, " ")
+	f.calls = append(f.calls, call)
+	switch {
+	case strings.HasPrefix(call, "systemctl --user show"):
+		return "KillMode=process\nActiveState=active\n", nil
+	case strings.HasPrefix(call, "launchctl print"):
+		return "", exitError(113)
+	}
+	return "", nil
 }
 
 func write(t *testing.T, path, content string) {
@@ -98,11 +114,15 @@ func TestRetirementOfALinuxMachine(t *testing.T) {
 func TestRetirementOfAMacMachineBootsOutTheAgents(t *testing.T) {
 	r, m, home := retirementOn(t, "darwin")
 	agent := filepath.Join(home, "Library", "LaunchAgents", "com.codeflock.worker.plist")
-	write(t, agent, "")
+	write(t, agent, "<key>AbandonProcessGroup</key>")
 
 	r.Fix(context.Background())
 
-	if exists(agent) || !slices.Equal(m.calls, []string{"launchctl bootout gui/501/com.codeflock.worker"}) {
+	want := []string{
+		"launchctl bootout gui/501/com.codeflock.worker", "launchctl print gui/501/com.codeflock.worker",
+		"launchctl bootout user/501/com.codeflock.worker", "launchctl print user/501/com.codeflock.worker",
+	}
+	if exists(agent) || !slices.Equal(m.calls, want) {
 		t.Errorf("agent exists=%v calls=%v", exists(agent), m.calls)
 	}
 }
@@ -201,7 +221,12 @@ func TestRetirementKeepsAUnitItCouldNotStop(t *testing.T) {
 	r, _, home := retirementOn(t, "linux")
 	unit := filepath.Join(home, ".config", "systemd", "user", "cf-worker.service")
 	write(t, unit, "")
-	r.Run = func(context.Context, string, ...string) error { return errors.New("no user bus") }
+	r.Run = func(_ context.Context, _ string, args ...string) (string, error) {
+		if slices.Contains(args, "show") {
+			return "KillMode=process\nActiveState=active\n", nil
+		}
+		return "", errors.New("no user bus")
+	}
 
 	got := r.Fix(context.Background())
 
@@ -210,11 +235,105 @@ func TestRetirementKeepsAUnitItCouldNotStop(t *testing.T) {
 	}
 }
 
-func TestRetirementCountsAMacJobThatWasNotLoadedAsStopped(t *testing.T) {
-	r, _, home := retirementOn(t, "darwin")
+func TestRetirementRefusesToStopAWorkerThatWouldTakeItsRunsWithIt(t *testing.T) {
+	r, m, home := retirementOn(t, "linux")
+	unit := filepath.Join(home, ".config", "systemd", "user", "cf-worker.service")
+	write(t, unit, "")
+	run := r.Run
+	r.Run = func(ctx context.Context, name string, args ...string) (string, error) {
+		if slices.Contains(args, "show") {
+			return "KillMode=control-group\nActiveState=active\n", nil
+		}
+		return run(ctx, name, args...)
+	}
+
+	got := r.Fix(context.Background())
+
+	if !exists(unit) || doctor.Failing(got) != 1 || !strings.Contains(got[0].Message, "KillMode") || slices.Contains(m.calls, "systemctl --user disable --now cf-worker.service") {
+		t.Errorf("unit exists=%v calls=%v: %+v", exists(unit), m.calls, got)
+	}
+}
+
+func TestRetirementIgnoresAUnitThatOnlyStartsLikeOurs(t *testing.T) {
+	r, _, home := retirementOn(t, "linux")
+	write(t, filepath.Join(home, ".config", "systemd", "user", "cf-worker-backup.service"), "")
+
+	got := r.Check()
+
+	if len(got) != 1 || got[0].Status != doctor.ComponentOK {
+		t.Errorf("%v", statuses(got))
+	}
+}
+
+func macAgent(t *testing.T) (doctor.Retirement, *fakeManager, string) {
+	t.Helper()
+	r, m, home := retirementOn(t, "darwin")
 	agent := filepath.Join(home, "Library", "LaunchAgents", "com.codeflock.worker.plist")
+	write(t, agent, "<key>AbandonProcessGroup</key>")
+	return r, m, agent
+}
+
+func TestRetirementBootsOutAnAgentLoadedInTheUserDomain(t *testing.T) {
+	r, m, agent := macAgent(t)
+	loaded := true
+	r.Run = func(ctx context.Context, name string, args ...string) (string, error) {
+		call := name + " " + strings.Join(args, " ")
+		switch call {
+		case "launchctl print user/501/com.codeflock.worker":
+			if loaded {
+				return "", nil
+			}
+		case "launchctl bootout user/501/com.codeflock.worker":
+			loaded = false
+		}
+		return m.run(ctx, name, args...)
+	}
+
+	got := r.Fix(context.Background())
+
+	if exists(agent) || doctor.Failing(got) != 0 || !slices.Contains(m.calls, "launchctl bootout user/501/com.codeflock.worker") {
+		t.Errorf("agent exists=%v calls=%v: %+v", exists(agent), m.calls, got)
+	}
+}
+
+func TestRetirementKeepsAnAgentWhoseProbeFailsForAnyOtherReason(t *testing.T) {
+	r, _, agent := macAgent(t)
+	r.Run = func(context.Context, string, ...string) (string, error) { return "", context.Canceled }
+
+	got := r.Fix(context.Background())
+
+	if !exists(agent) || doctor.Failing(got) != 1 {
+		t.Errorf("agent exists=%v: %+v", exists(agent), got)
+	}
+}
+
+func TestRetirementKeepsAnAgentThatIsStillLoaded(t *testing.T) {
+	r, _, agent := macAgent(t)
+	r.Run = func(context.Context, string, ...string) (string, error) { return "", nil } // print succeeds: loaded
+
+	got := r.Fix(context.Background())
+
+	if !exists(agent) || doctor.Failing(got) != 1 {
+		t.Errorf("agent exists=%v: %+v", exists(agent), got)
+	}
+}
+
+func TestRetirementRefusesAWorkerAgentThatDoesNotAbandonItsProcessGroup(t *testing.T) {
+	r, m, agent := macAgent(t)
 	write(t, agent, "")
-	r.Run = func(context.Context, string, ...string) error { return errors.New("not loaded") } // bootout and print both refuse
+
+	got := r.Fix(context.Background())
+
+	if !exists(agent) || doctor.Failing(got) != 1 || len(m.calls) != 0 {
+		t.Errorf("agent exists=%v calls=%v: %+v", exists(agent), m.calls, got)
+	}
+}
+
+func TestRetirementCountsAMacJobThatWasNotLoadedAsStopped(t *testing.T) {
+	r, _, agent := macAgent(t)
+	r.Run = func(context.Context, string, ...string) (string, error) {
+		return "", exitError(113) // bootout and print both say there is no such service
+	}
 
 	got := r.Fix(context.Background())
 

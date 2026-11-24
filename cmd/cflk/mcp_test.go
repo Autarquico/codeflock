@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -74,7 +75,7 @@ func TestInstallDryRunChangesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r.calls) != 0 || len(res.Commands) != 3 {
+	if len(r.calls) != 0 || len(res.Commands) != 1 || len(res.Fallback) != 3 {
 		t.Errorf("ran %v, would run %v", r.calls, res.Commands)
 	}
 	if _, err := os.Stat(filepath.Join(home, ".claude")); err == nil {
@@ -115,7 +116,7 @@ func TestInstallKeepsASkillThatIsNotCflks(t *testing.T) {
 
 func TestUninstallRemovesWhatInstallWrote(t *testing.T) {
 	home := withFakeClaude(t)
-	var r recorded
+	r := &fakeTool{}
 	if _, err := installMCP(t.Context(), r.run, claudeClient, "user", mcp.Write, false); err != nil {
 		t.Fatal(err)
 	}
@@ -141,33 +142,138 @@ func TestServeRejectsJSONAndUnknownProfiles(t *testing.T) {
 	}
 }
 
-// failing is a runner whose first n calls fail.
-type failing struct {
+// fakeTool is the `mcp` of a client: one server called cflk that is either
+// registered (registered is what `mcp get` prints) or not.
+type fakeTool struct {
 	recorded
-	n int
+	registered  string
+	addFails    func(n int) bool // the n-th add (from 1) fails whatever the state
+	removeFails bool
+	adds        int
 }
 
-func (f *failing) run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	out, _ := f.recorded.run(ctx, name, args...)
-	if len(f.calls) <= f.n {
-		return []byte("boom"), errors.New("exit 1")
+func ourRegistration(command, profile string) string {
+	return "cflk:\n  Type: stdio\n  Command: " + command + "\n  Args: mcp serve --profile " + profile + "\n  Environment:\n"
+}
+
+func (f *fakeTool) run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	_, _ = f.recorded.run(ctx, name, args...)
+	switch args[1] {
+	case "add":
+		f.adds++
+		if f.registered != "" || (f.addFails != nil && f.addFails(f.adds)) {
+			return []byte("boom"), errors.New("exit 1")
+		}
+		at := slices.Index(args, "--")
+		f.registered = "Command: " + args[at+1] + "\nArgs: " + strings.Join(args[at+2:], " ") + "\n"
+	case "get":
+		if f.registered == "" {
+			return []byte("no server"), errors.New("exit 1")
+		}
+		return []byte(f.registered), nil
+	case "remove":
+		if f.removeFails {
+			return []byte("read-only config"), errors.New("exit 1")
+		}
+		f.registered = ""
 	}
-	return out, nil
+	return nil, nil
 }
 
-func TestInstallReplacesARegistrationOnlyWhenAddIsRefused(t *testing.T) {
+func verbs(calls [][]string) string {
+	var out []string
+	for _, c := range calls {
+		out = append(out, c[2])
+	}
+	return strings.Join(out, " ")
+}
+
+func TestInstallReplacesARegistrationOfOursOnlyWhenAddIsRefused(t *testing.T) {
 	withFakeClaude(t)
-	f := &failing{n: 1}
-	if _, err := installMCP(t.Context(), f.run, claudeClient, "user", mcp.Read, false); err != nil {
+	f := &fakeTool{registered: ourRegistration("/old/bin/cflk", "read")}
+	if _, err := installMCP(t.Context(), f.run, claudeClient, "user", mcp.Write, false); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.calls) != 3 || f.calls[1][2] != "remove" || f.calls[2][2] != "add" {
-		t.Errorf("calls = %v", f.calls)
+	if verbs(f.calls) != "add get remove add" || !strings.Contains(f.registered, "--profile write") {
+		t.Errorf("calls %v, now %q", verbs(f.calls), f.registered)
 	}
-	f = &failing{n: 3}
-	_, err := installMCP(t.Context(), f.run, claudeClient, "user", mcp.Read, false)
-	if err == nil || !strings.Contains(err.Error(), "run install again") {
+}
+
+func TestInstallNeverRemovesARegistrationThatIsNotOurs(t *testing.T) {
+	withFakeClaude(t)
+	for _, other := range []string{
+		"Command: /usr/bin/other\nArgs: serve\n",
+		"Command: /usr/local/bin/cflk\nArgs: something else\n",
+		"unreadable",
+	} {
+		f := &fakeTool{registered: other}
+		_, err := installMCP(t.Context(), f.run, claudeClient, "user", mcp.Write, false)
+		if err == nil || !strings.Contains(err.Error(), "did not register") || verbs(f.calls) != "add get" || f.registered != other {
+			t.Errorf("%q: err %v calls %v", other, err, verbs(f.calls))
+		}
+	}
+}
+
+func TestInstallPutsBackTheRegistrationWhenTheReplacementFails(t *testing.T) {
+	withFakeClaude(t)
+	before := ourRegistration("/old/bin/cflk", "read")
+	f := &fakeTool{registered: before, addFails: func(n int) bool { return n == 2 }}
+	_, err := installMCP(t.Context(), f.run, claudeClient, "user", mcp.Write, false)
+	if err == nil || !strings.Contains(err.Error(), "put back") || verbs(f.calls) != "add get remove add add" {
+		t.Fatalf("err %v calls %v", err, verbs(f.calls))
+	}
+	if !strings.Contains(f.registered, "/old/bin/cflk") || !strings.Contains(f.registered, "--profile read") {
+		t.Errorf("now %q", f.registered)
+	}
+}
+
+func TestInstallReportsWhatItRan(t *testing.T) {
+	withFakeClaude(t)
+	f := &fakeTool{}
+	res, err := installMCP(t.Context(), f.run, claudeClient, "user", mcp.Write, false)
+	if err != nil || len(res.Commands) != 1 || res.Commands[0][2] != "add" {
+		t.Errorf("%v %v", err, res.Commands)
+	}
+}
+
+func TestUninstallFailsWhenTheServerCannotBeRemovedAndKeepsTheSkill(t *testing.T) {
+	home := withFakeClaude(t)
+	f := &fakeTool{}
+	if _, err := installMCP(t.Context(), f.run, claudeClient, "user", mcp.Write, false); err != nil {
+		t.Fatal(err)
+	}
+	f.removeFails = true
+	_, err := uninstallMCP(t.Context(), f.run, claudeClient, "user", false)
+	if err == nil || !strings.Contains(err.Error(), "read-only config") {
 		t.Errorf("err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude", "skills", "codeflock", "SKILL.md")); err != nil {
+		t.Errorf("the skill went with a server that stayed: %v", err)
+	}
+}
+
+func TestUninstallWithoutTheToolFails(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	var r recorded
+	if _, err := uninstallMCP(t.Context(), r.run, claudeClient, "user", false); err == nil || !strings.Contains(err.Error(), "not in PATH") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestUninstallLeavesAServerThatIsNotOurs(t *testing.T) {
+	withFakeClaude(t)
+	f := &fakeTool{registered: "Command: /usr/bin/other\nArgs: serve\n"}
+	if _, err := uninstallMCP(t.Context(), f.run, claudeClient, "user", false); err == nil || verbs(f.calls) != "get" {
+		t.Errorf("err %v calls %v", err, verbs(f.calls))
+	}
+}
+
+func TestUninstallOfNothingRegisteredSucceeds(t *testing.T) {
+	withFakeClaude(t)
+	f := &fakeTool{}
+	if _, err := uninstallMCP(t.Context(), f.run, claudeClient, "user", false); err != nil || verbs(f.calls) != "get" {
+		t.Errorf("err %v calls %v", err, verbs(f.calls))
 	}
 }
 

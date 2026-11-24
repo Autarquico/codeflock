@@ -42,13 +42,19 @@ func newDoctorCmd(opts Options) *cobra.Command {
 			if rep.Components == nil {
 				rep.Components = []doctor.Component{}
 			}
-			if err := emit(cmd, rep, func(out io.Writer) error { return printDoctor(out, rep) }); err != nil {
-				return err
-			}
 			if n := failedRemovals(components); fix && n > 0 {
-				return domain.NewError(domain.CodeInternal, fmt.Sprintf("--fix could not remove %d of the leftovers of 0.4: see the table", n), nil)
+				failure := domain.NewError(domain.CodeInternal, fmt.Sprintf("--fix could not remove %d of the leftovers of 0.4: see the table", n), nil)
+				if asJSON, _ := cmd.Flags().GetBool(flagJSON); asJSON {
+					// One document: the error envelope carries the report.
+					failure.Details = map[string]any{"components": rep.Components}
+					return failure
+				}
+				if err := printDoctor(cmd.OutOrStdout(), rep); err != nil {
+					return err
+				}
+				return failure
 			}
-			return nil
+			return emit(cmd, rep, func(out io.Writer) error { return printDoctor(out, rep) })
 		},
 	}
 	cmd.Flags().BoolVar(&fix, "fix", false, "remove the Controller and Worker services and the cf binaries left by 0.4")

@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -17,6 +18,20 @@ const loginShellTimeout = time.Second
 // loginPathTTL is how long the PATH of the login shell is reused: each `cflk
 // peer` is a new process, and a profile can take seconds to run.
 const loginPathTTL = time.Hour
+
+// failedLoginPathTTL is how long a probe that failed or timed out is
+// remembered: long enough that a broken profile does not cost its timeout on
+// every request, short enough that a one-off failure does not take the tools
+// away for an hour.
+const failedLoginPathTTL = time.Minute
+
+// pipeGrace is how long after the shell is killed its output is still waited
+// for: a descendant that kept the pipe must not hold the probe past its deadline.
+const pipeGrace = 200 * time.Millisecond
+
+// cacheDirName is the directory of cflk under the user's cache; it is the
+// name of the state and configuration directories.
+const cacheDirName = "codeflock"
 
 // toolDirs are where the tools of an agent usually live when no profile put them
 // in the PATH (relative ones are under $HOME).
@@ -65,6 +80,11 @@ func loginShellPath(ctx context.Context, shell string) string {
 	ctx, cancel := context.WithTimeout(ctx, loginShellTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, shell, "-lc", `printf '\n`+pathBegin+`%s`+pathEnd+`\n' "$PATH"`) //nolint:gosec // the user's own login shell, a fixed script
+	// The shell leads its own group so that the deadline kills what the profile
+	// started too, and WaitDelay ends the wait for a pipe some descendant holds.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = pipeGrace
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -80,22 +100,41 @@ func loginShellPath(ctx context.Context, shell string) string {
 	return value
 }
 
-// cachedLoginPath is loginShellPath remembered in file for loginPathTTL, per
-// shell. A failed probe is remembered too, so a broken profile costs its
-// timeout once an hour and not on every request.
+// cachedLoginPath is loginShellPath remembered in file, per shell: for
+// loginPathTTL, or for failedLoginPathTTL when the probe got nothing.
 func cachedLoginPath(ctx context.Context, shell, file string) string {
-	if info, err := os.Stat(file); err == nil && time.Since(info.ModTime()) < loginPathTTL {
-		if data, err := os.ReadFile(file); err == nil { //nolint:gosec // our own cache file
-			if sh, path, ok := strings.Cut(string(data), "\n"); ok && sh == shell {
+	if data, err := os.ReadFile(file); err == nil { //nolint:gosec // our own cache file
+		if sh, path, ok := strings.Cut(string(data), "\n"); ok && sh == shell {
+			ttl := loginPathTTL
+			if path == "" {
+				ttl = failedLoginPathTTL
+			}
+			if info, err := os.Stat(file); err == nil && time.Since(info.ModTime()) < ttl {
 				return path
 			}
 		}
 	}
 	path := loginShellPath(ctx, shell)
-	if os.MkdirAll(filepath.Dir(file), 0o700) == nil {
-		_ = os.WriteFile(file, []byte(shell+"\n"+path), 0o600) //nolint:gosec // our own cache file
-	}
+	writeAtomically(file, []byte(shell+"\n"+path))
 	return path
+}
+
+// writeAtomically replaces file with content in one rename, so that a `cflk
+// peer` reading it at the same time never sees half of it. It is a cache: any
+// failure is ignored.
+func writeAtomically(file string, content []byte) {
+	dir := filepath.Dir(file)
+	if os.MkdirAll(dir, 0o700) != nil {
+		return
+	}
+	tmp, err := os.CreateTemp(dir, ".login-path-*")
+	if err != nil {
+		return
+	}
+	_, werr := tmp.Write(content)
+	if cerr := tmp.Close(); werr != nil || cerr != nil || os.Rename(tmp.Name(), file) != nil {
+		_ = os.Remove(tmp.Name())
+	}
 }
 
 // useLoginPath makes the PATH of this process the one of peerPath, so that what
@@ -108,7 +147,7 @@ func useLoginPath(ctx context.Context) {
 	}
 	login := ""
 	if cache, err := os.UserCacheDir(); err == nil {
-		login = cachedLoginPath(ctx, os.Getenv("SHELL"), filepath.Join(cache, "codefabric", "login-path"))
+		login = cachedLoginPath(ctx, os.Getenv("SHELL"), filepath.Join(cache, cacheDirName, "login-path"))
 	}
 	_ = os.Setenv("PATH", peerPath(login, os.Getenv("PATH"), home))
 }

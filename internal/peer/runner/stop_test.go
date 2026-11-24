@@ -4,6 +4,7 @@ package runner_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -355,6 +356,22 @@ func TestAnEPermFromAGroupOfZombiesDoesNotAbortTheStop(t *testing.T) {
 	}
 
 	if out, err := st.Stop(t.Context(), w.t); err != nil || out != runner.Stopped {
+		t.Fatalf("stop = %v, %v", out, err)
+	}
+}
+
+func TestAGroupThatStaysAliveWhileEverySignalIsDeniedEndsAsSurvivorsWithTheReason(t *testing.T) {
+	w := newWrapperProcess(t, "sleep 30")
+	st := runner.Stopper{
+		Signal:   func(int, syscall.Signal) error { return syscall.EPERM },
+		Grace:    30 * time.Millisecond,
+		KillWait: 50 * time.Millisecond,
+		Poll:     10 * time.Millisecond,
+	}
+
+	out, err := st.Stop(t.Context(), w.t)
+
+	if out != runner.Survivors || !errors.Is(err, syscall.EPERM) {
 		t.Fatalf("stop = %v, %v", out, err)
 	}
 }

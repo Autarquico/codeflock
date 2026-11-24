@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"io"
+	"slices"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -55,6 +56,7 @@ type Model struct {
 	screenSeq int // the last one asked for: older answers are dropped
 
 	typing bool
+	target string // the Job the draft is for: the cursor may move to another while it is typed
 	input  []rune
 	status string
 }
@@ -202,8 +204,8 @@ func (m *Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.status = ""
 		return m, tea.Batch(m.fetchList(), m.fetchScreen())
 	case "s":
-		if _, ok := m.selected(); ok {
-			m.typing, m.input, m.status = true, nil, ""
+		if j, ok := m.selected(); ok {
+			m.typing, m.target, m.input, m.status = true, j.ID, nil, ""
 		}
 	case "x":
 		return m, m.order("stop", func(id string) error { _, err := m.jobs.Stop(m.ctx, id); return err })
@@ -233,7 +235,16 @@ func (m *Model) typingKey(msg tea.KeyPressMsg) tea.Cmd {
 		if text == "" {
 			return nil
 		}
-		return m.order("send", func(id string) error { _, err := m.jobs.Send(m.ctx, id, text); return err })
+		target := m.target
+		if m.listErr != nil || !slices.ContainsFunc(m.list.Jobs, func(j cli.JobView) bool { return j.ID == target }) {
+			m.status = "send: " + target + " is not in the list now, nothing was sent"
+			return nil
+		}
+		m.status = "send " + target + "…"
+		return func() tea.Msg {
+			_, err := m.jobs.Send(m.ctx, target, text)
+			return doneMsg{"send", err}
+		}
 	case "backspace":
 		if n := len(m.input); n > 0 {
 			m.input = m.input[:n-1]

@@ -199,6 +199,23 @@ func TestSend_TypesAndSendsToTheSelectedJob(t *testing.T) {
 	}
 }
 
+func TestSend_ADraftIsNeverSentToAnotherJobWhenItsTargetLeavesTheList(t *testing.T) {
+	f := fleet()
+	m := opened(t, f, 80, 24)
+	press(m, "s", "h", "i")
+	f.list.Jobs = f.list.Jobs[1:] // j-01 drops out and j-02 is now under the cursor
+	drive(m, m.fetchList())
+	press(m, "enter")
+	for _, c := range f.calls {
+		if strings.HasPrefix(c, "send") {
+			t.Fatalf("sent %q", c)
+		}
+	}
+	if got := screenOf(m); !strings.Contains(got, "j-01 is not in the list") {
+		t.Fatalf("no refusal shown:\n%s", got)
+	}
+}
+
 func TestSend_EscCancelsAndEmptyTextSendsNothing(t *testing.T) {
 	f := fleet()
 	m := opened(t, f, 80, 24)

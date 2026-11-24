@@ -3,10 +3,12 @@ package doctor
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/Autarquico/codeflock/internal/config"
 )
@@ -22,13 +24,19 @@ type Retirement struct {
 	Home string
 	GOOS string
 	UID  int
-	// Run runs a tool of the service manager (systemctl, launchctl). Its error
-	// is not fatal: a unit that is not loaded is a unit already stopped.
-	Run func(ctx context.Context, name string, args ...string) error
+	// Run runs a tool of the service manager (systemctl, launchctl) and returns
+	// its output. An error that has an ExitCode() int is the tool refusing; any
+	// other is the tool not running (permission, cancellation).
+	Run func(ctx context.Context, name string, args ...string) (string, error)
 }
 
 const (
 	retiredName = "legacy"
+	// The codes `launchctl print` exits with when the agent is not there: the
+	// domain does not exist or has no such service. Any other failure is not
+	// proof that it is stopped.
+	launchctlNoDomain  = 112
+	launchctlNoService = 113
 	// ourBinaryMark is in every binary built from this repository (its module path).
 	ourBinaryMark = "github.com/Autarquico/code"
 )
@@ -69,23 +77,82 @@ func (r Retirement) Fix(ctx context.Context) []Component {
 		results[l.name] = removeFile(l.path)
 	}
 	if removedUnit && r.GOOS == "linux" {
-		_ = r.Run(ctx, "systemctl", "--user", "daemon-reload")
+		_, _ = r.Run(ctx, "systemctl", "--user", "daemon-reload")
 	}
 	return r.report(found, results)
 }
 
-// stop stops the unit. systemd stops a unit that is not running without error;
-// launchd refuses to boot out a job that is not loaded, which is the job already
-// stopped, so there its refusal only counts if the job is still loaded.
+// stop stops the unit, and says why it did not. A Worker is only stopped when
+// that leaves its Runs alive: they are the user's work.
 func (r Retirement) stop(ctx context.Context, l leftover) error {
 	if r.GOOS == "darwin" {
-		err := r.Run(ctx, "launchctl", "bootout", fmt.Sprintf("gui/%d/%s", r.UID, l.unit))
-		if err != nil && r.Run(ctx, "launchctl", "print", fmt.Sprintf("gui/%d/%s", r.UID, l.unit)) != nil {
-			return nil // not loaded
-		}
-		return err
+		return r.bootout(ctx, l)
 	}
-	return r.Run(ctx, "systemctl", "--user", "disable", "--now", l.unit+".service")
+	if config.KindOf(l.unit) == "worker" {
+		if err := r.checkKillMode(ctx, l.unit); err != nil {
+			return err
+		}
+	}
+	_, err := r.Run(ctx, "systemctl", "--user", "disable", "--now", l.unit+".service")
+	return err
+}
+
+// checkKillMode refuses a running Worker unit whose KillMode is not process
+// (a drop-in can set it): stopping it would kill the Runs it started.
+func (r Retirement) checkKillMode(ctx context.Context, unit string) error {
+	out, err := r.Run(ctx, "systemctl", "--user", "show", "-p", "KillMode", "-p", "ActiveState", unit+".service")
+	if err != nil {
+		return fmt.Errorf("no se pudo leer %s.service: %w", unit, err)
+	}
+	state := map[string]string{}
+	for line := range strings.Lines(out) {
+		if key, value, ok := strings.Cut(strings.TrimSpace(line), "="); ok {
+			state[key] = value
+		}
+	}
+	if slices.Contains([]string{"inactive", "failed", ""}, state["ActiveState"]) || state["KillMode"] == "process" {
+		return nil
+	}
+	return fmt.Errorf("el KillMode de %s.service es %q, no process: pararlo mataría los Runs que lanzó; "+
+		"quita el override o sigue docs/runbooks/retire-controller.md", unit, state["KillMode"])
+}
+
+// bootout boots the agent out of the two domains it may be loaded in, the
+// graphical session and the background one of a Mac with nobody logged in, and
+// confirms it is gone from both: launchd refuses to boot out a job that is not
+// loaded, which is the job already stopped, but only an answer of "not found"
+// proves it. A Worker that does not abandon its process group would take its
+// Runs with it.
+func (r Retirement) bootout(ctx context.Context, l leftover) error {
+	if config.KindOf(l.unit) == "worker" {
+		plist, err := os.ReadFile(l.path) //nolint:gosec // the path comes from the fixed names of OldUnits
+		if err == nil && !bytes.Contains(plist, []byte("AbandonProcessGroup")) {
+			return fmt.Errorf("%s no abandona su grupo de procesos: pararlo mataría los Runs que lanzó; "+
+				"sigue docs/runbooks/retire-controller.md", l.unit)
+		}
+	}
+	for _, domain := range []string{fmt.Sprintf("gui/%d", r.UID), fmt.Sprintf("user/%d", r.UID)} {
+		target := domain + "/" + l.unit
+		_, bootErr := r.Run(ctx, "launchctl", "bootout", target)
+		_, err := r.Run(ctx, "launchctl", "print", target)
+		switch {
+		case err == nil:
+			still := fmt.Errorf("sigue cargado en %s tras launchctl bootout", domain)
+			if bootErr != nil {
+				return fmt.Errorf("%w: %w", still, bootErr)
+			}
+			return still
+		case !notLoaded(err):
+			return fmt.Errorf("no se pudo comprobar %s: %w", target, err)
+		}
+	}
+	return nil
+}
+
+// notLoaded says whether err is launchctl saying the agent is not there.
+func notLoaded(err error) bool {
+	var exit interface{ ExitCode() int }
+	return errors.As(err, &exit) && (exit.ExitCode() == launchctlNoDomain || exit.ExitCode() == launchctlNoService)
 }
 
 func removeFile(path string) error {

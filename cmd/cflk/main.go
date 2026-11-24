@@ -76,6 +76,7 @@ func checkThisMachine(ctx context.Context, fix bool) ([]doctor.Component, error)
 }
 
 // runTool runs a tool of the service manager (systemctl, launchctl).
-func runTool(ctx context.Context, name string, args ...string) error {
-	return exec.CommandContext(ctx, name, args...).Run() //nolint:gosec // the tool is a constant of the doctor, never user input
+func runTool(ctx context.Context, name string, args ...string) (string, error) {
+	out, err := exec.CommandContext(ctx, name, args...).Output() //nolint:gosec // the tool is a constant of the doctor, never user input
+	return string(out), err
 }

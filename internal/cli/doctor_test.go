@@ -132,3 +132,19 @@ func TestDoctorFixFailsWhenALeftoverCannotBeRemoved(t *testing.T) {
 		t.Error("--fix with a failed removal exited 0")
 	}
 }
+
+func TestDoctorFixJSONFailureIsOneDocument(t *testing.T) {
+	opts := withComponents(doctor.Component{Name: "legacy:unit:cf-worker", Status: doctor.ComponentFail, Message: "no se pudo parar"})
+	code, stdout, _ := runDoctor(t, opts, "--fix", "--json")
+	var doc struct {
+		Error struct {
+			Details struct {
+				Components []doctor.Component `json:"components"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	dec := json.NewDecoder(strings.NewReader(stdout))
+	if err := dec.Decode(&doc); err != nil || dec.More() || code == 0 || len(doc.Error.Details.Components) == 0 {
+		t.Errorf("exit %d, err %v, more %v, stdout %q", code, err, dec.More(), stdout)
+	}
+}

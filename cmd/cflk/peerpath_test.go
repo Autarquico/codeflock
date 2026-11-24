@@ -3,7 +3,9 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -76,12 +78,85 @@ func TestTheLoginPathIsProbedOncePerTTL(t *testing.T) {
 }
 
 func TestThePathOfAPeerIsTheOneItsHarnessesAreLaunchedWith(t *testing.T) {
-	t.Setenv("HOME", "/home/u")
+	home := t.TempDir()
+	t.Setenv("HOME", home) // the cache lives under it on macOS
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	t.Setenv("PATH", "/usr/bin")
 	t.Setenv("SHELL", fakeShell(t, `printf '\n__CFLK_PATH__%s__CFLK_END__\n' "/login/bin"`))
 	useLoginPath(t.Context())
-	if got := os.Getenv("PATH"); !strings.HasPrefix(got, "/login/bin:/home/u/.local/bin") || !strings.HasSuffix(got, ":/usr/bin") {
+	if got := os.Getenv("PATH"); !strings.HasPrefix(got, "/login/bin:"+home+"/.local/bin") || !strings.HasSuffix(got, ":/usr/bin") {
 		t.Errorf("PATH = %q", got)
+	}
+}
+
+func TestTheProbeEndsAtItsDeadlineEvenIfADescendantKeepsThePipe(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	shell := fakeShell(t, `sleep 30 &
+echo $! > `+pidFile+`
+sleep 30`)
+	start := time.Now()
+	if got := loginShellPath(t.Context(), shell); got != "" {
+		t.Errorf("PATH = %q", got)
+	}
+	if d := time.Since(start); d > loginShellTimeout+time.Second {
+		t.Errorf("took %v", d)
+	}
+	data, _ := os.ReadFile(pidFile) //nolint:gosec // test file
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatalf("pid %q: %v", data, err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if syscall.Kill(pid, 0) == nil {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+		t.Error("the sleeper the profile started outlived the probe")
+	}
+}
+
+func TestAFailedProbeIsRememberedBrieflyAndAGoodOneForAnHour(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "login-path")
+	good := "#!/bin/sh\n" + `printf '\n__CFLK_PATH__%s__CFLK_END__\n' "/login/bin"` + "\n"
+	shell := fakeShell(t, "exit 3")
+	setShell := func(script string) {
+		if err := os.WriteFile(shell, []byte(script), 0o700); err != nil { //nolint:gosec // a test script
+			t.Fatal(err)
+		}
+	}
+	age := func(d time.Duration) {
+		when := time.Now().Add(-d)
+		if err := os.Chtimes(file, when, when); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got := cachedLoginPath(t.Context(), shell, file); got != "" {
+		t.Fatalf("got %q", got)
+	}
+	setShell(good)
+	if got := cachedLoginPath(t.Context(), shell, file); got != "" {
+		t.Errorf("a fresh failure was probed again: %q", got)
+	}
+	age(2 * failedLoginPathTTL)
+	if got := cachedLoginPath(t.Context(), shell, file); got != "/login/bin" {
+		t.Errorf("a failure older than its TTL was not probed again: %q", got)
+	}
+	setShell("#!/bin/sh\nexit 3\n")
+	age(2 * failedLoginPathTTL)
+	if got := cachedLoginPath(t.Context(), shell, file); got != "/login/bin" {
+		t.Errorf("a good probe expired with the short TTL: %q", got)
+	}
+}
+
+func TestTheCacheIsWrittenWholeInTheCflkCacheDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "xdg"))
+	t.Setenv("PATH", "/usr/bin")
+	t.Setenv("SHELL", fakeShell(t, `printf '\n__CFLK_PATH__%s__CFLK_END__\n' "/login/bin"`))
+	useLoginPath(t.Context())
+	cache, _ := os.UserCacheDir()
+	entries, err := os.ReadDir(filepath.Join(cache, cacheDirName))
+	if err != nil || len(entries) != 1 || entries[0].Name() != "login-path" {
+		t.Errorf("entries %v err %v", entries, err)
 	}
 }

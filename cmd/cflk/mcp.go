@@ -31,6 +31,7 @@ func newMCPCommand(jobs cli.Jobs) *cobra.Command {
 				return err
 			}
 			cmd.SilenceUsage = true
+			useLoginPath(cmd.Context()) // a client started from the desktop has a thinner PATH than the terminal's
 			fmt.Fprintf(cmd.ErrOrStderr(), "cflk mcp: serving profile %s\n", p)
 			return mcp.Serve(cmd.Context(), mcp.NewServer(p, jobs, cmd.ErrOrStderr()), cmd.InOrStdin(), cmd.OutOrStdout())
 		},
