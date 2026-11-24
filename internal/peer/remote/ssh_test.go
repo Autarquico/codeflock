@@ -27,7 +27,7 @@ func argv(parts ...[]string) []string {
 
 func TestTheCommandOfARequestIsSSHToTheHostRunningCflkPeerAndNothingElse(t *testing.T) {
 	got, err := ssh.ServeArgv(mini)
-	want := argv([]string{"ssh"}, sshFixed, []string{"--", "mac-mini.tail1234.ts.net", "cflk", "peer"})
+	want := argv([]string{"ssh"}, sshFixed, []string{"--", "mac-mini.tail1234.ts.net", ".local/bin/cflk", "peer"})
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Errorf("argv = %q, %v\nwant   %q", got, err, want)
 	}
@@ -36,12 +36,12 @@ func TestTheCommandOfARequestIsSSHToTheHostRunningCflkPeerAndNothingElse(t *test
 func TestAttachIsSSHWithATerminalAndTheJobIdAsTheOnlyOperand(t *testing.T) {
 	const id = "job-abcdefghij"
 	got, err := ssh.AttachArgv(mini, id, false)
-	want := argv([]string{"ssh", "-t"}, sshFixed, []string{"--", mini.Host, "cflk", "peer", "attach", id})
+	want := argv([]string{"ssh", "-t"}, sshFixed, []string{"--", mini.Host, ".local/bin/cflk", "peer", "attach", id})
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Errorf("argv = %q, %v\nwant   %q", got, err, want)
 	}
 	got, err = ssh.AttachArgv(mini, id, true)
-	want = argv([]string{"ssh", "-t"}, sshFixed, []string{"--", mini.Host, "cflk", "peer", "attach", "--read-only", id})
+	want = argv([]string{"ssh", "-t"}, sshFixed, []string{"--", mini.Host, ".local/bin/cflk", "peer", "attach", "--read-only", id})
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Errorf("read-only argv = %q, %v\nwant   %q", got, err, want)
 	}
@@ -91,6 +91,22 @@ func TestAMirrorPathThatIsNotAPlainAbsolutePathIsRefused(t *testing.T) {
 	for _, m := range []string{"relative/x.git", "/a/../b.git", "/a b.git", "/a;id.git", "/a/$(id).git", "-x", "/a//b.git", "~/x.git"} {
 		if _, err := ssh.PushTarget(mini, m); err == nil {
 			t.Errorf("mirror %q accepted", m)
+		}
+	}
+}
+
+func TestACflkPathOfThePeerReplacesTheDefaultAndMustBePlain(t *testing.T) {
+	custom := mini
+	custom.Cflk = "bin/cflk"
+	got, err := ssh.ServeArgv(custom)
+	want := argv([]string{"ssh"}, sshFixed, []string{"--", mini.Host, "bin/cflk", "peer"})
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Errorf("argv = %q, %v\nwant   %q", got, err, want)
+	}
+	for _, bad := range []string{"-oProxyCommand=x", "~/bin/cflk", "a b", "../cflk", "x;id", "$(id)"} {
+		custom.Cflk = bad
+		if _, err := ssh.ServeArgv(custom); err == nil {
+			t.Errorf("cflk path %q accepted", bad)
 		}
 	}
 }

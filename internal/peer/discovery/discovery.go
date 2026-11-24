@@ -14,6 +14,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -47,6 +49,22 @@ type Peer struct {
 	// online until it fails to answer.
 	Online bool
 	Source Source
+	// Cflk is where cflk is on the peer, relative to the home ssh starts in (or
+	// absolute); empty is DefaultCflk.
+	Cflk string
+}
+
+// DefaultCflk is where install.sh puts cflk, relative to $HOME: a non-interactive
+// ssh does not read the profile, so ~/.local/bin is not in its PATH. ssh starts in
+// $HOME, so a relative path needs no tilde and no shell.
+const DefaultCflk = ".local/bin/cflk"
+
+var cflkPathPattern = regexp.MustCompile(`^/?[A-Za-z0-9._][A-Za-z0-9._/-]*$`)
+
+// ValidCflkPath says whether s can be the cflk path of a peer: plain characters,
+// never an option, a tilde or a way up out of the directory.
+func ValidCflkPath(s string) bool {
+	return cflkPathPattern.MatchString(s) && !slices.Contains(strings.Split(s, "/"), "..")
 }
 
 // Result is what discovery finds.
@@ -104,11 +122,12 @@ func Discover(ctx context.Context, opts Options) (Result, error) {
 	} else if err := res.addTailscale(raw); err != nil {
 		res.Warnings = append(res.Warnings, "tailscale: "+err.Error())
 	}
-	hosts, err := ReadConfig(opts.ConfigPath)
+	cfg, err := ReadConfig(opts.ConfigPath)
 	if err != nil {
 		return res, err
 	}
-	res.addConfig(hosts)
+	res.addConfig(cfg.Peers)
+	res.applyCflkPaths(cfg.CflkPath)
 	return res, nil
 }
 
@@ -202,27 +221,54 @@ func peerOf(n tsNode) (Peer, bool) {
 	return Peer{ID: n.ID, Name: name, Host: host, Online: n.Online, Source: Tailscale}, true
 }
 
-type configFile struct {
-	Peers []string `toml:"peers"`
+// File is what discovery reads of the config file:
+//
+//	peers = ["mac-mini.local", "omarch01"]
+//
+//	[cflk_path]            # optional: where cflk is on a peer, from its $HOME
+//	"mac-mini.local" = "bin/cflk"
+type File struct {
+	Peers    []string          `toml:"peers"`
+	CflkPath map[string]string `toml:"cflk_path"`
 }
 
-// ReadConfig returns the `peers = [...]` of the config file at path.
-func ReadConfig(path string) ([]string, error) {
+// ReadConfig reads the config file at path; none is an empty File.
+func ReadConfig(path string) (File, error) {
 	if path == "" {
-		return nil, nil
+		return File{}, nil
 	}
 	raw, err := os.ReadFile(path) //nolint:gosec // the user's own config file
 	if os.IsNotExist(err) {
-		return nil, nil
+		return File{}, nil
 	}
 	if err != nil {
-		return nil, err
+		return File{}, err
 	}
-	var c configFile
+	var c File
 	if err := toml.Unmarshal(raw, &c); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return File{}, fmt.Errorf("%s: %w", path, err)
 	}
-	return c.Peers, nil
+	return c, nil
+}
+
+// applyCflkPaths gives each peer the cflk path the config names for its host or name.
+func (r *Result) applyCflkPaths(paths map[string]string) {
+	keys := make([]string, 0, len(paths))
+	for k := range paths {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if !ValidCflkPath(paths[k]) {
+			r.Warnings = append(r.Warnings, fmt.Sprintf("config: cflk_path of %q is not a plain path; ignored", k))
+			continue
+		}
+		for i, p := range r.Peers {
+			if p.Host == k || p.Name == k {
+				r.Peers[i].Cflk = paths[k]
+			}
+		}
+	}
 }
 
 func (r *Result) addConfig(hosts []string) {

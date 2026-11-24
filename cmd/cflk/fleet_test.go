@@ -289,7 +289,7 @@ func TestAttachToARemoteJobOpensAWindowWithTheSSHCommand(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := "'ssh' '-t' '-o' 'BatchMode=yes' '-o' 'ConnectTimeout=3' '-o' 'ServerAliveInterval=15' '-o' 'ServerAliveCountMax=3' '--' 'mac-mini.ts.net' 'cflk' 'peer' 'attach' "
+		want := "'ssh' '-t' '-o' 'BatchMode=yes' '-o' 'ConnectTimeout=3' '-o' 'ServerAliveInterval=15' '-o' 'ServerAliveCountMax=3' '--' 'mac-mini.ts.net' '.local/bin/cflk' 'peer' 'attach' "
 		if readOnly {
 			want += "'--read-only' "
 		}

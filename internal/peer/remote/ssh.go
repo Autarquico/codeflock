@@ -2,6 +2,7 @@ package remote
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"fmt"
 	"os/exec"
@@ -60,24 +61,30 @@ func checkHost(p discovery.Peer) error {
 	return nil
 }
 
-// argv is `ssh [-t] <options> -- <host> cflk peer <operands...>`.
+// argv is `ssh [-t] <options> -- <host> <cflk> peer <operands...>`. The cflk is
+// where install.sh puts it, relative to $HOME (ssh starts there), unless the peer
+// says otherwise: a non-interactive ssh does not have ~/.local/bin in its PATH.
 func (s SSH) argv(p discovery.Peer, tty bool, operands ...string) ([]string, error) {
 	if err := checkHost(p); err != nil {
 		return nil, err
+	}
+	cflk := cmp.Or(p.Cflk, discovery.DefaultCflk)
+	if !discovery.ValidCflkPath(cflk) {
+		return nil, fmt.Errorf("%q is not a plain path to cflk on %s", cflk, p.Name)
 	}
 	argv := []string{"ssh"}
 	if tty {
 		argv = append(argv, "-t")
 	}
 	argv = append(argv, s.options()...)
-	argv = append(argv, "--", p.Host, "cflk", "peer")
+	argv = append(argv, "--", p.Host, cflk, "peer")
 	return append(argv, operands...), nil
 }
 
-// ServeArgv is the command that answers one request: `ssh <host> cflk peer`.
+// ServeArgv is the command that answers one request: `ssh <host> .local/bin/cflk peer`.
 func (s SSH) ServeArgv(p discovery.Peer) ([]string, error) { return s.argv(p, false) }
 
-// AttachArgv is `ssh -t <host> cflk peer attach [--read-only] <job>`.
+// AttachArgv is `ssh -t <host> .local/bin/cflk peer attach [--read-only] <job>`.
 func (s SSH) AttachArgv(p discovery.Peer, id string, readOnly bool) ([]string, error) {
 	if !job.ValidID(id) {
 		return nil, fmt.Errorf("%q is not a Job id", id)
@@ -92,7 +99,7 @@ func (s SSH) AttachArgv(p discovery.Peer, id string, readOnly bool) ([]string, e
 // maxStderr bounds the text of ssh's complaint that reaches an error.
 const maxStderr = 512
 
-// Dial starts `ssh <host> cflk peer`. It takes no operands: the request is in stdin.
+// Dial starts `ssh <host> .local/bin/cflk peer`. It takes no operands: the request is in stdin.
 func (s SSH) Dial(ctx context.Context, p discovery.Peer, args ...string) (Conn, error) {
 	if len(args) > 0 {
 		return Conn{}, fmt.Errorf("cflk peer takes its request in stdin, not as arguments")
