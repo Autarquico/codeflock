@@ -151,6 +151,9 @@ func (l *localJobs) prepare(ctx context.Context, in server.PrepareInput, archive
 		return out, err
 	}
 	p.dropWorktree(ctx, mirror, wt)
+	if err := p.detachOwn(ctx, mirror, in.Job, "cflk/"+in.Job); err != nil { // a Job coming back finds its old worktree here
+		return out, err
+	}
 	if _, err := git(ctx, mirror, "worktree", "add", "--quiet", "--force", "-B", "cflk/"+in.Job, wt, in.Commit); err != nil {
 		p.dropWorktree(ctx, mirror, wt)
 		return out, err
