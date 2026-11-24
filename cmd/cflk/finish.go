@@ -360,6 +360,9 @@ func dropSealRef(ctx context.Context, dir, id string, gen int) error {
 // more, and the branch cannot advance under a checkout. The files stay. Nothing
 // that is not a worktree of this Job in the repository of dir is touched.
 func (p *peer) releaseBranch(ctx context.Context, dir, id, branch string) error {
+	if own, err := filepath.Glob(filepath.Join(p.store.Dir(id), "g*")); err != nil || len(own) == 0 {
+		return err
+	}
 	return p.store.WithLock(id, func(j *job.Job) error {
 		if j.State != job.Moved && j.State != job.Finishing && j.State != job.Done {
 			return nil

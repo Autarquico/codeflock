@@ -94,6 +94,9 @@ func (l *localJobs) prepare(ctx context.Context, in server.PrepareInput, archive
 	if !ok || in.Harness == "" {
 		return out, invalid("unknown harness %q: use claude or codex", in.Harness)
 	}
+	if err := refuseWithoutLogin(in.Harness); err != nil {
+		return out, err
+	}
 	manifest, err := sessions.Manifest(archive)
 	if err != nil {
 		return out, invalid("%v", err)
