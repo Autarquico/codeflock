@@ -55,19 +55,36 @@ func (s peerService) Show(ctx context.Context, id string) (wire.JobView, error) 
 	return wire.JobView(v), err
 }
 
-func (s peerService) Stop(ctx context.Context, id string) (wire.JobView, error) {
-	v, err := s.l.Stop(ctx, id)
+func (s peerService) Stop(ctx context.Context, id string, gen int) (wire.JobView, error) {
+	v, err := s.l.stop(ctx, id, gen)
 	return wire.JobView(v), err
 }
 
-func (s peerService) Resume(ctx context.Context, id string) (wire.JobView, error) {
-	v, err := s.l.Resume(ctx, id)
+func (s peerService) Resume(ctx context.Context, id string, gen int, force bool) (wire.JobView, error) {
+	v, err := s.l.resume(ctx, id, gen, force)
 	return wire.JobView(v), err
 }
 
-func (s peerService) Send(ctx context.Context, id, text string) (wire.JobView, error) {
-	v, err := s.l.Send(ctx, id, text)
+func (s peerService) Send(ctx context.Context, id string, gen int, text string) (wire.JobView, error) {
+	v, err := s.l.send(ctx, id, gen, text)
 	return wire.JobView(v), err
+}
+
+func (s peerService) Move(ctx context.Context, in server.MoveInput) (wire.JobView, error) {
+	v, err := s.l.move(ctx, in)
+	return wire.JobView(v), err
+}
+
+func (s peerService) Prepare(ctx context.Context, in server.PrepareInput, archive []byte) (wire.Transfer, error) {
+	return s.l.prepare(ctx, in, archive)
+}
+
+func (s peerService) Activate(ctx context.Context, in server.TransferInput) (wire.JobView, error) {
+	return s.l.activate(ctx, in)
+}
+
+func (s peerService) AbortTransfer(ctx context.Context, in server.TransferInput) (wire.Transfer, error) {
+	return s.l.abortTransfer(ctx, in)
 }
 
 func (s peerService) Screen(ctx context.Context, id string) (string, error) {

@@ -27,6 +27,9 @@ type JobView struct {
 	// Problem is why the Job could not be read up to date; the other fields are
 	// then what was last recorded.
 	Problem string `json:"problem,omitempty"`
+	// MovedTo and MovedGen say where a Job that is moved lives now.
+	MovedTo  string `json:"moved_to,omitempty"`
+	MovedGen int    `json:"moved_gen,omitempty"`
 }
 
 // UnreachablePeer is a peer that did not answer a listing, and why.
@@ -56,6 +59,16 @@ type RunRequest struct {
 	Prompt string
 }
 
+// MoveRequest is a Job to move to another peer, or the resolution of a move
+// that was left unconfirmed.
+type MoveRequest struct {
+	ID string
+	// To is the peer the Job goes to; empty for Retry and Abort, which use the one the move named.
+	To string
+	// Retry repeats prepare and activate with the same transfer; Abort gives the move up.
+	Retry, Abort bool
+}
+
 // PeerView is a peer as `cflk peers` shows it.
 type PeerView struct {
 	Name string `json:"name"`
@@ -81,6 +94,12 @@ type Jobs interface {
 	Show(ctx context.Context, id string) (JobView, error)
 	Stop(ctx context.Context, id string) (JobView, error)
 	Resume(ctx context.Context, id string) (JobView, error)
+	// ResumeForce resumes a Job here even if it is moving, which may leave two copies.
+	ResumeForce(ctx context.Context, id string) (JobView, error)
+	// Move moves the Job to another peer and starts it there; see MoveRequest.
+	Move(ctx context.Context, req MoveRequest) (JobView, error)
+	// Clean deletes what is left of a moved or done Job on this peer.
+	Clean(ctx context.Context, id string) (JobView, error)
 	Screen(ctx context.Context, id string) (string, error)
 	Send(ctx context.Context, id, text string) (JobView, error)
 	// Attach enters the terminal of the Job and returns when the person leaves it.
@@ -184,9 +203,50 @@ func newJobCmds(opts Options) []*cobra.Command {
 			return emitJob(cmd, v)
 		})
 
-	resume := jobCmd(opts, "resume JOB", "Start the agent of a stopped or lost Job again, in the same session", cobra.ExactArgs(1),
+	resume := jobCmd(opts, "resume [--force] JOB", "Start the agent of a stopped or lost Job again, in the same session", cobra.ExactArgs(1),
 		func(cmd *cobra.Command, jobs Jobs, args []string) error {
-			v, err := jobs.Resume(cmd.Context(), args[0])
+			force, _ := cmd.Flags().GetBool("force")
+			resume := jobs.Resume
+			if force {
+				fmt.Fprintln(cmd.ErrOrStderr(), "warning: --force starts the agent here even if the Job moved: a copy may be running on another peer")
+				resume = jobs.ResumeForce
+			}
+			v, err := resume(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			return emitJob(cmd, v)
+		})
+	resume.Flags().Bool("force", false, "resume a Job that is moving, although a copy may run on the other peer")
+
+	move := jobCmd(opts, "move JOB --to PEER | move --retry JOB | move --abort JOB", "Move a Job to another peer, with its conversation, and resume it there", cobra.ExactArgs(1),
+		func(cmd *cobra.Command, jobs Jobs, args []string) error {
+			f := cmd.Flags()
+			req := MoveRequest{ID: args[0]}
+			req.To, _ = f.GetString("to")
+			req.Retry, _ = f.GetBool("retry")
+			req.Abort, _ = f.GetBool("abort")
+			switch {
+			case req.Retry && req.Abort:
+				return domain.NewError(domain.CodeInvalidRequest, "--retry and --abort are alternatives", nil)
+			case (req.Retry || req.Abort) && req.To != "":
+				return domain.NewError(domain.CodeInvalidRequest, "--retry and --abort use the peer the move named: leave --to out", nil)
+			case !req.Retry && !req.Abort && req.To == "":
+				return domain.NewError(domain.CodeInvalidRequest, "say where the Job goes: --to PEER", nil)
+			}
+			v, err := jobs.Move(cmd.Context(), req)
+			if err != nil {
+				return err
+			}
+			return emitJob(cmd, v)
+		})
+	move.Flags().String("to", "", "the peer the Job moves to")
+	move.Flags().Bool("retry", false, "repeat a move that was left unconfirmed (moving) with the same transfer")
+	move.Flags().Bool("abort", false, "give up a move that was left unconfirmed: the Job goes back to stopped here")
+
+	clean := jobCmd(opts, "clean JOB", "Delete what is left on this peer of a moved or done Job (worktrees, trust, mirror refs)", cobra.ExactArgs(1),
+		func(cmd *cobra.Command, jobs Jobs, args []string) error {
+			v, err := jobs.Clean(cmd.Context(), args[0])
 			if err != nil {
 				return err
 			}
@@ -220,7 +280,7 @@ func newJobCmds(opts Options) []*cobra.Command {
 		})
 	attach.Flags().Bool("read-only", false, "what you type does not reach the agent")
 
-	return []*cobra.Command{run, ps, peers, show, stop, resume, screen, send, attach, newPeerCmd(opts), newInternalCmd(opts)}
+	return []*cobra.Command{run, ps, peers, show, stop, resume, move, clean, screen, send, attach, newPeerCmd(opts), newInternalCmd(opts)}
 }
 
 func printJobs(w io.Writer, list JobList) error {
@@ -268,9 +328,13 @@ func printPeers(w io.Writer, peers []PeerView) error {
 
 func printJob(w io.Writer, j JobView) error {
 	t := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	state := j.State
+	if j.MovedTo != "" {
+		state += " -> " + j.MovedTo
+	}
 	rows := [][2]string{
 		{"job", j.ID},
-		{"state", j.State},
+		{"state", state},
 		{"peer", j.Peer},
 		{"repo", j.Repo},
 		{"branch", j.Branch},

@@ -20,6 +20,7 @@ import (
 	"github.com/Autarquico/codeflock/internal/peer/job"
 	"github.com/Autarquico/codeflock/internal/peer/remote"
 	"github.com/Autarquico/codeflock/internal/peer/runner"
+	"github.com/Autarquico/codeflock/internal/peer/server"
 	"github.com/Autarquico/codeflock/internal/peer/wire"
 )
 
@@ -166,7 +167,33 @@ func (f *fleet) List(ctx context.Context, only string) (cli.JobList, error) {
 			list.Jobs = append(list.Jobs, cli.JobView(v))
 		}
 	}
+	list.Jobs = hideMoved(list.Jobs, list.Unreachable)
 	return list, nil
+}
+
+// hideMoved leaves out the record of a Job that moved when the peer that has it
+// now is listed too: one row per Job. If that peer did not answer, the record
+// stays and says where the Job went and that nobody confirmed it.
+func hideMoved(jobs []cli.JobView, unreachable []cli.UnreachablePeer) []cli.JobView {
+	live := map[string]bool{}
+	for _, v := range jobs {
+		if v.State != string(job.Moved) {
+			live[v.ID] = true
+		}
+	}
+	out := jobs[:0:0]
+	for _, v := range jobs {
+		if v.State == string(job.Moved) {
+			if live[v.ID] {
+				continue
+			}
+			if slices.ContainsFunc(unreachable, func(u cli.UnreachablePeer) bool { return u.Peer == v.MovedTo }) {
+				v.Problem = "in " + v.MovedTo + ", unconfirmed"
+			}
+		}
+		out = append(out, v)
+	}
+	return out
 }
 
 // localBusy is the problem shown on a local Job that the listing could not
@@ -240,11 +267,14 @@ func (f *fleet) locate(ctx context.Context, id string) (owner, error) {
 		return owner{}, invalid("%q is not a Job id (job-xxxxxxxxxx)", id)
 	}
 	v, err := f.local.Show(ctx, id)
+	movedTo := ""
 	switch {
 	case err == nil && v.State != string(job.Moved):
 		return owner{view: v}, nil
 	case err != nil && codeOf(err) != domain.CodeNotFound:
 		return owner{}, err
+	case err == nil:
+		movedTo = v.MovedTo
 	}
 	res, err := f.discover(ctx)
 	if err != nil {
@@ -266,8 +296,12 @@ func (f *fleet) locate(ctx context.Context, id string) (owner, error) {
 		return *found, nil
 	}
 	if len(silent) > 0 {
+		hint := ""
+		if movedTo != "" {
+			hint = fmt.Sprintf(" (it moved to %s, unconfirmed)", movedTo)
+		}
 		return owner{}, domain.NewError(domain.CodePeerNoAnswer,
-			fmt.Sprintf("job %s is not on a peer that answered (no answer from: %s)", id, strings.Join(silent, ", ")), nil)
+			fmt.Sprintf("job %s is not on a peer that answered%s (no answer from: %s)", id, hint, strings.Join(silent, ", ")), nil)
 	}
 	return owner{}, domain.NewError(domain.CodeNotFound, fmt.Sprintf("no peer has job %s", id), nil)
 }
@@ -280,17 +314,26 @@ const stopTimeout = runner.WrapperGrace + runner.GraceMargin + runner.DefaultKil
 // timeoutOf is how long a peer has to carry out op: orderTimeout if set, else
 // the default of the op.
 func (f *fleet) timeoutOf(op wire.Op) time.Duration {
-	if op == wire.OpStop {
+	switch op {
+	case wire.OpStop:
 		return cmp.Or(f.orderTimeout, stopTimeout)
+	case wire.OpMove, wire.OpMoveRetry, wire.OpMoveAbort:
+		return cmp.Or(f.orderTimeout, moveTimeout)
 	}
 	return cmp.Or(f.orderTimeout, remote.DefaultOrderTimeout)
 }
 
 // call is op on the Job at its owner, expecting the generation that was found.
 func (f *fleet) call(ctx context.Context, o owner, op wire.Op, body []byte) (wire.Response, []byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, f.timeoutOf(op))
+	return f.callWith(ctx, o, wire.Request{Op: op}, body)
+}
+
+// callWith is call for a request with more than the op: the Job and the generation are filled in.
+func (f *fleet) callWith(ctx context.Context, o owner, req wire.Request, body []byte) (wire.Response, []byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, f.timeoutOf(req.Op))
 	defer cancel()
-	return remote.Call(ctx, f.transport, *o.peer, wire.Request{Op: op, Job: o.view.ID, Gen: o.view.Gen}, body)
+	req.Job, req.Gen = o.view.ID, o.view.Gen
+	return remote.Call(ctx, f.transport, *o.peer, req, body)
 }
 
 // jobOp runs a command that answers a Job: here, or at its owner.
@@ -323,6 +366,65 @@ func (f *fleet) Stop(ctx context.Context, id string) (cli.JobView, error) {
 
 func (f *fleet) Resume(ctx context.Context, id string) (cli.JobView, error) {
 	return f.jobOp(ctx, id, wire.OpResume, nil, func() (cli.JobView, error) { return f.local.Resume(ctx, id) })
+}
+
+// ResumeForce resumes a Job that is moving, though its move may have started it elsewhere.
+func (f *fleet) ResumeForce(ctx context.Context, id string) (cli.JobView, error) {
+	o, err := f.locate(ctx, id)
+	if err != nil {
+		return cli.JobView{}, err
+	}
+	if o.peer == nil {
+		return f.local.ResumeForce(ctx, id)
+	}
+	resp, _, err := f.callWith(ctx, o, wire.Request{Op: wire.OpResume, Force: true}, nil)
+	if err != nil {
+		return cli.JobView{}, err
+	}
+	if resp.Job == nil {
+		return cli.JobView{}, fmt.Errorf("peer %s answered resume without a Job", o.peer.Name)
+	}
+	return cli.JobView(*resp.Job), nil
+}
+
+// Move moves a Job to another peer, or resolves a move that was left unconfirmed.
+// The peer that owns the Job does the work: it stops the Job, seals it and sends
+// it to the destination.
+func (f *fleet) Move(ctx context.Context, req cli.MoveRequest) (cli.JobView, error) {
+	if f.local.net == nil {
+		f.local.net = &network{transport: f.transport, discover: f.discover}
+	}
+	o, err := f.locate(ctx, req.ID)
+	if err != nil {
+		return cli.JobView{}, err
+	}
+	mode, op := server.MoveStart, wire.OpMove
+	switch {
+	case req.Retry:
+		mode, op = server.MoveRetry, wire.OpMoveRetry
+	case req.Abort:
+		mode, op = server.MoveAbort, wire.OpMoveAbort
+	}
+	if o.peer == nil {
+		return f.local.move(ctx, server.MoveInput{Job: req.ID, Gen: o.view.Gen, To: req.To, Mode: mode})
+	}
+	to := req.To
+	if mode != server.MoveStart {
+		to = ""
+	}
+	resp, _, err := f.callWith(ctx, o, wire.Request{Op: op, To: to}, nil)
+	if err != nil {
+		return cli.JobView{}, err
+	}
+	if resp.Job == nil {
+		return cli.JobView{}, fmt.Errorf("peer %s answered %s without a Job", o.peer.Name, op)
+	}
+	return cli.JobView(*resp.Job), nil
+}
+
+// Clean cleans this peer only: what other peers keep is theirs to clean.
+func (f *fleet) Clean(ctx context.Context, id string) (cli.JobView, error) {
+	return f.local.Clean(ctx, id)
 }
 
 func (f *fleet) Send(ctx context.Context, id, text string) (cli.JobView, error) {
@@ -462,11 +564,13 @@ const connectTimeout = 3 * time.Second
 // newFleet is the fleet of this binary: the peers of Tailscale and the config
 // file, reached over ssh.
 func newFleet(local *localJobs) *fleet {
-	return &fleet{
+	f := &fleet{
 		local:     local,
 		transport: remote.SSH{ConnectTimeout: connectTimeout},
 		discover:  discoverPeers,
 		windows:   attachwindow.ExecRunner{},
 		timeout:   queryTimeout,
 	}
+	local.net = &network{transport: f.transport, discover: f.discover}
+	return f
 }

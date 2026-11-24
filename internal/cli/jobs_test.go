@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -14,6 +15,7 @@ type fakeJobs struct {
 	ran      RunRequest
 	attached []string
 	listed   string
+	called   []string
 	err      error
 }
 
@@ -41,6 +43,21 @@ func (f *fakeJobs) Stop(_ context.Context, id string) (JobView, error) {
 
 func (f *fakeJobs) Resume(_ context.Context, id string) (JobView, error) {
 	return JobView{ID: id, State: "running"}, f.err
+}
+
+func (f *fakeJobs) ResumeForce(_ context.Context, id string) (JobView, error) {
+	f.called = append(f.called, "resume-force "+id)
+	return JobView{ID: id, State: "running"}, f.err
+}
+
+func (f *fakeJobs) Move(_ context.Context, r MoveRequest) (JobView, error) {
+	f.called = append(f.called, fmt.Sprintf("move %s to=%s retry=%v abort=%v", r.ID, r.To, r.Retry, r.Abort))
+	return JobView{ID: r.ID, State: "moved", MovedTo: r.To}, f.err
+}
+
+func (f *fakeJobs) Clean(_ context.Context, id string) (JobView, error) {
+	f.called = append(f.called, "clean "+id)
+	return JobView{ID: id, State: "moved"}, f.err
 }
 func (f *fakeJobs) Screen(context.Context, string) (string, error) { return "the screen\n", f.err }
 func (f *fakeJobs) Send(_ context.Context, id, text string) (JobView, error) {
@@ -196,5 +213,37 @@ func TestPeersIsATableWithThisMachineAndTheOnesThatDoNotAnswer(t *testing.T) {
 	var got []PeerView
 	if err := json.Unmarshal([]byte(out), &got); err != nil || len(got) != 2 || got[1].Reachable {
 		t.Errorf("--json = %q, %v", out, err)
+	}
+}
+
+func TestMoveNeedsADestinationUnlessItResolvesAMoveAndTheFlagsAreAlternatives(t *testing.T) {
+	for _, args := range [][]string{
+		{"move", "job-aaaaaaaaaa"},
+		{"move", "--to", "mini", "--retry", "job-aaaaaaaaaa"},
+		{"move", "--retry", "--abort", "job-aaaaaaaaaa"},
+	} {
+		f := &fakeJobs{}
+		if code, _, _ := runWith(Options{Jobs: f}, args...); code == 0 || len(f.called) != 0 {
+			t.Errorf("%v: exit %d, called %v", args, code, f.called)
+		}
+	}
+	for args, want := range map[string]string{
+		"move --to mini job-aaaaaaaaaa": "move job-aaaaaaaaaa to=mini retry=false abort=false",
+		"move --retry job-aaaaaaaaaa":   "move job-aaaaaaaaaa to= retry=true abort=false",
+		"move --abort job-aaaaaaaaaa":   "move job-aaaaaaaaaa to= retry=false abort=true",
+		"resume --force job-aaaaaaaaaa": "resume-force job-aaaaaaaaaa",
+		"clean job-aaaaaaaaaa":          "clean job-aaaaaaaaaa",
+	} {
+		f := &fakeJobs{}
+		if code, _, errOut := runWith(Options{Jobs: f}, strings.Fields(args)...); code != 0 || len(f.called) != 1 || f.called[0] != want {
+			t.Errorf("%s: exit %d, called %v, stderr %q", args, code, f.called, errOut)
+		}
+	}
+}
+
+func TestAForcedResumeWarnsOfTheOtherCopy(t *testing.T) {
+	_, _, errOut := runWith(Options{Jobs: &fakeJobs{}}, "resume", "--force", "job-aaaaaaaaaa")
+	if !strings.Contains(errOut, "a copy may be running on another peer") {
+		t.Errorf("stderr = %q", errOut)
 	}
 }

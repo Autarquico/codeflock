@@ -88,6 +88,30 @@ func New(cfg Config) *Runner {
 // resumable are the states a launch may start from.
 var resumable = []job.State{job.Stopped, job.Lost, job.Failed}
 
+// Option qualifies a command on a Job.
+type Option func(*options)
+
+type options struct {
+	expect int
+	force  bool
+}
+
+func optionsOf(opts []Option) options {
+	var o options
+	for _, f := range opts {
+		f(&o)
+	}
+	return o
+}
+
+// Expect makes the command refuse, under the Job's lock and in the same hold as
+// its change, a Job that is not in generation gen or has moved away.
+func Expect(gen int) Option { return func(o *options) { o.expect = gen } }
+
+// Force lets a launch start a Job that is moving: `resume --force`, which may
+// leave two copies of the Job.
+func Force() Option { return func(o *options) { o.force = true } }
+
 // Launch starts the agent of the Job as a new launch: its own id, the tmux session
 // cflk-<job>-<launch>, the harness under the wrapper, in the worktree of the Job's
 // generation. A Job without a session names one (Claude) or has it discovered
@@ -100,10 +124,14 @@ var resumable = []job.State{job.Stopped, job.Lost, job.Failed}
 // not start and its group is verified gone, the Job is as it was. If it cannot be
 // verified gone, the Job is left stopping with the launch recorded, and the error
 // says so: `stop` ends it.
-func (r *Runner) Launch(ctx context.Context, id, prompt string) (job.Job, error) {
+func (r *Runner) Launch(ctx context.Context, id, prompt string, opts ...Option) (job.Job, error) {
+	o := optionsOf(opts)
 	var out job.Job
 	err := r.cfg.Store.WithLockSave(id, func(j *job.Job, save func() error) error {
-		if !slices.Contains(resumable, j.State) {
+		if err := j.ExpectGen(o.expect); err != nil {
+			return err
+		}
+		if !slices.Contains(resumable, j.State) && (!o.force || j.State != job.Moving) {
 			return fmt.Errorf("job %s is %s, it cannot be launched: only a stopped, lost or failed Job is: %w", j.ID, j.State, job.ErrInvalidTransition)
 		}
 		agent, ok := r.agents[j.Harness]
@@ -118,7 +146,7 @@ func (r *Runner) Launch(ctx context.Context, id, prompt string) (job.Job, error)
 		if err := j.Transition(job.Running); err != nil {
 			return err
 		}
-		j.Launch = &l
+		j.Launch, j.Move = &l, nil
 		if err := save(); err != nil {
 			return err
 		}

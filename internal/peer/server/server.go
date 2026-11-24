@@ -26,6 +26,45 @@ type RunInput struct {
 	Prompt    string
 }
 
+// MoveMode is which of the three movement commands a move op is.
+type MoveMode string
+
+// The modes of a move.
+const (
+	MoveStart MoveMode = "start"
+	MoveRetry MoveMode = "retry"
+	MoveAbort MoveMode = "abort"
+)
+
+// MoveInput is a Job to move, to retry or to take back. Gen is the generation the
+// sender expects the Job to be in.
+type MoveInput struct {
+	Job  string
+	Gen  int
+	To   string
+	Mode MoveMode
+}
+
+// PrepareInput is a movement to receive: the code is in the local mirror under
+// refs/cflk/<Job>/g<Gen> at Commit, and the session comes as the archive.
+type PrepareInput struct {
+	Job       string
+	Gen       int
+	Transfer  string
+	Harness   string
+	Repo      string
+	Commit    string
+	CreatedBy string
+	History   []wire.HistoryEntry
+}
+
+// TransferInput names a movement the destination was told about.
+type TransferInput struct {
+	Job      string
+	Gen      int
+	Transfer string
+}
+
 // Local is what this peer does with its own Jobs: the same use cases the local
 // commands run, so that a request from another peer and a command typed here
 // cannot differ.
@@ -33,14 +72,24 @@ type Local interface {
 	Hello(ctx context.Context) (wire.Hello, error)
 	List(ctx context.Context) ([]wire.JobView, error)
 	Show(ctx context.Context, id string) (wire.JobView, error)
-	Stop(ctx context.Context, id string) (wire.JobView, error)
-	Resume(ctx context.Context, id string) (wire.JobView, error)
+	// Stop, Resume and Send check gen (when it is not zero) under the lock of the
+	// Job, in the same hold as the change.
+	Stop(ctx context.Context, id string, gen int) (wire.JobView, error)
+	Resume(ctx context.Context, id string, gen int, force bool) (wire.JobView, error)
 	Screen(ctx context.Context, id string) (string, error)
-	Send(ctx context.Context, id, text string) (wire.JobView, error)
+	Send(ctx context.Context, id string, gen int, text string) (wire.JobView, error)
 	// RunFromMirror starts the Job of a delegation.
 	RunFromMirror(ctx context.Context, in RunInput) (wire.JobView, error)
 	// Mirror makes sure the bare mirror of repo exists and returns its path.
 	Mirror(ctx context.Context, repo string) (string, error)
+	// Move moves, or repeats the move of, or takes back the move of a Job that is here.
+	Move(ctx context.Context, in MoveInput) (wire.JobView, error)
+	// Prepare receives a movement: the worktree and the session archive, nothing started.
+	Prepare(ctx context.Context, in PrepareInput, archive []byte) (wire.Transfer, error)
+	// Activate starts the Job of a prepared movement.
+	Activate(ctx context.Context, in TransferInput) (wire.JobView, error)
+	// AbortTransfer gives a movement up, unless it was activated already.
+	AbortTransfer(ctx context.Context, in TransferInput) (wire.Transfer, error)
 	// AttachHere attaches the terminal of this process to the Job's, and fails if
 	// there is no terminal: it never opens a window.
 	AttachHere(ctx context.Context, id string, readOnly bool) error
@@ -77,8 +126,10 @@ func (s Server) Attach(ctx context.Context, id string, readOnly bool) error {
 }
 
 func (s Server) dispatch(ctx context.Context, req wire.Request, body []byte) (wire.Response, []byte, error) {
-	if err := s.expectGen(ctx, req); err != nil {
-		return wire.Response{}, nil, err
+	if req.Op == wire.OpShow || req.Op == wire.OpScreen {
+		if err := s.expectGen(ctx, req); err != nil {
+			return wire.Response{}, nil, err
+		}
 	}
 	switch req.Op {
 	case wire.OpHello:
@@ -100,11 +151,11 @@ func (s Server) dispatch(ctx context.Context, req wire.Request, body []byte) (wi
 	case wire.OpShow:
 		return one(s.Local.Show(ctx, req.Job))
 	case wire.OpStop:
-		return one(s.Local.Stop(ctx, req.Job))
+		return one(s.Local.Stop(ctx, req.Job, req.Gen))
 	case wire.OpResume:
-		return one(s.Local.Resume(ctx, req.Job))
+		return one(s.Local.Resume(ctx, req.Job, req.Gen, req.Force))
 	case wire.OpSend:
-		return one(s.Local.Send(ctx, req.Job, string(body)))
+		return one(s.Local.Send(ctx, req.Job, req.Gen, string(body)))
 	case wire.OpScreen:
 		screen, err := s.Local.Screen(ctx, req.Job)
 		return wire.Response{}, []byte(screen), err
@@ -115,13 +166,30 @@ func (s Server) dispatch(ctx context.Context, req wire.Request, body []byte) (wi
 	case wire.OpMirror:
 		path, err := s.Local.Mirror(ctx, req.Repo)
 		return wire.Response{Mirror: path}, nil, err
+	case wire.OpMove:
+		return one(s.Local.Move(ctx, MoveInput{Job: req.Job, Gen: req.Gen, To: req.To, Mode: MoveStart}))
+	case wire.OpMoveRetry:
+		return one(s.Local.Move(ctx, MoveInput{Job: req.Job, Gen: req.Gen, Mode: MoveRetry}))
+	case wire.OpMoveAbort:
+		return one(s.Local.Move(ctx, MoveInput{Job: req.Job, Gen: req.Gen, Mode: MoveAbort}))
+	case wire.OpPrepare:
+		t, err := s.Local.Prepare(ctx, PrepareInput{
+			Job: req.Job, Gen: req.Gen, Transfer: req.Transfer, Harness: req.Harness, Repo: req.Repo,
+			Commit: req.Commit, CreatedBy: req.CreatedBy, History: req.History,
+		}, body)
+		return wire.Response{Transfer: &t}, nil, err
+	case wire.OpActivate:
+		return one(s.Local.Activate(ctx, TransferInput{Job: req.Job, Gen: req.Gen, Transfer: req.Transfer}))
+	case wire.OpAbortTransfer:
+		t, err := s.Local.AbortTransfer(ctx, TransferInput{Job: req.Job, Gen: req.Gen, Transfer: req.Transfer})
+		return wire.Response{Transfer: &t}, nil, err
 	}
 	return wire.Response{}, nil, domain.NewError(domain.CodeInvalidRequest, "unknown op", nil)
 }
 
-// expectGen refuses an order for a generation the Job is not in. It reads the
-// Job before the order runs, so it is not under the Job's lock: F4 moves the
-// check inside it.
+// expectGen refuses a read (show, screen) of a generation the Job is not in. It
+// reads the Job before, with no lock: nothing changes. The orders that change
+// the Job check the generation under its lock.
 func (s Server) expectGen(ctx context.Context, req wire.Request) error {
 	if req.Gen == 0 {
 		return nil

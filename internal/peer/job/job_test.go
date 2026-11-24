@@ -239,3 +239,58 @@ func TestJobTransition(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestAnOrderForAnotherGenerationOrAMovedJobIsStale(t *testing.T) {
+	j := Job{ID: "job-abcdefghij", Gen: 3, State: Running}
+	if err := j.ExpectGen(0); err != nil {
+		t.Errorf("gen 0 means any: %v", err)
+	}
+	if err := j.ExpectGen(3); err != nil {
+		t.Errorf("the generation it is in: %v", err)
+	}
+	var stale *StaleError
+	if err := j.ExpectGen(2); !errors.As(err, &stale) || stale.Have != 3 {
+		t.Errorf("an older generation: %v", err)
+	}
+	j.State = Moved
+	if err := j.ExpectGen(3); !errors.As(err, &stale) {
+		t.Errorf("a moved Job is nobody's to order: %v", err)
+	}
+}
+
+func TestOwnedGenLooksInTheHistory(t *testing.T) {
+	j := Job{History: []Entry{{Gen: 1, Peer: "a"}, {Gen: 2, Peer: "b"}}}
+	if !j.OwnedGen("b", 2) || j.OwnedGen("a", 2) || j.OwnedGen("b", 3) {
+		t.Error("OwnedGen must match peer and generation")
+	}
+}
+
+func TestAJobThatDoesNotExistIsCreatedUnderTheLockAndDroppedOnRequest(t *testing.T) {
+	s := newTestStore(t)
+	id := "job-abcdefghij"
+	err := s.WithLockNew(id, func(j *Job, exists bool, _ func()) error {
+		if exists {
+			t.Error("it does not exist yet")
+		}
+		j.Repo, j.Gen, j.State = "r", 2, Stopped
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Get(id); err != nil || got.Gen != 2 {
+		t.Fatalf("created: %+v %v", got, err)
+	}
+	if err := s.WithLockNew(id, func(_ *Job, exists bool, drop func()) error {
+		if !exists {
+			t.Error("it exists now")
+		}
+		drop()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get(id); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("dropped: %v", err)
+	}
+}

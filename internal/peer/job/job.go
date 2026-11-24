@@ -47,6 +47,10 @@ type Job struct {
 	// began, so that a retry of it knows what it was cutting short.
 	StoppingFrom State `json:"stopping_from,omitempty"`
 
+	// ArrivedBy is the transfer that brought the Job to this peer at its current
+	// generation; empty for a Job that was created here.
+	ArrivedBy string `json:"arrived_by,omitempty"`
+
 	Launch  *Launch   `json:"launch,omitempty"`   // the current launch
 	Move    *Move     `json:"move,omitempty"`     // set while Moving
 	Finish  *Finish   `json:"finish,omitempty"`   // set while Finishing
@@ -94,3 +98,35 @@ func (j *Job) Transition(to State) error {
 
 // GenDir is the worktree directory name of a generation.
 func GenDir(gen int) string { return fmt.Sprintf("g%d", gen) }
+
+// StaleError is an order for a generation the Job is not in, or for a Job that
+// has moved away.
+type StaleError struct {
+	ID         string
+	Want, Have int
+	State      State
+}
+
+func (e *StaleError) Error() string {
+	return fmt.Sprintf("job %s is at generation %d (%s), not %d", e.ID, e.Have, e.State, e.Want)
+}
+
+// ExpectGen refuses the Job unless it is in generation gen and has not moved:
+// what every order to a remote Job checks, under the Job's lock. Zero expects nothing.
+func (j Job) ExpectGen(gen int) error {
+	if gen == 0 || (j.Gen == gen && j.State != Moved) {
+		return nil
+	}
+	return &StaleError{ID: j.ID, Want: gen, Have: j.Gen, State: j.State}
+}
+
+// OwnedGen says whether this peer, named peer, held the Job at generation gen:
+// it is there now, or its history says it was.
+func (j Job) OwnedGen(peer string, gen int) bool {
+	for _, e := range j.History {
+		if e.Gen == gen && e.Peer == peer {
+			return true
+		}
+	}
+	return false
+}

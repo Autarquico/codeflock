@@ -213,3 +213,33 @@ func TestAHelloAnswerWithABodyIsNotTheAnswerToHello(t *testing.T) {
 		t.Error("a hello with a body was accepted")
 	}
 }
+
+func TestTheOrdersOfAMovementCarryOnlyWhatTheyNeed(t *testing.T) {
+	transfer := "abcdefghijklmnop"
+	ok := map[string]Request{
+		"move":     {Op: OpMove, Job: testJob, Gen: 1, To: "mac-mini"},
+		"retry":    {Op: OpMoveRetry, Job: testJob, Gen: 1},
+		"abort":    {Op: OpMoveAbort, Job: testJob, Gen: 1},
+		"activate": {Op: OpActivate, Job: testJob, Gen: 2, Transfer: transfer},
+		"abort-t":  {Op: OpAbortTransfer, Job: testJob, Gen: 2, Transfer: transfer},
+		"force":    {Op: OpResume, Job: testJob, Force: true},
+	}
+	for name, req := range ok {
+		if err := req.Validate(); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	bad := map[string]Request{
+		"move without destination":  {Op: OpMove, Job: testJob, Gen: 1},
+		"move without generation":   {Op: OpMove, Job: testJob, To: "mac-mini"},
+		"retry names a destination": {Op: OpMoveRetry, Job: testJob, Gen: 1, To: "mac-mini"},
+		"activate without transfer": {Op: OpActivate, Job: testJob, Gen: 2},
+		"transfer with shell":       {Op: OpActivate, Job: testJob, Gen: 2, Transfer: "$(id)aaaaaaaaaaaa"},
+		"stop forced":               {Op: OpStop, Job: testJob, Force: true},
+	}
+	for name, req := range bad {
+		if err := req.Validate(); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
