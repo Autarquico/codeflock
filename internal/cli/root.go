@@ -30,7 +30,7 @@ const (
 // itself (ADR 0001): only cmd/cflk may know the adapters.
 type Options struct {
 	// Doctor replaces the checks of `cflk doctor`; nil answers CF_NOT_IMPLEMENTED.
-	Doctor func(context.Context) ([]doctor.Component, error)
+	Doctor func(ctx context.Context, fix bool) ([]doctor.Component, error)
 	// Jobs is the peer the job commands act on; nil answers CF_NOT_IMPLEMENTED.
 	Jobs Jobs
 	// Wrapper runs execwrap on a launch directory (`cflk internal wrapper`), and

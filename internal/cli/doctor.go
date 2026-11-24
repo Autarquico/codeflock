@@ -17,17 +17,21 @@ type DoctorReport struct {
 }
 
 func newDoctorCmd(opts Options) *cobra.Command {
-	return &cobra.Command{
+	var fix bool
+	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check that this machine has what a Job needs: tmux, git and the harnesses with their login",
 		Long: "Checks the runtime, git, the free disk and, for each harness installed here, its configuration and\n" +
-			"its login. A failing check is shown with what to do about it; the command only fails when it cannot run.",
+			"its login, and lists what the Controller and the Worker of 0.4 left here. A failing check is shown with what to do about it;\n" +
+			"the command only fails when it cannot run.\n\n" +
+			"With --fix it stops and removes the Controller and Worker services and the cf and cf.prev binaries of this machine.\n" +
+			"It never deletes data or credentials: it prints the command. Without --fix nothing is changed.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if opts.Doctor == nil {
 				return domain.NewError(domain.CodeNotImplemented, "this build has no checks for the machine", nil)
 			}
-			components, err := opts.Doctor(cmd.Context())
+			components, err := opts.Doctor(cmd.Context(), fix)
 			if err != nil {
 				return err
 			}
@@ -38,6 +42,8 @@ func newDoctorCmd(opts Options) *cobra.Command {
 			return emit(cmd, rep, func(out io.Writer) error { return printDoctor(out, rep) })
 		},
 	}
+	cmd.Flags().BoolVar(&fix, "fix", false, "remove the Controller and Worker services and the cf binaries left by 0.4")
+	return cmd
 }
 
 func printDoctor(out io.Writer, rep DoctorReport) error {

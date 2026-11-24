@@ -85,6 +85,26 @@ Un tag con `-` (`v0.2.0-rc.1`) sale como prerelease. `latest` ignora prereleases
 
 Aprueba el despliegue solo tras comprobar que el tag y el commit son los esperados.
 
+### v0.5.0-beta.1 (la red de peers, sin Controller)
+
+Es la primera release sin Controller ni Worker. El flujo, en orden, con los pasos 1 a 4 ya hechos:
+
+1. La rama de trabajo es `next`. Comprueba antes que la prueba real de la flota está documentada y que
+   [retire-controller](retire-controller.md) está al día con `cflk doctor --fix`.
+2. Abre el PR `next` → `main` (`gh pr create --base main --head next`). Todos los checks de
+   `packaging/release/required-checks.txt` deben quedar en verde en el commit que va a ser el tag. El tag se pone
+   sobre `main` después del merge (`tag-in-main.sh` lo exige).
+3. `git switch main && git pull --ff-only && git tag v0.5.0-beta.1 && git push origin v0.5.0-beta.1`. Lleva `-`:
+   sale como prerelease y `latest` no cambia.
+4. `release.yml` se detiene en `sign-publish` esperando la aprobación del environment `release`. Abre el run
+   (`gh run list --workflow release.yml --limit 1`), comprueba que el tag y el commit son los esperados y aprueba.
+5. Verifica la release publicada (paso 6) en una máquina limpia y en otra con el Controller 0.4 todavía en marcha:
+   el instalador sustituye `cflk` y **no** toca el Controller ni el Worker, y `cflk doctor` los lista como avisos.
+6. El Controller sigue en marcha hasta que valides la red de peers. Cuando lo hagas, cada máquina ejecuta
+   `cflk doctor --fix` y el host del Controller sigue [retire-controller](retire-controller.md).
+
+La release publica solo `cflk` para linux y darwin, amd64 y arm64 (`.goreleaser.yaml`); no hay binario `cf`.
+
 Después `pages.yml` construye y despliega el sitio con la versión del tag.
 
 ## 6. Verificar una release a mano
