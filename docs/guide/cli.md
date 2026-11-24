@@ -19,7 +19,7 @@ A `<job>` is an id like `job-abcde23456`. Commands on a remote Job carry the gen
 | `cflk send <job> "text"` | Type into the agent |
 | `cflk attach <job> [--read-only]` | Enter it |
 | `cflk stop <job>`, `cflk resume <job>` | Stop it, resume it on the same peer |
-| `cflk clean <job>` | Delete what a `moved` or `done` Job left here |
+| `cflk clean <job> [--force]` | Delete what a `moved` or `done` Job left here; a Job with uncommitted work needs `--force` |
 | `cflk move <job> --to p` | Move it and resume it on another peer |
 | `cflk pull <job> [--finish [--push]]` | Bring it to this peer |
 | `cflk pull <job> --finish --abort` | Give up a `finishing` pull, the Job returns to `stopped` |

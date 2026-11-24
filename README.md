@@ -34,7 +34,7 @@ curl -fsSL https://github.com/Autarquico/codeflock/releases/download/v0.5.0-beta
 | `cflk send <job> "text"` | `jobs_send` | Type into the agent |
 | `cflk attach <job> [--read-only]` | `jobs_attach` | Enter it, local or remote |
 | `cflk stop <job>` / `cflk resume <job>` | `jobs_stop` / `jobs_resume` | Stop / resume on the same peer |
-| `cflk clean <job>` | `jobs_clean` | Delete what a `moved` or `done` Job left on this peer |
+| `cflk clean <job> [--force]` | `jobs_clean` | Delete what a `moved` or `done` Job left on this peer (`--force` for uncommitted work, CLI only) |
 | `cflk move <job> --to p` | `jobs_move` | Move it and resume it on another peer |
 | `cflk pull <job> [--finish [--push]]` | `jobs_pull` | Bring it to this peer |
 | `cflk tui` (or `cflk` alone in a terminal) | - | Terminal UI over the Jobs of every peer |
