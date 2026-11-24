@@ -32,7 +32,7 @@ func (s peerService) Hello(context.Context) (wire.Hello, error) {
 	if err != nil {
 		return wire.Hello{}, err
 	}
-	var installed []string
+	installed := []string{}
 	for _, name := range []string{"claude", "codex"} {
 		if _, err := exec.LookPath(name); err == nil {
 			installed = append(installed, name)
