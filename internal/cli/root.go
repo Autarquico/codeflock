@@ -33,6 +33,9 @@ type Options struct {
 	Doctor func(ctx context.Context, fix bool) ([]doctor.Component, error)
 	// Jobs is the peer the job commands act on; nil answers CF_NOT_IMPLEMENTED.
 	Jobs Jobs
+	// Commands are more commands of the root, which cmd/cflk composes with what
+	// only it can build (`cflk mcp`).
+	Commands []*cobra.Command
 	// Wrapper runs execwrap on a launch directory (`cflk internal wrapper`), and
 	// Notify is the program Codex runs at the end of a turn (`cflk internal notify`).
 	Wrapper func(launchDir string) error
@@ -173,6 +176,7 @@ func newRootCmd(opts Options) *cobra.Command {
 	flags.Bool(flagDebug, false, "show the details of an error")
 	root.AddCommand(newVersionCmd(), newDoctorCmd(opts))
 	root.AddCommand(newJobCmds(opts)...)
+	root.AddCommand(opts.Commands...)
 	return root
 }
 
