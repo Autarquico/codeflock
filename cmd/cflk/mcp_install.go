@@ -55,6 +55,7 @@ type mcpInstall struct {
 	DryRun   bool       `json:"dry_run"`
 	Commands [][]string `json:"commands"`
 	Skill    skillState `json:"skill"`
+	Note     string     `json:"note,omitempty"`
 }
 
 type skillState struct {
@@ -79,7 +80,7 @@ func (f *mcpFlags) bind(cmd *cobra.Command, withProfile bool) {
 	fl := cmd.Flags()
 	fl.BoolVar(&f.claude, "claude", false, "Claude Code")
 	fl.BoolVar(&f.codex, "codex", false, "Codex")
-	fl.StringVar(&f.scope, "scope", "user", "user (this machine) or project (this repository). Codex registers servers for the user only: with project, the skill goes to the repository and the server stays global")
+	fl.StringVar(&f.scope, "scope", "user", "user (this machine) or project (this repository). Codex registers servers for the user only: with project, only the skill goes to the repository (the server is not touched)")
 	fl.BoolVar(&f.dryRun, "dry-run", false, "print what would be done, and do nothing")
 	if withProfile {
 		fl.StringVar(&f.profile, "profile", string(mcp.Write), "what the model may do: read or write")
@@ -165,10 +166,28 @@ func (c mcpClient) addArgs(scope, bin string, p mcp.Profile) []string {
 	return append(args, mcpServerName, "--", bin, "mcp", "serve", "--profile", string(p))
 }
 
-func (c mcpClient) skillPath(scope string) (string, error) {
-	base, err := os.Getwd()
+// managesServer says whether the server is registered in this scope: Codex
+// has user scope only, so with project scope only its skill is ours to touch.
+func (c mcpClient) managesServer(scope string) bool { return c.scoped || scope == "user" }
+
+const codexProjectNote = "Codex registers servers for the user only: the server was left as it is; use --scope user to manage it"
+
+// repoRoot is the top level of the work tree of the current directory; tests replace it.
+var repoRoot = func(ctx context.Context) (string, error) {
+	out, err := exec.CommandContext(ctx, "git", "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return "", domain.NewError(domain.CodeInvalidRequest, "--scope project needs a git repository: run this inside one", nil)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func (c mcpClient) skillPath(ctx context.Context, scope string) (string, error) {
+	var base string
+	var err error
 	if scope == "user" {
 		base, err = os.UserHomeDir()
+	} else {
+		base, err = repoRoot(ctx)
 	}
 	if err != nil {
 		return "", err
@@ -177,8 +196,9 @@ func (c mcpClient) skillPath(scope string) (string, error) {
 }
 
 // installMCP registers the server and writes the skill. The CLI of the tool is
-// looked up before anything is written. Removing first makes a second install
-// replace the registration instead of failing on it.
+// looked up before anything is written. The registration is added first, and
+// replaced only if that fails (it exists already), so a failure leaves the
+// previous one in place whenever the tool allows it.
 func installMCP(ctx context.Context, run execCommand, c mcpClient, scope string, p mcp.Profile, dryRun bool) (mcpInstall, error) {
 	res := mcpInstall{Tool: c.name, Scope: scope, Profile: string(p), DryRun: dryRun, Commands: [][]string{}}
 	bin, err := os.Executable()
@@ -186,7 +206,7 @@ func installMCP(ctx context.Context, run execCommand, c mcpClient, scope string,
 		return res, err
 	}
 	res.Binary = bin
-	if res.Skill.Path, err = c.skillPath(scope); err != nil {
+	if res.Skill.Path, err = c.skillPath(ctx, scope); err != nil {
 		return res, err
 	}
 	if _, err := exec.LookPath(c.name); err != nil && !dryRun {
@@ -204,7 +224,11 @@ func installMCP(ctx context.Context, run execCommand, c mcpClient, scope string,
 		return res, domain.NewError(domain.CodeInvalidRequest, fmt.Sprintf("%s is a skill that cflk did not write: nothing was changed; move it away and run this again", res.Skill.Path), nil)
 	}
 	remove, add := c.removeArgs(scope), c.addArgs(scope, bin, p)
-	res.Commands = append(res.Commands, remove, add)
+	if c.managesServer(scope) {
+		res.Commands = append(res.Commands, add, remove, add)
+	} else {
+		res.Note = codexProjectNote
+	}
 	switch {
 	case bytes.Equal(have, skill):
 		res.Skill.State = "current"
@@ -214,9 +238,10 @@ func installMCP(ctx context.Context, run execCommand, c mcpClient, scope string,
 	if dryRun {
 		return res, nil
 	}
-	_, _ = run(ctx, remove[0], remove[1:]...) // not registered yet is not an error
-	if out, err := run(ctx, add[0], add[1:]...); err != nil {
-		return res, fmt.Errorf("%s: %w: %s", strings.Join(add[:3], " "), err, strings.TrimSpace(string(out)))
+	if c.managesServer(scope) {
+		if err := register(ctx, run, remove, add); err != nil {
+			return res, err
+		}
 	}
 	if res.Skill.State == "written" {
 		if err := os.MkdirAll(filepath.Dir(res.Skill.Path), 0o755); err != nil { //nolint:gosec // a skills directory is read by the tool
@@ -229,12 +254,25 @@ func installMCP(ctx context.Context, run execCommand, c mcpClient, scope string,
 	return res, nil
 }
 
+// register adds the server; if the tool refuses (it is registered already) it
+// replaces the registration, and says so when that leaves none.
+func register(ctx context.Context, run execCommand, remove, add []string) error {
+	if _, err := run(ctx, add[0], add[1:]...); err == nil {
+		return nil
+	}
+	_, _ = run(ctx, remove[0], remove[1:]...)
+	if out, err := run(ctx, add[0], add[1:]...); err != nil {
+		return fmt.Errorf("%s: %w: %s (any previous registration was removed: run install again)", strings.Join(add[:3], " "), err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // uninstallMCP removes the registration and the SKILL.md that cflk wrote; one
 // that cflk did not write stays.
 func uninstallMCP(ctx context.Context, run execCommand, c mcpClient, scope string, dryRun bool) (mcpInstall, error) {
 	res := mcpInstall{Tool: c.name, Scope: scope, DryRun: dryRun, Commands: [][]string{}}
 	var err error
-	if res.Skill.Path, err = c.skillPath(scope); err != nil {
+	if res.Skill.Path, err = c.skillPath(ctx, scope); err != nil {
 		return res, err
 	}
 	remove := c.removeArgs(scope)
@@ -250,7 +288,9 @@ func uninstallMCP(ctx context.Context, run execCommand, c mcpClient, scope strin
 	default:
 		res.Skill.State = "removed"
 	}
-	if _, lookErr := exec.LookPath(c.name); lookErr == nil {
+	if !c.managesServer(scope) {
+		res.Note = codexProjectNote
+	} else if _, lookErr := exec.LookPath(c.name); lookErr == nil {
 		res.Commands = append(res.Commands, remove)
 	}
 	if dryRun {
@@ -298,6 +338,12 @@ func writeMCP(w io.Writer, res mcpInstall, verb string) error {
 			return err
 		}
 	}
-	_, err := fmt.Fprintf(w, "  skill %s: %s\n", res.Skill.State, res.Skill.Path)
-	return err
+	if _, err := fmt.Fprintf(w, "  skill %s: %s\n", res.Skill.State, res.Skill.Path); err != nil {
+		return err
+	}
+	if res.Note != "" {
+		_, err := fmt.Fprintf(w, "  note: %s\n", res.Note)
+		return err
+	}
+	return nil
 }

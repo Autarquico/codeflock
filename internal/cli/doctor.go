@@ -42,7 +42,13 @@ func newDoctorCmd(opts Options) *cobra.Command {
 			if rep.Components == nil {
 				rep.Components = []doctor.Component{}
 			}
-			return emit(cmd, rep, func(out io.Writer) error { return printDoctor(out, rep) })
+			if err := emit(cmd, rep, func(out io.Writer) error { return printDoctor(out, rep) }); err != nil {
+				return err
+			}
+			if n := failedRemovals(components); fix && n > 0 {
+				return domain.NewError(domain.CodeInternal, fmt.Sprintf("--fix could not remove %d of the leftovers of 0.4: see the table", n), nil)
+			}
+			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&fix, "fix", false, "remove the Controller and Worker services and the cf binaries left by 0.4")
@@ -92,7 +98,7 @@ func peerCheck(p PeerView) doctor.Component {
 	if !p.Reachable {
 		return doctor.Component{
 			Name: name, Status: doctor.ComponentWarn, Message: "no responde: " + p.Problem,
-			Action: "prueba `ssh " + p.Name + " .local/bin/cflk peer` (debe esperar en stdin); si cflk está en otra ruta, `[cflk_path]` en la config",
+			Action: "prueba `" + p.Probe + "` (debe esperar en stdin); si cflk está en otra ruta, `[cflk_path]` en la config",
 		}
 	}
 	harnesses := "sin harnesses"
@@ -116,4 +122,15 @@ func dash(s string) string {
 		return "-"
 	}
 	return s
+}
+
+// failedRemovals counts the leftovers of 0.4 that --fix could not remove.
+func failedRemovals(components []doctor.Component) int {
+	n := 0
+	for _, c := range components {
+		if strings.HasPrefix(c.Name, "legacy:") && c.Status == doctor.ComponentFail {
+			n++
+		}
+	}
+	return n
 }

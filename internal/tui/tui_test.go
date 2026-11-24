@@ -282,3 +282,75 @@ func contains(calls []string, want string) bool {
 	}
 	return false
 }
+
+// slowJobs blocks List until released, and counts the calls.
+type slowJobs struct {
+	*fakeJobs
+	release chan cli.JobList
+	started int
+}
+
+func (s *slowJobs) List(ctx context.Context, _ string) (cli.JobList, error) {
+	s.mu.Lock()
+	s.started++
+	s.mu.Unlock()
+	select {
+	case l := <-s.release:
+		return l, nil
+	case <-ctx.Done():
+		return cli.JobList{}, ctx.Err()
+	}
+}
+
+func TestRefresh_OneListInFlightAndTheOrdersAfterItGetAFreshOne(t *testing.T) {
+	s := &slowJobs{fakeJobs: fleet(), release: make(chan cli.JobList, 4)}
+	m := New(context.Background(), s, Options{})
+	first := m.fetchList()
+	if m.fetchList() != nil {
+		t.Fatal("a second list fetch started while one was in flight")
+	}
+	_, cmd := m.Update(tickMsg{})
+	if cmd == nil {
+		t.Fatal("the tick must schedule the next one")
+	}
+	s.release <- cli.JobList{}
+	msg := first()
+	if s.started != 1 {
+		t.Fatalf("List called %d times", s.started)
+	}
+	_, next := m.Update(msg) // the fetch asked for meanwhile runs now
+	s.release <- cli.JobList{}
+	drive(m, next)
+	if s.started != 2 {
+		t.Fatalf("List called %d times, want the one asked for meanwhile", s.started)
+	}
+}
+
+func TestRefresh_AStaleScreenDoesNotReplaceANewerOne(t *testing.T) {
+	f := fleet()
+	m := opened(t, f, 80, 24)
+	j, _ := m.selected()
+	old := m.fetchScreen()()
+	f.screens[j.ID] = "newer"
+	fresh := m.fetchScreen()()
+	m.Update(fresh)
+	m.Update(old)
+	if m.screen != "newer" {
+		t.Fatalf("screen = %q", m.screen)
+	}
+}
+
+func TestFleet_AfterAListErrorNoOrderReachesTheHiddenJobs(t *testing.T) {
+	f := fleet()
+	m := opened(t, f, 80, 24)
+	f.listErr = errors.New("peers gone")
+	press(m, "r")
+	if got := screenOf(m); !strings.Contains(got, "cannot list") || !strings.Contains(got, "j-01") {
+		t.Fatalf("want the stale list under the error:\n%s", got)
+	}
+	n := len(f.calls)
+	press(m, "x", "u", "s", "a")
+	if len(f.calls) != n {
+		t.Fatalf("orders reached Jobs: %v", f.calls[n:])
+	}
+}

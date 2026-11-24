@@ -16,6 +16,7 @@ type (
 		err  error
 	}
 	screenMsg struct {
+		seq  int
 		id   string
 		text string
 		err  error
@@ -46,6 +47,13 @@ type Model struct {
 	screenID  string // the Job the screen belongs to
 	screenErr error
 
+	// One list fetch is in flight at a time: a tick or an order that asks for
+	// another while one runs only marks that a fresh one is due when it returns.
+	listing   bool
+	relist    bool
+	screening int // screen fetches in flight
+	screenSeq int // the last one asked for: older answers are dropped
+
 	typing bool
 	input  []rune
 	status string
@@ -69,6 +77,11 @@ func (m *Model) tick() tea.Cmd {
 }
 
 func (m *Model) fetchList() tea.Cmd {
+	if m.listing {
+		m.relist = true
+		return nil
+	}
+	m.listing = true
 	return func() tea.Msg {
 		list, err := m.jobs.List(m.ctx, "")
 		return listMsg{list, err}
@@ -80,14 +93,19 @@ func (m *Model) fetchScreen() tea.Cmd {
 	if !ok {
 		return nil
 	}
+	m.screenSeq++
+	m.screening++
+	seq := m.screenSeq
 	return func() tea.Msg {
 		text, err := m.jobs.Screen(m.ctx, j.ID)
-		return screenMsg{j.ID, text, err}
+		return screenMsg{seq, j.ID, text, err}
 	}
 }
 
+// selected is the Job under the cursor. While the list is in error the rows
+// shown are stale, so nothing is selected and no order can reach them.
 func (m *Model) selected() (cli.JobView, bool) {
-	if m.cursor < 0 || m.cursor >= len(m.list.Jobs) {
+	if m.listErr != nil || m.cursor < 0 || m.cursor >= len(m.list.Jobs) {
 		return cli.JobView{}, false
 	}
 	return m.list.Jobs[m.cursor], true
@@ -111,11 +129,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.BackgroundColorMsg:
 		m.theme = NewTheme(msg.IsDark())
 	case tickMsg:
-		return m, tea.Batch(m.fetchList(), m.fetchScreen(), m.tick())
+		var screen tea.Cmd
+		if m.screening == 0 {
+			screen = m.fetchScreen()
+		}
+		return m, tea.Batch(m.fetchList(), screen, m.tick())
 	case listMsg:
-		return m, m.applyList(msg)
+		m.listing = false
+		cmds := []tea.Cmd{m.applyList(msg)}
+		if m.relist {
+			m.relist = false
+			cmds = append(cmds, m.fetchList())
+		}
+		return m, tea.Batch(cmds...)
 	case screenMsg:
-		if j, ok := m.selected(); ok && j.ID == msg.id {
+		m.screening--
+		if j, ok := m.selected(); ok && j.ID == msg.id && msg.seq == m.screenSeq {
 			m.screenID, m.screenErr = msg.id, msg.err
 			if msg.err == nil {
 				m.screen = msg.text

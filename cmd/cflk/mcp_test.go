@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -42,15 +44,15 @@ func TestInstallRegistersTheServerAndWritesTheSkillOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	add := r.calls[len(r.calls)-1]
+	add := r.calls[0]
 	if got := strings.Join(add[:6], " "); got != "claude mcp add --scope user cflk" {
 		t.Errorf("add = %v", add)
 	}
 	if tail := strings.Join(add[len(add)-4:], " "); tail != "mcp serve --profile read" {
 		t.Errorf("add = %v", add)
 	}
-	if r.calls[0][2] != "remove" {
-		t.Errorf("a registration is replaced, so it is removed first: %v", r.calls)
+	if len(r.calls) != 1 || r.calls[0][2] != "add" {
+		t.Errorf("the registration is added first, and only that: %v", r.calls)
 	}
 	skill := filepath.Join(home, ".claude", "skills", "codeflock", "SKILL.md")
 	if res.Skill.State != "written" || res.Skill.Path != skill {
@@ -72,7 +74,7 @@ func TestInstallDryRunChangesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r.calls) != 0 || len(res.Commands) != 2 {
+	if len(r.calls) != 0 || len(res.Commands) != 3 {
 		t.Errorf("ran %v, would run %v", r.calls, res.Commands)
 	}
 	if _, err := os.Stat(filepath.Join(home, ".claude")); err == nil {
@@ -136,5 +138,92 @@ func TestServeRejectsJSONAndUnknownProfiles(t *testing.T) {
 		if code == 0 {
 			t.Errorf("%v succeeded", args)
 		}
+	}
+}
+
+// failing is a runner whose first n calls fail.
+type failing struct {
+	recorded
+	n int
+}
+
+func (f *failing) run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	out, _ := f.recorded.run(ctx, name, args...)
+	if len(f.calls) <= f.n {
+		return []byte("boom"), errors.New("exit 1")
+	}
+	return out, nil
+}
+
+func TestInstallReplacesARegistrationOnlyWhenAddIsRefused(t *testing.T) {
+	withFakeClaude(t)
+	f := &failing{n: 1}
+	if _, err := installMCP(t.Context(), f.run, claudeClient, "user", mcp.Read, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.calls) != 3 || f.calls[1][2] != "remove" || f.calls[2][2] != "add" {
+		t.Errorf("calls = %v", f.calls)
+	}
+	f = &failing{n: 3}
+	_, err := installMCP(t.Context(), f.run, claudeClient, "user", mcp.Read, false)
+	if err == nil || !strings.Contains(err.Error(), "run install again") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func withCodex(t *testing.T) (home string) {
+	t.Helper()
+	home = withFakeClaude(t)
+	bin := filepath.Dir(mustLook(t, "claude"))
+	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("#!/bin/sh\n"), 0o755); err != nil { //nolint:gosec // a fake program for the test
+		t.Fatal(err)
+	}
+	return home
+}
+
+func mustLook(t *testing.T, name string) string {
+	t.Helper()
+	p, err := exec.LookPath(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestCodexUserScopeAddsWithoutScopeAndProjectScopeOnlyWritesTheSkill(t *testing.T) {
+	withCodex(t)
+	var r recorded
+	if _, err := installMCP(t.Context(), r.run, codexClient, "user", mcp.Read, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(r.calls[0][1:3], " ") + " " + strings.Join(r.calls[0][3:], " "); !strings.HasPrefix(got, "mcp add cflk -- ") || !strings.HasSuffix(got, "mcp serve --profile read") {
+		t.Errorf("add = %v", r.calls[0])
+	}
+
+	repo := t.TempDir()
+	repoRootWas := repoRoot
+	repoRoot = func(context.Context) (string, error) { return repo, nil }
+	t.Cleanup(func() { repoRoot = repoRootWas })
+	r = recorded{}
+	res, err := installMCP(t.Context(), r.run, codexClient, "project", mcp.Read, false)
+	if err != nil || len(r.calls) != 0 || res.Note == "" {
+		t.Fatalf("install project: %v calls %v note %q", err, r.calls, res.Note)
+	}
+	if want := filepath.Join(repo, ".agents", "skills", "codeflock", "SKILL.md"); res.Skill.Path != want || res.Skill.State != "written" {
+		t.Errorf("skill = %+v", res.Skill)
+	}
+	if res, err = uninstallMCP(t.Context(), r.run, codexClient, "project", false); err != nil || len(r.calls) != 0 || res.Skill.State != "removed" {
+		t.Errorf("uninstall project: %v calls %v %+v", err, r.calls, res)
+	}
+}
+
+func TestProjectScopeNeedsARepository(t *testing.T) {
+	withFakeClaude(t)
+	repoRootWas := repoRoot
+	repoRoot = func(context.Context) (string, error) { return "", errors.New("not a repo") }
+	t.Cleanup(func() { repoRoot = repoRootWas })
+	var r recorded
+	if _, err := installMCP(t.Context(), r.run, claudeClient, "project", mcp.Read, false); err == nil || len(r.calls) != 0 {
+		t.Errorf("err %v calls %v", err, r.calls)
 	}
 }

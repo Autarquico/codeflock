@@ -66,6 +66,9 @@ type PeerView struct {
 	Jobs      int      `json:"jobs"`
 	// Problem is why the peer did not answer.
 	Problem string `json:"problem,omitempty"`
+	// Probe is the command that asks the peer what the transport asks it: what to
+	// try by hand when it does not answer.
+	Probe string `json:"-"`
 }
 
 // Jobs is what the job commands need of a peer. cmd/cflk composes it (ADR 0001):

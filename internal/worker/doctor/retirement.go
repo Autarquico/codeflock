@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+	"slices"
+
+	"github.com/Autarquico/codeflock/internal/config"
 )
 
 // Retirement finds what the Controller and the Worker of 0.4 left on this
@@ -29,7 +31,6 @@ const (
 	retiredName = "legacy"
 	// ourBinaryMark is in every binary built from this repository (its module path).
 	ourBinaryMark = "github.com/Autarquico/code"
-	launchDaemons = "/Library/LaunchDaemons"
 )
 
 type leftover struct {
@@ -57,7 +58,12 @@ func (r Retirement) Fix(ctx context.Context) []Component {
 			continue
 		}
 		if l.unit != "" {
-			r.stop(ctx, l)
+			// A unit that is still running must keep its file: it is what
+			// the person needs to stop it by hand.
+			if err := r.stop(ctx, l); err != nil {
+				results[l.name] = fmt.Errorf("no se pudo parar: %w", err)
+				continue
+			}
 			removedUnit = true
 		}
 		results[l.name] = removeFile(l.path)
@@ -68,12 +74,18 @@ func (r Retirement) Fix(ctx context.Context) []Component {
 	return r.report(found, results)
 }
 
-func (r Retirement) stop(ctx context.Context, l leftover) {
+// stop stops the unit. systemd stops a unit that is not running without error;
+// launchd refuses to boot out a job that is not loaded, which is the job already
+// stopped, so there its refusal only counts if the job is still loaded.
+func (r Retirement) stop(ctx context.Context, l leftover) error {
 	if r.GOOS == "darwin" {
-		_ = r.Run(ctx, "launchctl", "bootout", fmt.Sprintf("gui/%d/%s", r.UID, l.unit))
-		return
+		err := r.Run(ctx, "launchctl", "bootout", fmt.Sprintf("gui/%d/%s", r.UID, l.unit))
+		if err != nil && r.Run(ctx, "launchctl", "print", fmt.Sprintf("gui/%d/%s", r.UID, l.unit)) != nil {
+			return nil // not loaded
+		}
+		return err
 	}
-	_ = r.Run(ctx, "systemctl", "--user", "disable", "--now", l.unit+".service")
+	return r.Run(ctx, "systemctl", "--user", "disable", "--now", l.unit+".service")
 }
 
 func removeFile(path string) error {
@@ -108,16 +120,16 @@ func (r Retirement) component(l leftover, results map[string]error) Component {
 			Action: "tras validar la red de peers: rm -rf " + l.path + " (ver docs/runbooks/retire-controller.md)",
 		}
 	}
-	err, done := results[l.name]
+	err := results[l.name]
 	switch {
 	case results == nil:
 		return Component{Name: l.name, Status: ComponentWarn, Message: l.label + " sigue instalado: " + l.path, Action: "cflk doctor --fix"}
-	case !done || err == nil:
+	case err == nil:
 		return ok(l.name, l.label+" retirado: "+l.path)
 	default:
 		return Component{
 			Name: l.name, Status: ComponentFail, Message: "no se pudo retirar " + l.path + ": " + err.Error(),
-			Action: "rm " + l.path,
+			Action: l.manualFix(r.GOOS),
 		}
 	}
 }
@@ -132,45 +144,31 @@ func (r Retirement) find() []leftover {
 }
 
 func (r Retirement) units() []leftover {
-	type place struct {
-		dir, ext string
-		prefixes []string
-		system   bool
-	}
-	var places []place
-	switch r.GOOS {
-	case "linux":
-		places = []place{{
-			dir: filepath.Join(r.Home, ".config", "systemd", "user"), ext: ".service",
-			prefixes: []string{"codeflock-controller", "codeflock-worker", "cf-controller", "cf-worker"},
-		}}
-	case "darwin":
-		prefixes := []string{"com.codeflock.controller", "com.codeflock.worker", "com.codefabric.controller", "com.codefabric.worker"}
-		places = []place{
-			{dir: filepath.Join(r.Home, "Library", "LaunchAgents"), ext: ".plist", prefixes: prefixes},
-			{dir: launchDaemons, ext: ".plist", prefixes: prefixes, system: true},
-		}
-	}
 	var out []leftover
-	for _, p := range places {
-		for _, prefix := range p.prefixes {
-			matches, _ := filepath.Glob(filepath.Join(p.dir, prefix+"*"+p.ext))
-			for _, m := range matches {
-				unit := strings.TrimSuffix(filepath.Base(m), p.ext)
-				out = append(out, leftover{
-					name: "legacy:unit:" + unit, label: kindOf(unit), path: m, system: p.system, unit: unit,
-				})
-			}
-		}
+	for _, u := range config.OldUnits(r.Home, r.GOOS) {
+		out = append(out, leftover{
+			name: "legacy:unit:" + u.Name, label: "servicio del " + titleOf(u.Kind), path: u.Path, system: u.System, unit: u.Name,
+		})
 	}
 	return out
 }
 
-func kindOf(unit string) string {
-	if strings.Contains(unit, "controller") {
-		return "servicio del Controller"
+func titleOf(kind string) string {
+	if kind == "controller" {
+		return "Controller"
 	}
-	return "servicio del Worker"
+	return "Worker"
+}
+
+// manualFix is what to type when --fix could not do it.
+func (l leftover) manualFix(goos string) string {
+	switch {
+	case l.unit != "" && goos == "darwin":
+		return fmt.Sprintf("launchctl bootout gui/$(id -u)/%s && rm %s", l.unit, l.path)
+	case l.unit != "":
+		return fmt.Sprintf("systemctl --user disable --now %s.service && rm %s", l.unit, l.path)
+	}
+	return "rm " + l.path
 }
 
 // shims are the 0.4 binaries next to cflk. A file called cf that is not ours
@@ -179,21 +177,39 @@ func (r Retirement) shims() []leftover {
 	var out []leftover
 	for _, name := range []string{"cf", "cf.prev"} {
 		path := filepath.Join(r.Home, ".local", "bin", name)
-		if isOurs(path) {
+		if r.isOurs(path) {
 			out = append(out, leftover{name: "legacy:bin:" + name, label: "binario " + name, path: path})
 		}
 	}
 	return out
 }
 
-func isOurs(path string) bool {
+// ourShims are the names the 0.4 install gave its binaries, and what a link of ours points to.
+var ourShims = []string{"cf", "cf.prev", "cflk"}
+
+// isOurs says whether path is a binary of this repository. A regular file must
+// carry its mark. A link must point, by one of our names, into the install
+// directory: a `cf` that goes anywhere else (Cloud Foundry's) is not ours, and
+// one that goes there must also carry the mark if its target can be read.
+func (r Retirement) isOurs(path string) bool {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return false
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
 		target, err := os.Readlink(path)
-		return err == nil && strings.HasPrefix(filepath.Base(target), "cf")
+		if err != nil {
+			return false
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(path), target)
+		}
+		target = filepath.Clean(target)
+		if filepath.Dir(target) != filepath.Join(r.Home, ".local", "bin") || !slices.Contains(ourShims, filepath.Base(target)) {
+			return false
+		}
+		content, err := os.ReadFile(path)                                   //nolint:gosec // the path is a fixed name under the home
+		return err != nil || bytes.Contains(content, []byte(ourBinaryMark)) // a dangling link of ours has nothing to read
 	}
 	if !info.Mode().IsRegular() {
 		return false

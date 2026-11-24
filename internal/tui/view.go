@@ -68,7 +68,7 @@ func (m *Model) listRows() []string {
 	switch {
 	case !m.loaded:
 		return []string{th.Faint.Render("reading the fleet…")}
-	case m.listErr != nil:
+	case m.listErr != nil && len(m.list.Jobs) == 0:
 		return []string{th.Danger.Render("cannot list: " + clean(m.listErr.Error()))}
 	}
 	jobs := m.list.Jobs
@@ -85,9 +85,12 @@ func (m *Model) listRows() []string {
 	wHarness := w(func(j cli.JobView) string { return j.Harness })
 
 	var rows []string
+	if m.listErr != nil {
+		rows = append(rows, th.Danger.Render("cannot list (stale, read-only): "+clean(m.listErr.Error())))
+	}
 	for i, j := range jobs {
 		marker := "  "
-		if i == m.cursor {
+		if i == m.cursor && m.listErr == nil {
 			marker = th.Accent.Render("▸ ")
 		}
 		state := clean(j.State)

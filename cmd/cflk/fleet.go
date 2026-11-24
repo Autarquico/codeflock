@@ -188,7 +188,7 @@ func (f *fleet) Peers(ctx context.Context) ([]cli.PeerView, error) {
 	}
 	views := []cli.PeerView{{Name: self, This: true, Reachable: true, Harnesses: hello.Harnesses, Jobs: hello.Jobs}}
 	for _, r := range f.ask(ctx, res.Peers, wire.Request{Op: wire.OpHello}) {
-		v := cli.PeerView{Name: r.peer.Name}
+		v := cli.PeerView{Name: r.peer.Name, Probe: "ssh " + r.peer.Host + " " + cmp.Or(r.peer.Cflk, discovery.DefaultCflk) + " peer"}
 		if r.err != nil {
 			v.Problem = r.err.Error()
 		} else if r.resp.Hello != nil {

@@ -95,13 +95,13 @@ func TestDoctorSaysHowEachPeerAnswersAndWhenNoHarnessIsInstalled(t *testing.T) {
 	f := &fleetOf{peers: []PeerView{
 		{Name: "laptop", This: true, Reachable: true},
 		{Name: "omarch01", Reachable: true, Harnesses: []string{"claude"}, Jobs: 2},
-		{Name: "mac-mini", Problem: "exit status 127: cflk: command not found"},
+		{Name: "mac-mini", Problem: "exit status 127: cflk: command not found", Probe: "ssh mini.tail.ts.net bin/cflk peer"},
 	}}
 	code, stdout, _ := runDoctor(t, doctorOf(f, doctor.Component{Name: "git", Status: doctor.ComponentOK}))
 	if code != 0 {
 		t.Fatalf("exit %d", code)
 	}
-	for _, want := range []string{"harness", "peer:omarch01", "responde (hello); claude; 2 jobs", "peer:mac-mini", "cflk: command not found", ".local/bin/cflk"} {
+	for _, want := range []string{"harness", "peer:omarch01", "responde (hello); claude; 2 jobs", "peer:mac-mini", "cflk: command not found", "ssh mini.tail.ts.net bin/cflk peer"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("%q is not in:\n%s", want, stdout)
 		}
@@ -120,5 +120,15 @@ func TestDoctorFailsTheConfigThatDoesNotParse(t *testing.T) {
 	}
 	if c := rep.Components[1]; c.Name != "peers" || c.Status != doctor.ComponentFail || !strings.Contains(c.Message, "line 1") {
 		t.Errorf("component = %+v", c)
+	}
+}
+
+func TestDoctorFixFailsWhenALeftoverCannotBeRemoved(t *testing.T) {
+	opts := withComponents(doctor.Component{Name: "legacy:unit:cf-worker", Status: doctor.ComponentFail, Message: "no se pudo parar"})
+	if code, _, _ := runDoctor(t, opts); code != 0 {
+		t.Errorf("without --fix exit %d", code)
+	}
+	if code, _, _ := runDoctor(t, opts, "--fix"); code == 0 {
+		t.Error("--fix with a failed removal exited 0")
 	}
 }

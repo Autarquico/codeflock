@@ -2,6 +2,7 @@ package doctor_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -150,5 +151,74 @@ func TestRetirementReportsWhatItCannotRemove(t *testing.T) {
 
 	if doctor.Failing(got) != 1 {
 		t.Errorf("fix: %v", statuses(got))
+	}
+}
+
+func TestRetirementLeavesALinkToAnotherCf(t *testing.T) {
+	r, _, home := retirementOn(t, "linux")
+	foreign := filepath.Join(t.TempDir(), "cf")
+	write(t, foreign, "Cloud Foundry")
+	inHome := filepath.Join(home, ".local", "bin", "cf")
+	if err := os.MkdirAll(filepath.Dir(inHome), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(foreign, inHome); err != nil {
+		t.Fatal(err)
+	}
+	// the same name in our directory, but not a binary of ours
+	write(t, filepath.Join(home, ".local", "bin", "cf.prev"), "Cloud Foundry")
+	prev := filepath.Join(home, ".local", "bin", "cf.prev")
+
+	r.Fix(context.Background())
+
+	if !exists(inHome) || !exists(prev) {
+		t.Error("removed a cf that is not ours")
+	}
+}
+
+func TestRetirementRemovesALinkToOurBinary(t *testing.T) {
+	r, _, home := retirementOn(t, "linux")
+	bin := filepath.Join(home, ".local", "bin")
+	write(t, filepath.Join(bin, "cflk"), "ELF github.com/Autarquico/codeflock")
+	if err := os.Symlink(filepath.Join(bin, "cflk"), filepath.Join(bin, "cf")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(bin, "gone"), filepath.Join(bin, "cf.prev")); err != nil {
+		t.Fatal(err)
+	}
+
+	r.Fix(context.Background())
+
+	if exists(filepath.Join(bin, "cf")) || !exists(filepath.Join(bin, "cflk")) {
+		t.Error("the link of ours stayed, or cflk went")
+	}
+	if !exists(filepath.Join(bin, "cf.prev")) {
+		t.Error("a dangling link to a name that is not ours was removed")
+	}
+}
+
+func TestRetirementKeepsAUnitItCouldNotStop(t *testing.T) {
+	r, _, home := retirementOn(t, "linux")
+	unit := filepath.Join(home, ".config", "systemd", "user", "cf-worker.service")
+	write(t, unit, "")
+	r.Run = func(context.Context, string, ...string) error { return errors.New("no user bus") }
+
+	got := r.Fix(context.Background())
+
+	if !exists(unit) || doctor.Failing(got) != 1 || !strings.Contains(got[0].Action, "systemctl --user disable --now cf-worker.service") {
+		t.Errorf("unit exists=%v: %+v", exists(unit), got)
+	}
+}
+
+func TestRetirementCountsAMacJobThatWasNotLoadedAsStopped(t *testing.T) {
+	r, _, home := retirementOn(t, "darwin")
+	agent := filepath.Join(home, "Library", "LaunchAgents", "com.codeflock.worker.plist")
+	write(t, agent, "")
+	r.Run = func(context.Context, string, ...string) error { return errors.New("not loaded") } // bootout and print both refuse
+
+	got := r.Fix(context.Background())
+
+	if exists(agent) || doctor.Failing(got) != 0 {
+		t.Errorf("agent exists=%v: %+v", exists(agent), got)
 	}
 }
