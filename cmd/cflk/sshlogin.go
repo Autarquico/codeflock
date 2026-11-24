@@ -38,7 +38,7 @@ func loginProblem(harness string) string {
 	if _, err := os.Stat(filepath.Join(dir, ".credentials.json")); err == nil { //nolint:gosec // the user's own Claude config directory
 		return ""
 	}
-	return "claude: its login is in the macOS keychain, which ssh sessions cannot read; on this Mac, export CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) or ANTHROPIC_API_KEY in ~/.zshenv"
+	return "claude: its login is in the macOS keychain, which ssh sessions cannot read; on this Mac, export CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) or ANTHROPIC_API_KEY in ~/.zshenv ($ZDOTDIR/.zshenv if ZDOTDIR is set)"
 }
 
 func overSSH() bool { return os.Getenv("SSH_CONNECTION") != "" }

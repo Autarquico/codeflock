@@ -85,11 +85,13 @@ On a Mac, Claude Code keeps its login in the keychain, and a process started ove
 
 Export it in the file your shell reads in every ssh session: `~/.zshenv` for zsh, the default on macOS (`$ZDOTDIR/.zshenv` if you set `ZDOTDIR`). Every program started from a shell of yours then gets it in its environment. This makes the file private first, then asks for the token without showing it or leaving it in the shell history (don't run it with `set -x`):
 
+With an API key, change `v=` on the first line to `v=ANTHROPIC_API_KEY`.
+
 ```sh
-(umask 077; f=${ZDOTDIR:-$HOME}/.zshenv; touch "$f" && chmod 600 "$f" || exit
+(v=CLAUDE_CODE_OAUTH_TOKEN; umask 077; f=${ZDOTDIR:-$HOME}/.zshenv; touch "$f" && chmod 600 "$f" || exit
  trap 'stty echo' EXIT INT; printf 'token: '; stty -echo || exit; read -r t; stty echo; echo
  [ -n "$t" ] || { echo 'no token: nothing written'; exit 1; }
- printf "\nexport CLAUDE_CODE_OAUTH_TOKEN='%s'\n" "$t" >> "$f")
+ printf "\nexport %s='%s'\n" "$v" "$t" >> "$f")
 ```
 
 With the token, Claude Code makes model requests but cannot start Remote Control, so a Job's screen may show "Remote Control disconnected"; the Job works. Until one of these is there, that peer does not offer `claude` to the others and refuses to start it for them. Codex keeps its login in a file and has no such problem.
