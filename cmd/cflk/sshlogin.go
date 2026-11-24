@@ -15,9 +15,10 @@ import (
 //
 // On macOS Claude Code keeps its login in the keychain, which a process started
 // from an ssh session cannot read: a Job a peer starts here would open "Not
-// logged in". `claude auth login` run over ssh stores the login in
-// ~/.claude/.credentials.json (or under CLAUDE_CONFIG_DIR) instead, and
-// CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY also work.
+// logged in". CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) in an
+// environment ssh sessions read works, as do ANTHROPIC_API_KEY and a
+// .credentials.json in ~/.claude or CLAUDE_CONFIG_DIR. `claude auth login` run
+// over ssh is not enough: it still writes to the keychain when it can.
 func loginProblem(harness string) string {
 	if harnessIDs[harness] != claude.ID || !overSSH() || runtime.GOOS != "darwin" ||
 		os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") != "" || os.Getenv("ANTHROPIC_API_KEY") != "" {
@@ -37,7 +38,7 @@ func loginProblem(harness string) string {
 	if _, err := os.Stat(filepath.Join(dir, ".credentials.json")); err == nil { //nolint:gosec // the user's own Claude config directory
 		return ""
 	}
-	return "claude: its login is in the macOS keychain, which ssh sessions cannot read; run `claude auth login` once over ssh on this Mac"
+	return "claude: its login is in the macOS keychain, which ssh sessions cannot read; on this Mac, export CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) or ANTHROPIC_API_KEY in ~/.zshenv ($ZDOTDIR/.zshenv if ZDOTDIR is set)"
 }
 
 func overSSH() bool { return os.Getenv("SSH_CONNECTION") != "" }
