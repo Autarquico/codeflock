@@ -14,16 +14,22 @@ import (
 // On macOS Claude Code keeps its login in the keychain, which a process started
 // from an ssh session cannot read: a Job a peer starts here would open "Not
 // logged in". `claude auth login` run over ssh stores the login in
-// ~/.claude/.credentials.json instead, and CLAUDE_CODE_OAUTH_TOKEN also works.
+// ~/.claude/.credentials.json (or under CLAUDE_CONFIG_DIR) instead, and
+// CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY also work.
 func loginProblem(harness string) string {
-	if harness != "claude" || !overSSH() || runtime.GOOS != "darwin" || os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") != "" {
+	if harness != "claude" || !overSSH() || runtime.GOOS != "darwin" ||
+		os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") != "" || os.Getenv("ANTHROPIC_API_KEY") != "" {
 		return ""
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
+	dir := os.Getenv("CLAUDE_CONFIG_DIR")
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		dir = filepath.Join(home, ".claude")
 	}
-	if _, err := os.Stat(filepath.Join(home, ".claude", ".credentials.json")); err == nil {
+	if _, err := os.Stat(filepath.Join(dir, ".credentials.json")); err == nil {
 		return ""
 	}
 	return "claude: its login is in the macOS keychain, which ssh sessions cannot read; run `claude auth login` once over ssh on this Mac"

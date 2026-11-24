@@ -11,6 +11,8 @@ func TestClaudeStartedOverSSHOnAMacNeedsALoginOutsideTheKeychain(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Setenv("SSH_CONNECTION", "")
 	if p := loginProblem("claude"); p != "" {
 		t.Fatalf("outside ssh: %q", p)
@@ -27,6 +29,20 @@ func TestClaudeStartedOverSSHOnAMacNeedsALoginOutsideTheKeychain(t *testing.T) {
 		t.Fatalf("with a token: %q", p)
 	}
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+	t.Setenv("ANTHROPIC_API_KEY", "k")
+	if p := loginProblem("claude"); p != "" {
+		t.Fatalf("with an API key: %q", p)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	custom := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", custom)
+	if err := os.WriteFile(filepath.Join(custom, ".credentials.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if p := loginProblem("claude"); p != "" {
+		t.Fatalf("with a credentials file in CLAUDE_CONFIG_DIR: %q", p)
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o700); err != nil {
 		t.Fatal(err)
 	}

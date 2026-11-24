@@ -94,9 +94,6 @@ func (l *localJobs) prepare(ctx context.Context, in server.PrepareInput, archive
 	if !ok || in.Harness == "" {
 		return out, invalid("unknown harness %q: use claude or codex", in.Harness)
 	}
-	if err := refuseWithoutLogin(in.Harness); err != nil {
-		return out, err
-	}
 	manifest, err := sessions.Manifest(archive)
 	if err != nil {
 		return out, invalid("%v", err)
@@ -146,6 +143,9 @@ func (l *localJobs) prepare(ctx context.Context, in server.PrepareInput, archive
 		if info, err := os.Stat(wt); err == nil && info.IsDir() {
 			return out, nil // prepared already: nothing changes
 		}
+	}
+	if err := refuseWithoutLogin(in.Harness); err != nil {
+		return out, err
 	}
 	if err := p.supersede(in.Job, in.Gen, in.Transfer); err != nil {
 		return out, err
@@ -292,6 +292,9 @@ func (l *localJobs) activate(ctx context.Context, in server.TransferInput) (wire
 	mirror := p.mirrorDir(rec.Repo)
 	if !p.installed(rec.Harness) {
 		return wire.JobView{}, p.refuse(ctx, in, mirror, fmt.Errorf("%s is not installed on %s", rec.Harness, p.name))
+	}
+	if err := refuseWithoutLogin(rec.Harness); err != nil {
+		return wire.JobView{}, p.refuse(ctx, in, mirror, err)
 	}
 	archive, err := os.ReadFile(filepath.Join(dir, sessionFile)) //nolint:gosec // a file of this peer
 	if err != nil {

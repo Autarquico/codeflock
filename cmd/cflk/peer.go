@@ -151,9 +151,6 @@ func (s peerService) RunFromMirror(ctx context.Context, in server.RunInput) (wir
 	if !ok || in.Harness == "" {
 		return wire.JobView{}, invalid("unknown harness %q: use claude or codex", in.Harness)
 	}
-	if err := refuseWithoutLogin(in.Harness); err != nil {
-		return wire.JobView{}, err
-	}
 	ref, err := wire.MirrorRef(in.Job, 1)
 	if err != nil {
 		return wire.JobView{}, err
@@ -170,6 +167,9 @@ func (s peerService) RunFromMirror(ctx context.Context, in server.RunInput) (wir
 	}
 	if v, found, err := p.launchedJob(ctx, mirror, harnessID, in); found || err != nil {
 		return v, err
+	}
+	if err := refuseWithoutLogin(in.Harness); err != nil {
+		return wire.JobView{}, err
 	}
 	v, err := p.startFromMirror(ctx, mirror, harnessID, in)
 	if err != nil {
