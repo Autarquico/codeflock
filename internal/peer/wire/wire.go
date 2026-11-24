@@ -16,6 +16,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/Autarquico/codeflock/internal/adapters/harness"
+	"github.com/Autarquico/codeflock/internal/domain"
 	"github.com/Autarquico/codeflock/internal/peer/job"
 )
 
@@ -25,6 +27,14 @@ const MaxHeader = 64 << 10
 // MaxBody is the longest body of the ops of this package (a prompt, a text, a
 // screen). A session archive has the limits of harness.SessionLimit instead.
 const MaxBody = 1 << 20
+
+// MaxArchive is the longest body of a prepare: the session archive, which has
+// the limits of harness.SessionLimit (the archive is compressed, so it is never
+// longer than what it holds).
+const MaxArchive = harness.DefaultMaxSessionBytes
+
+// MaxHistory is the most history entries a prepare carries (the latest ones).
+const MaxHistory = 32
 
 // MaxListedJobs is the most Jobs one ps answers with, and MaxListBody the
 // longest body that carries them: the list travels in the body, not in the
@@ -59,6 +69,23 @@ const (
 	// OpMirror makes sure the bare mirror of a repo exists and says where it is,
 	// so that the sender can push the Job's code to it.
 	OpMirror Op = "mirror"
+	// OpMove, OpMoveRetry and OpMoveAbort ask the peer that owns a Job to move it
+	// to another peer, to repeat a movement left unconfirmed, or to take it back.
+	OpMove      Op = "move"
+	OpMoveRetry Op = "move-retry"
+	OpMoveAbort Op = "move-abort"
+	// OpPrepare, OpActivate and OpAbortTransfer are what the source of a movement
+	// says to its destination: receive the code and the session and start nothing,
+	// start the agent, give the movement up.
+	OpPrepare       Op = "prepare"
+	OpActivate      Op = "activate"
+	OpAbortTransfer Op = "abort-transfer"
+	// OpFinish asks the peer that owns a Job to stop it, seal it and send the commit
+	// to the peer named in `to`; OpFinishDone says the commit arrived, and the Job is
+	// done; OpFinishAbort gives the finish up.
+	OpFinish      Op = "finish"
+	OpFinishDone  Op = "finish-done"
+	OpFinishAbort Op = "finish-abort"
 )
 
 // Request is the header of what a peer asks. Fields an op does not use must be
@@ -75,13 +102,42 @@ type Request struct {
 	Repo      string `json:"repo,omitempty"`
 	Commit    string `json:"commit,omitempty"`
 	CreatedBy string `json:"created_by,omitempty"`
-	// Size is the length of the body that follows: the prompt of a run, the text of a send.
+	// To is the peer a move sends the Job to.
+	To string `json:"to,omitempty"`
+	// ToNames are the other names the sender has (its hostname, the ones its
+	// peers may know it by), tried when To, its node ID, is not known to the owner.
+	ToNames []string `json:"to_names,omitempty"`
+	// Transfer identifies a movement; History is the ownership of the Job so far (the
+	// latest MaxHistory entries); Force asks a resume to go ahead of a movement
+	// that was not confirmed.
+	Transfer string         `json:"transfer,omitempty"`
+	History  []HistoryEntry `json:"history,omitempty"`
+	Force    bool           `json:"force,omitempty"`
+	// Finish identifies a `pull --finish` the owner has under way.
+	Finish string `json:"finish,omitempty"`
+	// Size is the length of the body that follows: the prompt of a run, the text
+	// of a send, the session archive of a prepare.
 	Size int64 `json:"size,omitempty"`
+}
+
+// HistoryEntry is one ownership step of a Job.
+type HistoryEntry struct {
+	Gen    int    `json:"gen"`
+	Peer   string `json:"peer"`
+	Commit string `json:"commit,omitempty"`
 }
 
 // shape says which fields an op takes.
 type shape struct {
 	job, gen, run, repo, body bool
+	// genRequired: the generation is a positive number, not "whatever it is".
+	genRequired bool
+	// to, transfer, history and force are the fields of a movement.
+	to, transfer, history, force bool
+	// archive: the body is a session archive and may be as long as one.
+	archive bool
+	// finish: the id of a finish is allowed, and required if finishRequired.
+	finish, finishRequired bool
 }
 
 var shapes = map[Op]shape{
@@ -89,11 +145,25 @@ var shapes = map[Op]shape{
 	OpPS:     {},
 	OpShow:   {job: true, gen: true},
 	OpStop:   {job: true, gen: true},
-	OpResume: {job: true, gen: true},
+	OpResume: {job: true, gen: true, force: true},
 	OpScreen: {job: true, gen: true},
 	OpSend:   {job: true, gen: true, body: true},
 	OpRun:    {job: true, run: true, repo: true, body: true},
 	OpMirror: {repo: true},
+
+	OpMove:      {job: true, gen: true, genRequired: true, to: true},
+	OpMoveRetry: {job: true, gen: true, genRequired: true},
+	OpMoveAbort: {job: true, gen: true, genRequired: true},
+	OpPrepare: {
+		job: true, gen: true, genRequired: true, run: true, repo: true, body: true, archive: true,
+		transfer: true, history: true,
+	},
+	OpActivate:      {job: true, gen: true, genRequired: true, transfer: true},
+	OpAbortTransfer: {job: true, gen: true, genRequired: true, transfer: true},
+
+	OpFinish:      {job: true, gen: true, genRequired: true, to: true},
+	OpFinishDone:  {job: true, gen: true, genRequired: true, finish: true, finishRequired: true},
+	OpFinishAbort: {job: true, gen: true, genRequired: true, finish: true, finishRequired: true},
 }
 
 var (
@@ -107,6 +177,9 @@ var (
 // '-', not starting with a symbol, so that it is never an option for ssh or git.
 func ValidName(s string) bool { return namePattern.MatchString(s) }
 
+// MaxToNames is how many alternative names a request may carry for its sender.
+const MaxToNames = 8
+
 // ValidCommit reports whether s is a full git object id.
 func ValidCommit(s string) bool { return commitPattern.MatchString(s) }
 
@@ -117,6 +190,7 @@ func (r Request) checkPresent(keys map[string]bool) error {
 	for key, allowed := range map[string]bool{
 		"job": sh.job, "gen": sh.gen, "repo": sh.repo, "size": sh.body,
 		"harness": sh.run, "commit": sh.run, "created_by": sh.run,
+		"to": sh.to, "transfer": sh.transfer, "history": sh.history, "force": sh.force, "finish": sh.finish,
 	} {
 		if keys[key] && !allowed {
 			return protocolf("op %s: field %s is not allowed", r.Op, key)
@@ -136,14 +210,14 @@ func (r Request) Validate() error {
 		return protocolf("op %s: job is %s", r.Op, requiredOrForbidden(sh.job))
 	case r.Job != "" && !job.ValidID(r.Job):
 		return protocolf("%q is not a Job id", r.Job)
-	case r.Gen < 0 || (!sh.gen && r.Gen != 0):
+	case r.Gen < 0 || (!sh.gen && r.Gen != 0) || (sh.genRequired && r.Gen == 0):
 		return protocolf("op %s: gen %d is not valid", r.Op, r.Gen)
 	case sh.repo != (r.Repo != ""):
 		return protocolf("op %s: repo is %s", r.Op, requiredOrForbidden(sh.repo))
 	case r.Repo != "" && !validRepo(r.Repo):
 		return protocolf("%q is not a normalized repo", r.Repo)
-	case sh.body && (r.Size <= 0 || r.Size > MaxBody):
-		return protocolf("op %s: size %d is not between 1 and %d", r.Op, r.Size, MaxBody)
+	case sh.body && (r.Size <= 0 || r.Size > sh.bodyLimit()):
+		return protocolf("op %s: size %d is not between 1 and %d", r.Op, r.Size, sh.bodyLimit())
 	case !sh.body && r.Size != 0:
 		return protocolf("op %s takes no body", r.Op)
 	}
@@ -153,6 +227,50 @@ func (r Request) Validate() error {
 		}
 	} else if r.Harness != "" || r.Commit != "" || r.CreatedBy != "" {
 		return protocolf("op %s takes no run fields", r.Op)
+	}
+	return r.validateTransfer(sh)
+}
+
+func (sh shape) bodyLimit() int64 {
+	if sh.archive {
+		return MaxArchive
+	}
+	return MaxBody
+}
+
+// validateTransfer checks the fields of a movement.
+func (r Request) validateTransfer(sh shape) error {
+	for _, n := range r.ToNames {
+		if !ValidName(n) {
+			return protocolf("%q cannot name a peer", n)
+		}
+	}
+	switch {
+	case sh.transfer != (r.Transfer != ""):
+		return protocolf("op %s: transfer is %s", r.Op, requiredOrForbidden(sh.transfer))
+	case r.Transfer != "" && !job.ValidTransferID(r.Transfer):
+		return protocolf("%q is not a transfer id", r.Transfer)
+	case sh.to != (r.To != ""):
+		return protocolf("op %s: to is %s", r.Op, requiredOrForbidden(sh.to))
+	case r.To != "" && !ValidName(r.To):
+		return protocolf("%q cannot name a peer", r.To)
+	case len(r.ToNames) > MaxToNames || (r.To == "" && len(r.ToNames) > 0):
+		return protocolf("op %s: %d names for the peer", r.Op, len(r.ToNames))
+	case !sh.finish && r.Finish != "", sh.finishRequired && r.Finish == "":
+		return protocolf("op %s: finish is %s", r.Op, requiredOrForbidden(sh.finishRequired))
+	case r.Finish != "" && !job.ValidTransferID(r.Finish):
+		return protocolf("%q is not a finish id", r.Finish)
+	case !sh.history && len(r.History) > 0:
+		return protocolf("op %s takes no history", r.Op)
+	case len(r.History) > MaxHistory:
+		return protocolf("a history of %d entries", len(r.History))
+	case r.Force && !sh.force:
+		return protocolf("op %s cannot be forced", r.Op)
+	}
+	for _, e := range r.History {
+		if e.Gen < 1 || !ValidName(e.Peer) || (e.Commit != "" && !ValidCommit(e.Commit)) {
+			return protocolf("a history entry is not valid")
+		}
 	}
 	return nil
 }
@@ -208,13 +326,18 @@ type JobView struct {
 	SessionID string `json:"session_id,omitempty"`
 	Terminal  string `json:"terminal,omitempty"`
 	Problem   string `json:"problem,omitempty"`
+	// MovedTo and MovedGen say where a Job that is moved lives now.
+	MovedTo  string `json:"moved_to,omitempty"`
+	MovedGen int    `json:"moved_gen,omitempty"`
+	// FinishID is the finish in progress of a Job that is finishing.
+	FinishID string `json:"finish_id,omitempty"`
 }
 
 // maxViewText bounds each text field of a view.
 const maxViewText = 512
 
 func (v *JobView) texts() []*string {
-	return []*string{&v.Peer, &v.Repo, &v.Branch, &v.Harness, &v.SessionID, &v.Terminal, &v.Problem}
+	return []*string{&v.Peer, &v.Repo, &v.Branch, &v.Harness, &v.SessionID, &v.Terminal, &v.Problem, &v.MovedTo}
 }
 
 // Clamp cuts the text fields of the view to what a peer accepts.
@@ -230,13 +353,59 @@ func (v JobView) Clamp() JobView {
 // Validate refuses a view whose identity fields a peer could use to mislead,
 // or whose text is longer than the bound: the rest is text that is only ever printed.
 func (v JobView) Validate() error {
-	if !job.ValidID(v.ID) || !job.State(v.State).Valid() || v.Gen < 0 {
+	if !job.ValidID(v.ID) || !job.State(v.State).Valid() || v.Gen < 0 || v.MovedGen < 0 {
 		return protocolf("job view %q is not valid", v.ID)
 	}
 	for _, f := range v.texts() {
 		if len(*f) > maxViewText {
 			return protocolf("job view %q has text longer than %d bytes", v.ID, maxViewText)
 		}
+	}
+	return nil
+}
+
+// Transfer states: what a destination says of a movement.
+const (
+	TransferPrepared  = "prepared"
+	TransferActivated = "activated"
+	TransferAborted   = "aborted"
+)
+
+// CodeTransferAborted is the error of an order for a movement that is given up:
+// the destination has not started anything and never will for that transfer.
+const CodeTransferAborted domain.Code = "CF_TRANSFER_ABORTED"
+
+// Transfer is what a destination answers about a movement.
+type Transfer struct {
+	ID    string `json:"id"`
+	Gen   int    `json:"gen"`
+	State string `json:"state"`
+}
+
+// Validate checks the shape of what a peer says about a movement.
+func (t Transfer) Validate() error {
+	switch t.State {
+	case TransferPrepared, TransferActivated, TransferAborted:
+	default:
+		return protocolf("transfer state %q", t.State)
+	}
+	if !job.ValidTransferID(t.ID) || t.Gen < 1 {
+		return protocolf("transfer %q is not valid", t.ID)
+	}
+	return nil
+}
+
+// Finish is what the owner answers to a finish: the id of the finish and the
+// exact commit it sealed, which it has sent to the peer that asked.
+type Finish struct {
+	ID     string `json:"id"`
+	Commit string `json:"commit"`
+}
+
+// Validate checks the shape of what a peer says about a finish.
+func (f Finish) Validate() error {
+	if !job.ValidTransferID(f.ID) || !ValidCommit(f.Commit) {
+		return protocolf("finish %q is not valid", f.ID)
 	}
 	return nil
 }
@@ -256,6 +425,10 @@ type Response struct {
 	Hello  *Hello   `json:"hello,omitempty"`
 	Job    *JobView `json:"job,omitempty"`
 	Mirror string   `json:"mirror,omitempty"`
+	// Transfer is the answer of prepare and abort-transfer.
+	Transfer *Transfer `json:"transfer,omitempty"`
+	// Finish is the answer of finish.
+	Finish *Finish `json:"finish,omitempty"`
 	// Listing says the body is the list of Jobs (a ps), which WriteResponse
 	// writes from Jobs and ReadResponse reads into it. An empty list is a
 	// non-nil empty Jobs.
@@ -290,7 +463,7 @@ func (r Response) Validate() error {
 		return protocolf("%d Jobs in one listing", len(r.Jobs))
 	}
 	results := 0
-	for _, present := range []bool{r.Hello != nil, r.Job != nil, r.Listing || r.Jobs != nil, r.Mirror != ""} {
+	for _, present := range []bool{r.Hello != nil, r.Job != nil, r.Listing || r.Jobs != nil, r.Mirror != "", r.Transfer != nil, r.Finish != nil} {
 		if present {
 			results++
 		}
@@ -319,6 +492,16 @@ func (r Response) Validate() error {
 			return err
 		}
 	}
+	if r.Transfer != nil {
+		if err := r.Transfer.Validate(); err != nil {
+			return err
+		}
+	}
+	if r.Finish != nil {
+		if err := r.Finish.Validate(); err != nil {
+			return err
+		}
+	}
 	for _, v := range r.Jobs {
 		if err := v.Validate(); err != nil {
 			return err
@@ -331,17 +514,23 @@ func (r Response) Validate() error {
 // gives, about the Job that was asked, and nothing else.
 func (r Response) Expect(req Request) error {
 	var ok bool
+	bare := r.Transfer == nil && r.Finish == nil
 	switch req.Op {
 	case OpHello:
-		ok = r.Hello != nil && r.Job == nil && !r.Listing && r.Mirror == "" && r.Size == 0
+		ok = r.Hello != nil && r.Job == nil && !r.Listing && r.Mirror == "" && r.Size == 0 && bare
 	case OpPS:
-		ok = r.Listing && r.Hello == nil && r.Job == nil && r.Mirror == ""
-	case OpShow, OpStop, OpResume, OpSend, OpRun:
-		ok = r.Job != nil && r.Job.ID == req.Job && r.Hello == nil && !r.Listing && r.Mirror == "" && r.Size == 0
+		ok = r.Listing && r.Hello == nil && r.Job == nil && r.Mirror == "" && bare
+	case OpShow, OpStop, OpResume, OpSend, OpRun, OpMove, OpMoveRetry, OpMoveAbort, OpActivate, OpFinishDone, OpFinishAbort:
+		ok = r.Job != nil && r.Job.ID == req.Job && r.Hello == nil && !r.Listing && r.Mirror == "" && r.Size == 0 && bare
 	case OpScreen:
-		ok = r.Hello == nil && r.Job == nil && !r.Listing && r.Mirror == ""
+		ok = r.Hello == nil && r.Job == nil && !r.Listing && r.Mirror == "" && bare
 	case OpMirror:
-		ok = r.Mirror != "" && r.Hello == nil && r.Job == nil && !r.Listing && r.Size == 0
+		ok = r.Mirror != "" && r.Hello == nil && r.Job == nil && !r.Listing && r.Size == 0 && bare
+	case OpFinish:
+		ok = r.Finish != nil && r.Hello == nil && r.Job == nil && !r.Listing && r.Mirror == "" && r.Size == 0 && r.Transfer == nil
+	case OpPrepare, OpAbortTransfer:
+		ok = r.Transfer != nil && r.Transfer.ID == req.Transfer && r.Transfer.Gen == req.Gen &&
+			r.Hello == nil && r.Job == nil && !r.Listing && r.Mirror == "" && r.Size == 0
 	}
 	if !ok {
 		return protocolf("the answer is not the one op %s asks for", req.Op)
@@ -413,9 +602,14 @@ func readFrame(r io.Reader, header any, declaredSize func() int64, limit int64) 
 	if size < 0 || size > limit {
 		return nil, nil, protocolf("body of %d bytes", size)
 	}
-	body := make([]byte, size)
-	if _, err := io.ReadFull(br, body); err != nil {
+	// The body grows as it arrives: a header that declares a long one does not make us allocate it.
+	var buf bytes.Buffer
+	if n, err := io.CopyN(&buf, br, size); err != nil || n != size {
 		return nil, nil, protocolf("body truncated: declared %d bytes", size)
+	}
+	body := buf.Bytes()
+	if body == nil {
+		body = []byte{}
 	}
 	if _, err := br.ReadByte(); !errors.Is(err, io.EOF) {
 		return nil, nil, protocolf("data after the declared body")
@@ -540,7 +734,12 @@ func readLine(br *bufio.Reader) ([]byte, error) {
 // ReadRequest reads and validates a request and its body.
 func ReadRequest(r io.Reader) (Request, []byte, error) {
 	var req Request
-	body, keys, err := readFrame(r, &req, func() int64 { return req.Size }, MaxBody)
+	body, keys, err := readFrame(r, &req, func() int64 {
+		if sh, ok := shapes[req.Op]; ok && req.Size > sh.bodyLimit() {
+			return -1 // longer than its op takes: refused before any of it is read
+		}
+		return req.Size
+	}, MaxArchive)
 	if err != nil {
 		return Request{}, nil, err
 	}

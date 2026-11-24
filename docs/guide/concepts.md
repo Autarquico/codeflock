@@ -60,4 +60,4 @@ The code travels with git and the conversation with an export of the session. Th
 
 ## Out of scope
 
-No scheduler (you choose the peer, or `--on any`), no central secrets (each peer has its own logins), no Projects, Workflows or Environments, no submodules with changes, no Windows.
+No scheduler (you choose the peer, or `--on any`), no central secrets (each peer has its own logins), no submodules with changes, no Windows. The Controller, Worker, Projects, Workflows and Environments of 0.4 are gone: if you still have them, see the [retire runbook](https://github.com/Autarquico/codeflock/blob/main/docs/runbooks/retire-controller.md) and `cflk doctor --fix`.

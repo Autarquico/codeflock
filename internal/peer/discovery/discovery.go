@@ -211,7 +211,8 @@ func peerOf(n tsNode) (Peer, bool) {
 	if host == "" {
 		host = n.HostName
 	}
-	name := n.HostName
+	// Tailscale may show the machine's own name ("Mac mini"): typed, it is "Mac-mini".
+	name := strings.ReplaceAll(n.HostName, " ", "-")
 	if name == "" {
 		name, _, _ = strings.Cut(host, ".")
 	}
@@ -290,17 +291,26 @@ func (r *Result) addConfig(hosts []string) {
 func (r *Result) known(h string) bool {
 	short, _, _ := strings.Cut(h, ".")
 	for _, p := range append([]Peer{r.Self}, r.Peers...) {
-		if p.ID != "" && (p.Host == h || p.Name == h || p.Name == short) {
+		if p.ID != "" && (sameName(p.Host, h) || sameName(p.Name, h) || sameName(p.Name, short)) {
 			return true
 		}
 	}
 	return false
 }
 
-// Find returns the peer a person named: by name, host or ID, among those discovered.
+// sameName compares host names the way DNS does: without regard to case.
+func sameName(a, b string) bool { return strings.EqualFold(a, b) }
+
+// Find returns the peer a person (or a peer, by its node ID) named: by ID, name
+// or host, among those discovered.
 func (r Result) Find(name string) (Peer, bool) {
 	for _, p := range r.Peers {
-		if p.Name == name || p.Host == name || p.ID == name {
+		if p.ID == name {
+			return p, true
+		}
+	}
+	for _, p := range r.Peers {
+		if sameName(p.Name, name) || sameName(p.Host, name) {
 			return p, true
 		}
 	}

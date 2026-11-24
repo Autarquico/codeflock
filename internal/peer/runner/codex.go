@@ -20,22 +20,18 @@ const codexStaleAfter = 2 * time.Second
 
 type codexAgent struct{ host harness.Host }
 
-// Prepare trusts the worktree and installs the notify program with -c flags, so that
-// neither touches config.toml: they live and die with this process.
+// Prepare trusts the worktree in config.toml (a -c flag does not stop Codex's "trust
+// this folder?" prompt; cflk clean takes the entry back) and installs the notify
+// program with a -c flag, which lives and dies with this process.
 func (a codexAgent) Prepare(ctx context.Context, in Input) (Plan, error) {
 	if len(in.NotifyCmd) == 0 {
 		return Plan{}, errors.New("runner: codex needs a notify program to tell when it waits")
-	}
-	trusted, err := filepath.EvalSymlinks(in.Worktree)
-	if err != nil {
-		return Plan{}, fmt.Errorf("runner: resolving the worktree: %w", err)
 	}
 	notify, err := tomlArray(append(append([]string{}, in.NotifyCmd...), in.Waiting, in.SessionFile))
 	if err != nil {
 		return Plan{}, err
 	}
-	trust, err := tomlString(trusted)
-	if err != nil {
+	if err := (codex.Adapter{}).TrustFolder(a.host, in.Worktree); err != nil {
 		return Plan{}, err
 	}
 	run := interactive(in)
@@ -46,7 +42,6 @@ func (a codexAgent) Prepare(ctx context.Context, in Input) (Plan, error) {
 		return Plan{}, err
 	}
 	argv := withFlags(l.Argv,
-		"-c", "projects."+trust+`.trust_level="trusted"`,
 		"-c", "notify="+notify,
 	)
 	return Plan{Argv: argv, Env: harnessEnv(a.host, codex.ConfigHomeEnv+"="+configDir), SessionID: in.SessionID}, nil

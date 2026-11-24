@@ -63,6 +63,11 @@ func (s *Store) WaitingPath(id, launchID string) string {
 	return filepath.Join(s.LaunchDir(id, launchID), "waiting")
 }
 
+// TransferDir holds what this peer keeps of one movement of a Job: jobs/<id>/transfers/<transfer>.
+func (s *Store) TransferDir(id, transfer string) string {
+	return filepath.Join(s.Dir(id), "transfers", transfer)
+}
+
 func (s *Store) jobFile(id string) string  { return filepath.Join(s.Dir(id), "job.json") }
 func (s *Store) lockFile(id string) string { return filepath.Join(s.Dir(id), "lock") }
 
@@ -212,6 +217,54 @@ func (s *Store) WithLockSave(id string, fn func(j *Job, save func() error) error
 		return err
 	}
 	return save()
+}
+
+// WithLockNew is WithLock for a Job that may not exist yet: the destination of a
+// movement creates its record here. fn gets the Job (a blank one with the id and
+// its branch if there is none) and whether it existed; it may call drop to remove the
+// record. What fn leaves changed is written when it succeeds.
+func (s *Store) WithLockNew(id string, fn func(j *Job, exists bool, drop func()) error) error {
+	if !ValidID(id) {
+		return fmt.Errorf("job: invalid id %q", id)
+	}
+	if err := os.MkdirAll(s.Dir(id), 0o700); err != nil {
+		return fmt.Errorf("job: creating %s: %w", id, err)
+	}
+	release, err := flock.Lock(s.lockFile(id))
+	if err != nil {
+		return err
+	}
+	defer release()
+	j, err := s.read(id)
+	exists := err == nil
+	if errors.Is(err, ErrNotFound) {
+		j, err = Job{ID: id, Branch: "cflk/" + id}, nil
+	}
+	if err != nil {
+		return err
+	}
+	before, err := json.Marshal(j)
+	if err != nil {
+		return fmt.Errorf("job: encoding %s: %w", id, err)
+	}
+	dropped := false
+	if err := fn(&j, exists, func() { dropped = true }); err != nil {
+		return err
+	}
+	if dropped {
+		if err := os.Remove(s.jobFile(id)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("job: removing the record of %s: %w", id, err)
+		}
+		return nil
+	}
+	now, err := json.Marshal(j)
+	if err != nil {
+		return fmt.Errorf("job: encoding %s: %w", id, err)
+	}
+	if string(now) == string(before) {
+		return nil
+	}
+	return s.write(j)
 }
 
 func (s *Store) read(id string) (Job, error) {

@@ -3,3 +3,4 @@ dist/
 coverage.out
 .claude/worktrees/
 .claude/loop/
+/cflk

@@ -41,13 +41,63 @@ type Delegation struct {
 // with no shell and `--` before the URL. The URL is made to rewrite to itself
 // (insteadOf and pushInsteadOf), and the longest matching rule wins, so no rule of
 // the repository sends the code elsewhere.
-func PushArgv(t PushTarget, commit, ref string) []string {
+func PushArgv(t PushTarget, commit, ref string) []string { return pushArgv(t, commit+":"+ref) }
+
+// ForcePushArgv is PushArgv for a ref that may hold another commit: the ref of a
+// movement that was given up and is made again with the work done since.
+func ForcePushArgv(t PushTarget, commit, ref string) []string { return pushArgv(t, "+"+commit+":"+ref) }
+
+func pushArgv(t PushTarget, refspec string) []string {
 	argv := []string{"git"}
 	for _, c := range t.Config {
 		argv = append(argv, "-c", c)
 	}
 	argv = append(argv, "-c", "url."+t.URL+".insteadOf="+t.URL, "-c", "url."+t.URL+".pushInsteadOf="+t.URL)
-	return append(argv, "push", "--quiet", "--", t.URL, commit+":"+ref)
+	return append(argv, "push", "--quiet", "--", t.URL, refspec)
+}
+
+// PushSpec is a commit to send to the mirror of a peer.
+type PushSpec struct {
+	// RepoDir is a checkout of the repository the commit is in.
+	RepoDir string
+	// Repo is its normalized origin, which names the mirror.
+	Repo   string
+	Commit string
+	// Ref is where it goes in the mirror: refs/cflk/<job>/g<gen>.
+	Ref string
+	// Force lets the push replace a ref that holds another commit.
+	Force bool
+	// OrderTimeout bounds the question for the mirror and PushTimeout the push;
+	// zero is the default.
+	OrderTimeout, PushTimeout time.Duration
+}
+
+// PushCode asks the peer for the mirror of the repo, checks that it is the mirror
+// of that repo, and pushes the commit to the ref in it. The conversation is not in git.
+func PushCode(ctx context.Context, t Transport, peer discovery.Peer, sp PushSpec) error {
+	askCtx, cancel := context.WithTimeout(ctx, cmp.Or(sp.OrderTimeout, DefaultOrderTimeout))
+	mirror, _, err := Call(askCtx, t, peer, wire.Request{Op: wire.OpMirror, Repo: sp.Repo}, nil)
+	cancel()
+	if err != nil {
+		return err
+	}
+	if want := job.RepoHash(sp.Repo) + ".git"; path.Base(mirror.Mirror) != want {
+		return fmt.Errorf("answered the mirror %q, not the one of this repo", path.Base(mirror.Mirror))
+	}
+	target, err := t.PushTarget(peer, mirror.Mirror)
+	if err != nil {
+		return err
+	}
+	pushCtx, cancel := context.WithTimeout(ctx, cmp.Or(sp.PushTimeout, DefaultPushTimeout))
+	defer cancel()
+	argv := PushArgv(target, sp.Commit, sp.Ref)
+	if sp.Force {
+		argv = ForcePushArgv(target, sp.Commit, sp.Ref)
+	}
+	if err := runGit(pushCtx, sp.RepoDir, argv); err != nil {
+		return fmt.Errorf("sending the code: %w", err)
+	}
+	return nil
 }
 
 // pushEnv is the environment of the push: the caller's, without what could
@@ -95,24 +145,11 @@ func Delegate(ctx context.Context, t Transport, peer discovery.Peer, d Delegatio
 	order := func() (context.Context, context.CancelFunc) {
 		return context.WithTimeout(ctx, cmp.Or(d.OrderTimeout, DefaultOrderTimeout))
 	}
-	askCtx, cancel := order()
-	mirror, _, err := Call(askCtx, t, peer, wire.Request{Op: wire.OpMirror, Repo: d.Repo}, nil)
-	cancel()
-	if err != nil {
+	if err := PushCode(ctx, t, peer, PushSpec{
+		RepoDir: d.RepoDir, Repo: d.Repo, Commit: d.Commit, Ref: ref,
+		OrderTimeout: d.OrderTimeout, PushTimeout: d.PushTimeout,
+	}); err != nil {
 		return wire.JobView{}, delegationError(err, id, peer, outcomeNothing, retry)
-	}
-	if want := job.RepoHash(d.Repo) + ".git"; path.Base(mirror.Mirror) != want {
-		return wire.JobView{}, delegationError(fmt.Errorf("answered the mirror %q, not the one of this repo", path.Base(mirror.Mirror)), id, peer, outcomeNothing, retry)
-	}
-	target, err := t.PushTarget(peer, mirror.Mirror)
-	if err != nil {
-		return wire.JobView{}, delegationError(err, id, peer, outcomeNothing, retry)
-	}
-	pushCtx, cancel := context.WithTimeout(ctx, cmp.Or(d.PushTimeout, DefaultPushTimeout))
-	err = runGit(pushCtx, d.RepoDir, PushArgv(target, d.Commit, ref))
-	cancel()
-	if err != nil {
-		return wire.JobView{}, delegationError(fmt.Errorf("sending the code: %w", err), id, peer, outcomeNothing, retry)
 	}
 	runCtx, cancel := order()
 	defer cancel()

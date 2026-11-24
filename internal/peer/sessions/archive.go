@@ -45,3 +45,7 @@ func readManifest(archive []byte) (harness.SessionManifest, error) {
 	}
 	return m, nil
 }
+
+// Manifest says which harness wrote the archive and under which id, without
+// installing anything: what a destination checks before it takes a session in.
+func Manifest(archive []byte) (harness.SessionManifest, error) { return readManifest(archive) }

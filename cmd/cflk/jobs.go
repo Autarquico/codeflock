@@ -15,6 +15,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/Autarquico/codeflock/internal/adapters/harness"
 	"github.com/Autarquico/codeflock/internal/adapters/harness/claude"
 	"github.com/Autarquico/codeflock/internal/adapters/harness/codex"
 	"github.com/Autarquico/codeflock/internal/adapters/harness/localhost"
@@ -26,6 +27,7 @@ import (
 	"github.com/Autarquico/codeflock/internal/domain"
 	"github.com/Autarquico/codeflock/internal/peer/job"
 	"github.com/Autarquico/codeflock/internal/peer/runner"
+	"github.com/Autarquico/codeflock/internal/peer/sessions"
 )
 
 // stateDirVar overrides where this peer keeps its Jobs (~/.local/state/cflk).
@@ -40,6 +42,8 @@ type localJobs struct {
 	once sync.Once
 	peer *peer
 	err  error
+	// net is how this peer reaches the others (moving a Job needs it); set by newFleet.
+	net *network
 }
 
 // peer is this machine as a place where Jobs run.
@@ -51,6 +55,15 @@ type peer struct {
 	store   *job.Store
 	tmux    *tmux.Runtime
 	runner  *runner.Runner
+	// root is the state directory; host and sessions are where the harnesses keep
+	// their trust and their conversations on this machine.
+	root     string
+	host     harness.Host
+	sessions *sessions.Local
+	// installed says whether a harness (its binary) is on this machine.
+	installed func(name string) bool
+	// faults is where a test makes a movement fail; nil in production.
+	faults faults
 }
 
 // overrides are what a test of this package swaps in the composition: the
@@ -62,6 +75,12 @@ type overrides struct {
 	name, root, share string
 	agents            map[string]runner.Agent
 	wrapper           func(launchDir string) []string
+	// sessions, installed, faults and stopper stand in for the conversations of the
+	// machine, its harness binaries, the failures of a movement and the end of a process group.
+	sessions  *sessions.Local
+	installed func(string) bool
+	faults    faults
+	stopper   runner.Stopper
 }
 
 func newLocalJobs(exe string, over ...overrides) *localJobs {
@@ -108,6 +127,10 @@ func openPeer(exe string, over overrides) (*peer, error) {
 	if wrapper == nil {
 		wrapper = func(dir string) []string { return []string{exe, "internal", "wrapper", dir} }
 	}
+	installed := over.installed
+	if installed == nil {
+		installed = func(name string) bool { _, err := exec.LookPath(name); return err == nil }
+	}
 	return &peer{
 		name:    cmp.Or(over.name, config.MachineName(hostname, "this machine")),
 		mirrors: filepath.Join(share, "repos"),
@@ -118,7 +141,9 @@ func openPeer(exe string, over overrides) (*peer, error) {
 			Wrapper:   wrapper,
 			NotifyCmd: []string{exe, "internal", "notify"},
 			Agents:    over.agents,
+			Stopper:   over.stopper,
 		}),
+		root: root, host: host, sessions: cmp.Or(over.sessions, sessions.New()), installed: installed, faults: over.faults,
 	}, nil
 }
 
@@ -322,17 +347,32 @@ func (l *localJobs) Show(ctx context.Context, id string) (cli.JobView, error) {
 }
 
 func (l *localJobs) Stop(ctx context.Context, id string) (cli.JobView, error) {
+	return l.stop(ctx, id, 0)
+}
+
+// stop is Stop for an order that expects the Job in generation gen (zero: any).
+func (l *localJobs) stop(ctx context.Context, id string, gen int) (cli.JobView, error) {
 	j, p, err := l.read(ctx, id)
 	if err != nil {
 		return cli.JobView{}, err
 	}
-	if err := p.runner.Stop(ctx, j.ID); err != nil {
+	if err := p.runner.Stop(ctx, j.ID, runner.Expect(gen)); err != nil {
 		return cli.JobView{}, mapErr(err)
 	}
 	return l.Show(ctx, id)
 }
 
 func (l *localJobs) Resume(ctx context.Context, id string) (cli.JobView, error) {
+	return l.resume(ctx, id, 0, false)
+}
+
+func (l *localJobs) ResumeForce(ctx context.Context, id string) (cli.JobView, error) {
+	return l.resume(ctx, id, 0, true)
+}
+
+// resume is Resume for an order that expects the Job in generation gen (zero:
+// any); force also resumes a Job that is moving.
+func (l *localJobs) resume(ctx context.Context, id string, gen int, force bool) (cli.JobView, error) {
 	j, p, err := l.read(ctx, id)
 	if err != nil {
 		return cli.JobView{}, err
@@ -340,7 +380,11 @@ func (l *localJobs) Resume(ctx context.Context, id string) (cli.JobView, error) 
 	if err := p.tmux.Check(ctx); err != nil {
 		return cli.JobView{}, err
 	}
-	launched, err := p.runner.Launch(ctx, j.ID, "")
+	opts := []runner.Option{runner.Expect(gen)}
+	if force {
+		opts = append(opts, runner.Force())
+	}
+	launched, err := p.runner.Launch(ctx, j.ID, "", opts...)
 	if err != nil {
 		return cli.JobView{}, mapErr(err)
 	}
@@ -360,14 +404,21 @@ func (l *localJobs) Screen(ctx context.Context, id string) (string, error) {
 }
 
 func (l *localJobs) Send(ctx context.Context, id, text string) (cli.JobView, error) {
+	return l.send(ctx, id, 0, text)
+}
+
+func (l *localJobs) send(ctx context.Context, id string, gen int, text string) (cli.JobView, error) {
 	j, p, err := l.read(ctx, id)
 	if err != nil {
 		return cli.JobView{}, err
 	}
+	if err := j.ExpectGen(gen); err != nil {
+		return cli.JobView{}, mapErr(err)
+	}
 	if err := hasTerminal(j, domain.CodeRunNotRespondable); err != nil {
 		return cli.JobView{}, err
 	}
-	if err := p.runner.Send(ctx, j.ID, text); err != nil {
+	if err := p.runner.Send(ctx, j.ID, text, runner.Expect(gen)); err != nil {
 		return cli.JobView{}, mapErr(err)
 	}
 	return l.Show(ctx, id)
@@ -459,6 +510,12 @@ func view(j job.Job, problem string) cli.JobView {
 	if j.Launch != nil {
 		v.Terminal = j.Launch.Session
 	}
+	if j.MovedTo != nil {
+		v.MovedTo, v.MovedGen = j.MovedTo.Peer, j.MovedTo.Gen
+	}
+	if j.State == job.Finishing && j.Finish != nil {
+		v.FinishID = j.Finish.ID
+	}
 	return v
 }
 
@@ -473,13 +530,25 @@ func mapErr(err error) error {
 	if errors.Is(err, job.ErrInvalidTransition) {
 		return domain.NewError(domain.CodeInvalidTransition, err.Error(), nil)
 	}
+	var stale *job.StaleError
+	if errors.As(err, &stale) {
+		return domain.NewError(domain.CodeStaleLease, stale.Error(), nil)
+	}
 	return err
 }
 
 // git runs git with a fixed argv in dir (the current directory if empty) and returns its trimmed stdout.
 func git(ctx context.Context, dir string, args ...string) (string, error) {
+	return gitEnv(ctx, dir, nil, args...)
+}
+
+// gitEnv is git with more environment variables (an index of its own, say).
+func gitEnv(ctx context.Context, dir string, env []string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...) //nolint:gosec // a fixed git argv; the variable parts are single arguments, never a shell
 	cmd.Dir = dir
+	if env != nil {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	var out, errOut bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	if err := cmd.Run(); err != nil {

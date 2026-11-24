@@ -221,6 +221,7 @@ func TestGivenAHostWithoutClaudeConfigDirThenTheHarnessIsNotGivenOne(t *testing.
 }
 
 func TestGivenARelativeCodexHomeThenThePlanAndDiscoveryUseItAbsolute(t *testing.T) {
+	t.Chdir(t.TempDir()) // the plan trusts the worktree in the config.toml of that directory
 	bin := t.TempDir()
 	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("#!/bin/sh\n"), 0o700); err != nil { //nolint:gosec // a stub binary
 		t.Fatal(err)

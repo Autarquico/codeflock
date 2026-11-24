@@ -10,6 +10,7 @@ const (
 	idPrefix      = "job-"
 	idLen         = 10
 	launchIDLen   = 8
+	transferIDLen = 16
 	base32Lower   = "abcdefghijklmnopqrstuvwxyz234567"
 	sessionPrefix = "cflk-"
 )
@@ -17,6 +18,7 @@ const (
 var (
 	idPattern       = regexp.MustCompile(`^job-[a-z2-7]{10}$`)
 	launchIDPattern = regexp.MustCompile(`^[a-z2-7]{8}$`)
+	transferPattern = regexp.MustCompile(`^[a-z2-7]{16}$`)
 )
 
 // NewID returns a random Job id, job-<10 base32 characters>.
@@ -30,6 +32,12 @@ func NewLaunchID() string { return randomBase32(launchIDLen) }
 
 // ValidLaunchID reports whether id is a well-formed launch id.
 func ValidLaunchID(id string) bool { return launchIDPattern.MatchString(id) }
+
+// NewTransferID returns the random id of a movement of a Job (or of a finish).
+func NewTransferID() string { return randomBase32(transferIDLen) }
+
+// ValidTransferID reports whether id is a well-formed transfer id.
+func ValidTransferID(id string) bool { return transferPattern.MatchString(id) }
 
 // Launch is the reference to one start of the agent. Its records live in
 // jobs/<id>/launches/<launch>/ (see Store.LaunchDir).

@@ -119,8 +119,12 @@ func (r *Runner) Screen(ctx context.Context, id string) ([]byte, error) {
 
 // Send types text into the agent of a running or waiting Job and clears the
 // waiting marker: the agent is working on it now.
-func (r *Runner) Send(ctx context.Context, id, text string) error {
+func (r *Runner) Send(ctx context.Context, id, text string, opts ...Option) error {
+	o := optionsOf(opts)
 	return r.cfg.Store.WithLock(id, func(j *job.Job) error {
+		if err := j.ExpectGen(o.expect); err != nil {
+			return err
+		}
 		if j.Launch == nil || (j.State != job.Running && j.State != job.Waiting) {
 			return fmt.Errorf("runner: job %s is %s: there is no agent to send to", id, j.State)
 		}
@@ -163,10 +167,14 @@ func restoreMarker(aside, marker string) {
 // see it. If something of the group survives, or the wrapper cannot be identified
 // or read, the Job stays stopping and Stop says why: a later Stop repeats it. A Job
 // already stopped is left alone.
-func (r *Runner) Stop(ctx context.Context, id string) error {
+func (r *Runner) Stop(ctx context.Context, id string, opts ...Option) error {
+	o := optionsOf(opts)
 	var launch job.Job
 	var already bool
 	err := r.cfg.Store.WithLockSave(id, func(j *job.Job, save func() error) error {
+		if err := j.ExpectGen(o.expect); err != nil {
+			return err
+		}
 		if err := r.reconcile(ctx, j); err != nil {
 			return err
 		}

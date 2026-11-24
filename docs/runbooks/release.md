@@ -1,5 +1,7 @@
 # Runbook: publicar una release
 
+Code Flock: [autarquico.github.io/codeflock](https://autarquico.github.io/codeflock/).
+
 Spec: [release-installer-site](../specs/release-installer-site.md). Todo lo que sigue es manual salvo lo que
 hacen `release.yml` y `pages.yml` una vez empujado el tag. Los pasos 1 a 4 bloquean el tag `v0.2.0`, no los PRs.
 

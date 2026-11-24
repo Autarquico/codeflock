@@ -49,8 +49,8 @@ On the wire the tools are named with an underscore.
 | `jobs_send` | `cflk send` | no |
 | `jobs_stop`, `jobs_resume` | `cflk stop`, `cflk resume` | no |
 | `jobs_clean` | `cflk clean` | no |
-| `jobs_move` | `cflk move` | no |
-| `jobs_pull` | `cflk pull` | no |
+| `jobs_move` | `cflk move --to`, `--retry`, `--abort` | no |
+| `jobs_pull` | `cflk pull`, with `--finish`, `--push`, `--abort` | no |
 
 In the `read` profile the tools that change something do not exist. `jobs_attach` opens the Job in a new window of the terminal the server runs in (tmux, iTerm2 or Terminal.app) and, with `read`, always read-only, even if the model asks otherwise. If no window can be opened, it fails with the command to run by hand.
 
