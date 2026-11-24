@@ -42,6 +42,10 @@ func TestClaudeStartedOverSSHOnAMacNeedsALoginOutsideTheKeychain(t *testing.T) {
 	if p := loginProblem("claude"); p != "" {
 		t.Fatalf("with a credentials file in CLAUDE_CONFIG_DIR: %q", p)
 	}
+	t.Setenv("CLAUDE_CONFIG_DIR", "relative")
+	if got := loginProblem("claude-code") != ""; got != (runtime.GOOS == "darwin") {
+		t.Fatalf("relative CLAUDE_CONFIG_DIR, by id, on %s: problem = %v", runtime.GOOS, got)
+	}
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o700); err != nil {
 		t.Fatal(err)

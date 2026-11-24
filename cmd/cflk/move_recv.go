@@ -279,6 +279,9 @@ func (l *localJobs) activate(ctx context.Context, in server.TransferInput) (wire
 			cur, err := p.runner.Reconcile(ctx, in.Job)
 			return wire.JobView(view(cur, "")), mapErr(err)
 		}
+		if problem := loginProblem(j.Harness); problem != "" {
+			return wire.JobView(view(j, problem)), nil
+		}
 		return l.launchArrived(ctx, p, in) // written, never launched: a crash between the two
 	}
 	rec, found, err := readPrepared(dir)
