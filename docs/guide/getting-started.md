@@ -125,6 +125,14 @@ cflk pull <job> --finish   # stop it and bring its branch to this repository
 
 After a reboot a Job whose agent died shows as `lost`; nothing relaunches it. `cflk resume <job>` brings it back with its session.
 
+## See everything in one screen
+
+```sh
+cflk
+```
+
+In a terminal, bare `cflk` (or `cflk tui`) opens a terminal UI with the Jobs of every peer and the screen of the one you select. `s` sends, `a` attaches, `x` stops, `u` resumes, `q` quits.
+
 ## From Claude Code
 
 ```sh
