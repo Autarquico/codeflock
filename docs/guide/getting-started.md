@@ -78,11 +78,12 @@ cflk doctor   # also asks each peer for a hello
 
 Each peer needs this file too, listing the others: when a Job moves, the peer that has it talks to the destination with its own list and its own ssh. So ssh has to work between every pair of peers, not only from the machine you type on.
 
-On a Mac, Claude Code keeps its login in the keychain, and a process started over ssh cannot read it: a Job another peer starts there would open as "Not logged in". On that Mac, run `claude setup-token`: it prints a token that lasts a year. Put it in `~/.zshenv`, which zsh reads in ssh sessions too. This asks for it without showing it or leaving it in the shell history:
+On a Mac, Claude Code keeps its login in the keychain, and a process started over ssh cannot read it: a Job another peer starts there would open as "Not logged in". On that Mac, run `claude setup-token`: it prints a token that lasts a year. Put it in `~/.zshenv`, which zsh reads in ssh sessions too. Every zsh reads that file, so every program started from a shell of yours gets the token in its environment. This makes the file private first, then asks for the token without showing it or leaving it in the shell history:
 
 ```sh
-printf 'token: '; stty -echo; read -r t; stty echo; echo
-printf "export CLAUDE_CODE_OAUTH_TOKEN='%s'\n" "$t" >> ~/.zshenv && chmod 600 ~/.zshenv; unset t
+(umask 077; touch ~/.zshenv && chmod 600 ~/.zshenv || exit
+ trap 'stty echo' EXIT INT; printf 'token: '; stty -echo; read -r t; stty echo; echo
+ printf "export CLAUDE_CODE_OAUTH_TOKEN='%s'\n" "$t" >> ~/.zshenv)
 ```
 
 `claude auth login` run over ssh is not enough: it still saves the login in the keychain. With the token, Claude Code makes model requests but cannot start Remote Control, so a Job's screen may show "Remote Control disconnected"; the Job works. Until the token is there, that peer does not offer `claude` to the others and refuses to start it for them. Codex keeps its login in a file and has no such problem.
