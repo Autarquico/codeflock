@@ -158,7 +158,10 @@ func (s Stopper) Stop(ctx context.Context, t Target) (Outcome, error) {
 	if v == procident.Same {
 		switch s.verdict(t) {
 		case procident.Same:
-			if err := s.signal(t.PGID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+			// ESRCH: the group is gone. EPERM: macOS says it for a group that holds only
+			// zombies (the wrapper exited and is not reaped yet); the poll below decides
+			// whether anything is really left, and gives up after KillWait if so.
+			if err := s.signal(t.PGID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) && !errors.Is(err, syscall.EPERM) {
 				return Survivors, err
 			}
 		case procident.Gone:

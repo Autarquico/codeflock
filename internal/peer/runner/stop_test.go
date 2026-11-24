@@ -344,3 +344,17 @@ func TestAWrapperThatExitsBetweenTheLooksIsGone(t *testing.T) {
 		}
 	})
 }
+
+func TestAnEPermFromAGroupOfZombiesDoesNotAbortTheStop(t *testing.T) {
+	w := newWrapperProcess(t, "sleep 0.3")
+	st := runner.Stopper{
+		Signal:   func(int, syscall.Signal) error { return syscall.EPERM }, // what macOS says to a group of zombies
+		Grace:    10 * time.Second,
+		KillWait: time.Second,
+		Poll:     10 * time.Millisecond,
+	}
+
+	if out, err := st.Stop(t.Context(), w.t); err != nil || out != runner.Stopped {
+		t.Fatalf("stop = %v, %v", out, err)
+	}
+}
