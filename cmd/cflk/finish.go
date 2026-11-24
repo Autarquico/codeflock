@@ -267,10 +267,10 @@ func (f *fleet) finish(ctx context.Context, o owner, self string, names []string
 		}
 		info, from = *resp.Finish, p.mirrorDir(o.view.Repo)
 	}
-	if o.view.State == string(job.Done) {
-		return o.view, nil // done already: its branch was fetched then, and the seal is gone
-	}
 	branch := "cflk/" + o.view.ID
+	if o.view.State == string(job.Done) {
+		return finishedAlready(ctx, src.dir, o.view, branch, info.Commit, push)
+	}
 	if err := p.releaseBranch(ctx, src.dir, o.view.ID, branch); err != nil {
 		return cli.JobView{}, finishStuck(o.view.ID, err)
 	}
@@ -396,6 +396,22 @@ func commonDir(ctx context.Context, dir string) (string, error) {
 }
 
 // pushBranch publishes the branch to origin as it is: no force, no hooks, no tags.
+// finishedAlready answers a repeated finish of a done Job: it succeeds only
+// where the first one left the sealed commit on the branch, and pushes it when
+// asked, so a success always means the branch here holds the work.
+func finishedAlready(ctx context.Context, dir string, v cli.JobView, branch, commit string, push bool) (cli.JobView, error) {
+	if _, err := git(ctx, dir, "merge-base", "--is-ancestor", "--", commit, "refs/heads/"+branch); err != nil {
+		return cli.JobView{}, domain.NewError(domain.CodeInvalidTransition,
+			fmt.Sprintf("job %s is done: its work was fetched as %s in the repository where it was finished", v.ID, branch), nil)
+	}
+	if push {
+		if err := pushBranch(ctx, dir, branch); err != nil {
+			return cli.JobView{}, err
+		}
+	}
+	return v, nil
+}
+
 func pushBranch(ctx context.Context, dir, branch string) error {
 	ctx, cancel := context.WithTimeout(ctx, pushTimeout)
 	defer cancel()

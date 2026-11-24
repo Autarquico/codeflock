@@ -88,3 +88,32 @@ func TestAnOwnerResolvesTheCallerByNodeIDThenByAnyOfItsNames(t *testing.T) {
 		t.Fatalf("finish by a known name = %+v, %v", info, err)
 	}
 }
+
+func TestARepeatedFinishWithPushPublishesWhatTheFirstFinishBrought(t *testing.T) {
+	n := newMoveNet(t, []fakeharness.Step{neverEnds}, "laptop", "mini")
+	v := n.delegated(t, "mini")
+	n.writeInto(t, "mini", v, "notes.txt", "to publish later")
+	mustPull(t, n.fleet("laptop"), cli.PullRequest{ID: v.ID, Finish: true})
+
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	runGit(t, ".", "init", "-q", "--bare", bare)
+	runGit(t, ".", "remote", "set-url", "--push", "origin", bare)
+	if again := mustPull(t, n.fleet("laptop"), cli.PullRequest{ID: v.ID, Finish: true, Push: true}); again.State != "done" {
+		t.Fatalf("repeat = %+v", again)
+	}
+	branch := "cflk/" + v.ID
+	if got, want := runGit(t, bare, "rev-parse", branch), runGit(t, ".", "rev-parse", branch); got != want {
+		t.Fatalf("origin has %s, the branch is %s", got, want)
+	}
+}
+
+func TestARepeatedFinishWhereTheBranchIsMissingIsRefused(t *testing.T) {
+	n := newMoveNet(t, []fakeharness.Step{neverEnds}, "laptop", "mini")
+	v := n.delegated(t, "mini")
+	n.writeInto(t, "mini", v, "notes.txt", "work")
+	mustPull(t, n.fleet("laptop"), cli.PullRequest{ID: v.ID, Finish: true})
+
+	runGit(t, ".", "branch", "-q", "-D", "cflk/"+v.ID)
+	_, err := n.fleet("laptop").Pull(t.Context(), cli.PullRequest{ID: v.ID, Finish: true})
+	requireCode(t, err, domain.CodeInvalidTransition)
+}
