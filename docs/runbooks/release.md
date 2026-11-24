@@ -127,6 +127,7 @@ Lo que encontró y se arregló en #230:
 Sin probar en la flota:
 
 - moves entre el Mac mini y omarch01: sin ssh entre ellos;
+- devolver un Job de Codex al peer del que vino;
 - `attach`, `tui` y `cflk mcp install`;
 - omarch02.
 

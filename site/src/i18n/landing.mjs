@@ -109,7 +109,7 @@ export const landing = {
 		],
 		notVerifiedTitle: 'Not verified',
 		notVerified: [
-			{ text: 'Not checked by hand: entering a Job (attach, tui), a Codex Job moved back to the peer it came from, and moves between every pair of machines.' },
+			{ text: 'Not checked by hand: entering a Job (attach, tui), cflk mcp install, a Codex Job moved back to the peer it came from, and moves between every pair of machines.' },
 			{ text: 'Opening an attach in a new window: iTerm2, tmux and Terminal.app have not been checked for this version.' },
 			{ text: 'The installer has not yet been run on a clean machine against a published release.' },
 			{ text: 'Every peer trusts every other one fully: what a peer can do on another is what you could do by ssh. Add a machine only if you would let it do that.' },
@@ -171,7 +171,7 @@ export const landing = {
 		],
 		notVerifiedTitle: 'Sin verificar',
 		notVerified: [
-			{ text: 'Sin comprobar a mano: entrar en un Job (attach, tui), devolver un Job de Codex al peer del que vino y mover entre todos los pares de máquinas.' },
+			{ text: 'Sin comprobar a mano: entrar en un Job (attach, tui), cflk mcp install, devolver un Job de Codex al peer del que vino y mover entre todos los pares de máquinas.' },
 			{ text: 'Abrir un attach en una ventana nueva: iTerm2, tmux y Terminal.app no se han comprobado para esta versión.' },
 			{ text: 'El instalador aún no se ha ejecutado en una máquina limpia contra una release publicada.' },
 			{ text: 'Cada peer confía por completo en los demás: lo que un peer puede hacer en otro es lo que tú harías por ssh. Añade una máquina solo si la dejarías hacerlo.' },
