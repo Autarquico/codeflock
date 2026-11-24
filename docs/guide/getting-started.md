@@ -76,6 +76,10 @@ cflk peers    # the PROBLEM column says why a peer does not answer
 cflk doctor   # also asks each peer for a hello
 ```
 
+Each peer needs this file too, listing the others: when a Job moves, the peer that has it talks to the destination with its own list and its own ssh. So ssh has to work between every pair of peers, not only from the machine you type on.
+
+On a Mac, Claude Code keeps its login in the keychain, and a process started over ssh cannot read it: a Job another peer starts there would open as "Not logged in". Open an ssh session to that Mac (`ssh -t <mac>`) and run `claude auth login` once there; over ssh it saves the login in `~/.claude/.credentials.json`, which works. Until then, that peer does not offer `claude` to the others and refuses to start it for them. Codex keeps its login in a file and has no such problem.
+
 The first time an agent starts in a new directory, Claude Code and Codex ask whether you trust the folder. For a Job, `cflk` marks its worktree as trusted before it starts the agent.
 
 ## Run a Job on another machine

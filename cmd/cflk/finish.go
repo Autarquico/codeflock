@@ -360,6 +360,20 @@ func dropSealRef(ctx context.Context, dir, id string, gen int) error {
 // more, and the branch cannot advance under a checkout. The files stay. Nothing
 // that is not a worktree of this Job in the repository of dir is touched.
 func (p *peer) releaseBranch(ctx context.Context, dir, id, branch string) error {
+	if own, err := filepath.Glob(filepath.Join(p.store.Dir(id), "g*")); err != nil || len(own) == 0 {
+		return err
+	}
+	return p.store.WithLock(id, func(j *job.Job) error {
+		if j.State != job.Moved && j.State != job.Finishing && j.State != job.Done {
+			return nil
+		}
+		return p.detachOwn(ctx, dir, id, branch)
+	})
+}
+
+// detachOwn is releaseBranch for a caller that already holds the Job and has
+// checked that its worktrees here are not live.
+func (p *peer) detachOwn(ctx context.Context, dir, id, branch string) error {
 	own, err := filepath.Glob(filepath.Join(p.store.Dir(id), "g*"))
 	if err != nil || len(own) == 0 {
 		return err
@@ -368,23 +382,18 @@ func (p *peer) releaseBranch(ctx context.Context, dir, id, branch string) error 
 	if err != nil {
 		return err
 	}
-	return p.store.WithLock(id, func(j *job.Job) error {
-		if j.State != job.Moved && j.State != job.Finishing && j.State != job.Done {
-			return nil
+	for _, wt := range own {
+		if common, err := commonDir(ctx, wt); err != nil || common != here {
+			continue
 		}
-		for _, wt := range own {
-			if common, err := commonDir(ctx, wt); err != nil || common != here {
-				continue
-			}
-			if head, err := git(ctx, wt, "symbolic-ref", "--quiet", "HEAD"); err != nil || head != "refs/heads/"+branch {
-				continue
-			}
-			if _, err := git(ctx, wt, "switch", "--detach"); err != nil {
-				return fmt.Errorf("detaching %s from %s: %w", wt, branch, err)
-			}
+		if head, err := git(ctx, wt, "symbolic-ref", "--quiet", "HEAD"); err != nil || head != "refs/heads/"+branch {
+			continue
 		}
-		return nil
-	})
+		if _, err := git(ctx, wt, "switch", "--detach"); err != nil {
+			return fmt.Errorf("detaching %s from %s: %w", wt, branch, err)
+		}
+	}
+	return nil
 }
 
 func commonDir(ctx context.Context, dir string) (string, error) {

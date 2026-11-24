@@ -144,6 +144,9 @@ func (l *localJobs) prepare(ctx context.Context, in server.PrepareInput, archive
 			return out, nil // prepared already: nothing changes
 		}
 	}
+	if err := refuseWithoutLogin(in.Harness); err != nil {
+		return out, err
+	}
 	if err := p.supersede(in.Job, in.Gen, in.Transfer); err != nil {
 		return out, err
 	}
@@ -151,6 +154,9 @@ func (l *localJobs) prepare(ctx context.Context, in server.PrepareInput, archive
 		return out, err
 	}
 	p.dropWorktree(ctx, mirror, wt)
+	if err := p.detachOwn(ctx, mirror, in.Job, "cflk/"+in.Job); err != nil { // a Job coming back finds its old worktree here
+		return out, err
+	}
 	if _, err := git(ctx, mirror, "worktree", "add", "--quiet", "--force", "-B", "cflk/"+in.Job, wt, in.Commit); err != nil {
 		p.dropWorktree(ctx, mirror, wt)
 		return out, err
@@ -273,6 +279,9 @@ func (l *localJobs) activate(ctx context.Context, in server.TransferInput) (wire
 			cur, err := p.runner.Reconcile(ctx, in.Job)
 			return wire.JobView(view(cur, "")), mapErr(err)
 		}
+		if problem := loginProblem(j.Harness); problem != "" {
+			return wire.JobView(view(j, problem)), nil
+		}
 		return l.launchArrived(ctx, p, in) // written, never launched: a crash between the two
 	}
 	rec, found, err := readPrepared(dir)
@@ -286,6 +295,9 @@ func (l *localJobs) activate(ctx context.Context, in server.TransferInput) (wire
 	mirror := p.mirrorDir(rec.Repo)
 	if !p.installed(rec.Harness) {
 		return wire.JobView{}, p.refuse(ctx, in, mirror, fmt.Errorf("%s is not installed on %s", rec.Harness, p.name))
+	}
+	if err := refuseWithoutLogin(rec.Harness); err != nil {
+		return wire.JobView{}, p.refuse(ctx, in, mirror, err)
 	}
 	archive, err := os.ReadFile(filepath.Join(dir, sessionFile)) //nolint:gosec // a file of this peer
 	if err != nil {

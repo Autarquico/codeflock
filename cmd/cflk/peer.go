@@ -34,7 +34,7 @@ func (s peerService) Hello(context.Context) (wire.Hello, error) {
 	}
 	installed := []string{}
 	for _, name := range []string{"claude", "codex"} {
-		if _, err := exec.LookPath(name); err == nil {
+		if _, err := exec.LookPath(name); err == nil && loginProblem(name) == "" {
 			installed = append(installed, name)
 		}
 	}
@@ -167,6 +167,9 @@ func (s peerService) RunFromMirror(ctx context.Context, in server.RunInput) (wir
 	}
 	if v, found, err := p.launchedJob(ctx, mirror, harnessID, in); found || err != nil {
 		return v, err
+	}
+	if err := refuseWithoutLogin(in.Harness); err != nil {
+		return wire.JobView{}, err
 	}
 	v, err := p.startFromMirror(ctx, mirror, harnessID, in)
 	if err != nil {
