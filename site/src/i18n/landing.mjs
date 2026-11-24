@@ -109,7 +109,7 @@ export const landing = {
 		notVerifiedTitle: 'Not verified',
 		notVerified: [
 			{ text: 'Codex moved between two machines has not been tried: no peer had Codex.' },
-			{ text: 'Everything else is in development: running a Job on another peer, entering it, moving it and bringing it back have not yet been checked by hand on a real set of machines.' },
+			{ text: 'Checked by hand on three real machines: running a Job on another peer, moving it there and back with Claude Code and Codex, and finishing it. Entering a Job has not been checked by hand yet.' },
 			{ text: 'Opening an attach in a new window: iTerm2, tmux and Terminal.app have not been checked for this version.' },
 			{ text: 'The installer has not yet been run on a clean machine against a published release.' },
 			{ text: 'Every peer trusts every other one fully: what a peer can do on another is what you could do by ssh. Add a machine only if you would let it do that.' },
@@ -171,7 +171,7 @@ export const landing = {
 		notVerifiedTitle: 'Sin verificar',
 		notVerified: [
 			{ text: 'Mover Codex entre dos máquinas no se ha probado: ningún peer tenía Codex.' },
-			{ text: 'Todo lo demás está en desarrollo: lanzar un Job en otro peer, entrar en él, moverlo y traerlo de vuelta aún no se ha comprobado a mano en un conjunto real de máquinas.' },
+			{ text: 'Comprobado a mano en tres máquinas reales: lanzar un Job en otro peer, moverlo allí y traerlo de vuelta con Claude Code y con Codex, y terminarlo. Entrar en un Job aún no se ha comprobado a mano.' },
 			{ text: 'Abrir un attach en una ventana nueva: iTerm2, tmux y Terminal.app no se han comprobado para esta versión.' },
 			{ text: 'El instalador aún no se ha ejecutado en una máquina limpia contra una release publicada.' },
 			{ text: 'Cada peer confía por completo en los demás: lo que un peer puede hacer en otro es lo que tú harías por ssh. Añade una máquina solo si la dejarías hacerlo.' },
