@@ -78,15 +78,21 @@ cflk doctor   # also asks each peer for a hello
 
 Each peer needs this file too, listing the others: when a Job moves, the peer that has it talks to the destination with its own list and its own ssh. So ssh has to work between every pair of peers, not only from the machine you type on.
 
-On a Mac, Claude Code keeps its login in the keychain, and a process started over ssh cannot read it: a Job another peer starts there would open as "Not logged in". On that Mac, run `claude setup-token`: it prints a token that lasts a year. Put it in `~/.zshenv`, which zsh reads in ssh sessions too. Every zsh reads that file, so every program started from a shell of yours gets the token in its environment. This makes the file private first, then asks for the token without showing it or leaving it in the shell history:
+On a Mac, Claude Code keeps its login in the keychain, and a process started over ssh cannot read it: a Job another peer starts there would open as "Not logged in". `claude auth login` run over ssh is not enough: it still saves the login in the keychain. Give that Mac a login ssh sessions can read:
+
+- with a Claude subscription, run `claude setup-token` on that Mac: it prints a token that lasts a year, for `CLAUDE_CODE_OAUTH_TOKEN`;
+- with an API key, `ANTHROPIC_API_KEY` works the same way.
+
+Export it in the file your shell reads in every ssh session: `~/.zshenv` for zsh, the default on macOS (`$ZDOTDIR/.zshenv` if you set `ZDOTDIR`). Every program started from a shell of yours then gets it in its environment. This makes the file private first, then asks for the token without showing it or leaving it in the shell history (don't run it with `set -x`):
 
 ```sh
-(umask 077; touch ~/.zshenv && chmod 600 ~/.zshenv || exit
- trap 'stty echo' EXIT INT; printf 'token: '; stty -echo; read -r t; stty echo; echo
- printf "export CLAUDE_CODE_OAUTH_TOKEN='%s'\n" "$t" >> ~/.zshenv)
+(umask 077; f=${ZDOTDIR:-$HOME}/.zshenv; touch "$f" && chmod 600 "$f" || exit
+ trap 'stty echo' EXIT INT; printf 'token: '; stty -echo || exit; read -r t; stty echo; echo
+ [ -n "$t" ] || { echo 'no token: nothing written'; exit 1; }
+ printf "\nexport CLAUDE_CODE_OAUTH_TOKEN='%s'\n" "$t" >> "$f")
 ```
 
-`claude auth login` run over ssh is not enough: it still saves the login in the keychain. With the token, Claude Code makes model requests but cannot start Remote Control, so a Job's screen may show "Remote Control disconnected"; the Job works. Until the token is there, that peer does not offer `claude` to the others and refuses to start it for them. Codex keeps its login in a file and has no such problem.
+With the token, Claude Code makes model requests but cannot start Remote Control, so a Job's screen may show "Remote Control disconnected"; the Job works. Until one of these is there, that peer does not offer `claude` to the others and refuses to start it for them. Codex keeps its login in a file and has no such problem.
 
 The first time an agent starts in a new directory, Claude Code and Codex ask whether you trust the folder. For a Job, `cflk` marks its worktree as trusted before it starts the agent.
 
