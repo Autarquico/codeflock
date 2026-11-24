@@ -36,9 +36,24 @@ curl -fsSL https://github.com/Autarquico/codeflock/releases/download/v0.5.0-beta
 | `cflk stop <job>` / `cflk resume <job>` | `jobs_stop` / `jobs_resume` | Stop / resume on the same peer |
 | `cflk clean <job>` | `jobs_clean` | Delete what a `moved` or `done` Job left on this peer |
 | `cflk move <job> --to p` | `jobs_move` | Move it and resume it on another peer |
-| `cflk pull <job> [--finish] [--push]` | `jobs_pull` | Bring it to this peer |
+| `cflk pull <job> [--finish [--push]]` | `jobs_pull` | Bring it to this peer |
+| `cflk tui` (or `cflk` alone in a terminal) | - | Terminal UI over the Jobs of every peer |
+| `cflk doctor [--fix]` | - | Check this machine; `--fix` removes what 0.4 left |
 
 Details in the [CLI reference](docs/guide/cli.md).
+
+## Configuration
+
+Peers without the Tailscale tag `tag:cflk` go in `~/.config/cflk/config.toml`:
+
+```toml
+peers = ["mac-mini.local", "omarch01"]
+
+[cflk_path]
+"mac-mini.local" = "bin/cflk"   # only if cflk is not in ~/.local/bin there
+```
+
+See [Getting started](docs/guide/getting-started.md).
 
 ## From Claude Code
 
@@ -50,7 +65,7 @@ registers the MCP server and the `codeflock` skill, so Claude Code can use the c
 
 ## What is not there any more
 
-The Controller, Projects, Workflows, Environments, the scheduler and centrally stored secrets are gone from 0.5.0. Each machine keeps its own Claude and Codex login and its own git credentials. If you ran the beta.8 Controller, [the retire runbook](docs/runbooks/retire-controller.md) lists what to stop and delete.
+The Controller, Projects, Workflows, Environments, the scheduler and centrally stored secrets are gone from 0.5.0. Each machine keeps its own Claude and Codex login and its own git credentials. Upgrading from 0.4: run `cflk doctor --fix` on each machine, and see [the retire runbook](docs/runbooks/retire-controller.md) for what to stop and delete.
 
 ## Documentation
 

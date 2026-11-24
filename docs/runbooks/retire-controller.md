@@ -1,5 +1,7 @@
 # Retire the Controller (beta.8 and earlier)
 
+Code Flock home: [autarquico.github.io/codeflock](https://autarquico.github.io/codeflock/).
+
 The peer network (`v0.5.0-beta.1` and later) has no Controller and no Worker daemon. `v0.4.0-beta.8` is the last version that has them, and 0.5 cannot read their state. Nothing removes them for you: installing or upgrading `cflk` leaves the Controller and the Worker units running. You retire them, machine by machine, when you have checked that the peer network does what you need. Read a block before you paste it.
 
 Irreversible steps are marked **IRREVERSIBLE**. Everything else you can undo by reinstalling beta.8 and starting the services again. Nothing here touches your repositories or the branches `cflk/…` that Runs already pushed.
