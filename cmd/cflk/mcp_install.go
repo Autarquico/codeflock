@@ -54,8 +54,8 @@ type mcpInstall struct {
 	Binary   string     `json:"binary,omitempty"`
 	DryRun   bool       `json:"dry_run"`
 	Commands [][]string `json:"commands"` // what ran, or in a dry run what would run first
-	// Fallback is what a dry run of install would run only if add is refused
-	// because a registration of ours exists: read it, remove it, add again.
+	// Fallback is what a dry run of install would run, before add, only if a
+	// registration of ours that it can write again exists: remove it.
 	Fallback [][]string `json:"fallback,omitempty"`
 	Skill    skillState `json:"skill"`
 	Note     string     `json:"note,omitempty"`
@@ -108,7 +108,7 @@ func newMCPInstallCommand() *cobra.Command {
 		Use:   "install --claude|--codex [--scope user|project] [--profile read|write] [--dry-run]",
 		Short: "Register `cflk mcp serve` in Claude Code or Codex and install the codeflock skill",
 		Long: "Registers `cflk mcp serve` with the CLI of the tool (claude mcp add, codex mcp add) and writes the\n" +
-			"codeflock skill where the tool reads skills. It is idempotent: it replaces the registration and\n" +
+			"codeflock skill where the tool reads skills. It is idempotent: it replaces a registration of its own and\n" +
 			"leaves the skill alone when it is already current.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -198,6 +198,42 @@ func ours(command string, args []string) bool {
 	return isBinary && len(args) >= 2 && args[0] == "mcp" && args[1] == "serve"
 }
 
+// replaceable says whether the output of `mcp get` is a registration that
+// install may replace because it can write it again as it was: ours, with
+// exactly the arguments `mcp serve --profile <profile>` and no environment.
+func replaceable(out []byte) bool {
+	command, args, found := registration(out)
+	if !found || !ours(command, args) || len(args) != 4 || args[2] != "--profile" {
+		return false
+	}
+	if _, err := mcp.ParseProfile(args[3]); err != nil {
+		return false
+	}
+	inEnv := false
+	for line := range strings.Lines(string(out)) {
+		key, value, _ := strings.Cut(strings.TrimSpace(line), ":")
+		switch lower := strings.ToLower(key); {
+		case lower == "env" || lower == "environment":
+			if v := strings.TrimSpace(value); v != "" && v != "-" {
+				return false
+			}
+			inEnv = true
+		case inEnv && strings.Contains(line, "="):
+			return false
+		case strings.TrimSpace(line) == "":
+		default:
+			inEnv = false
+		}
+	}
+	return true
+}
+
+// notFound says whether the output of a failed `mcp get` is the tool saying
+// there is no server of that name, which both clients word as `No MCP server named ...`.
+func notFound(out []byte) bool {
+	return strings.Contains(strings.ToLower(string(out)), "no mcp server named")
+}
+
 // managesServer says whether the server is registered in this scope: Codex
 // has user scope only, so with project scope only its skill is ours to touch.
 func (c mcpClient) managesServer(scope string) bool { return c.scoped || scope == "user" }
@@ -228,9 +264,9 @@ func (c mcpClient) skillPath(ctx context.Context, scope string) (string, error) 
 }
 
 // installMCP registers the server and writes the skill. The CLI of the tool is
-// looked up before anything is written. The registration is added first, and
-// replaced only if that fails (it exists already), so a failure leaves the
-// previous one in place whenever the tool allows it.
+// looked up before anything is written. The registration is read before it is
+// touched, so that one that is not ours, or that has settings cflk cannot write
+// again, is never replaced.
 func installMCP(ctx context.Context, run execCommand, c mcpClient, scope string, p mcp.Profile, dryRun bool) (mcpInstall, error) {
 	res := mcpInstall{Tool: c.name, Scope: scope, Profile: string(p), DryRun: dryRun, Commands: [][]string{}}
 	bin, err := os.Executable()
@@ -258,8 +294,8 @@ func installMCP(ctx context.Context, run execCommand, c mcpClient, scope string,
 	add := c.addArgs(scope, bin, "mcp", "serve", "--profile", string(p))
 	if c.managesServer(scope) {
 		if dryRun {
-			res.Commands = append(res.Commands, add)
-			res.Fallback = [][]string{c.getArgs(), c.removeArgs(scope), add}
+			res.Commands = append(res.Commands, c.getArgs(), add)
+			res.Fallback = [][]string{c.removeArgs(scope)}
 		}
 	} else {
 		res.Note = codexProjectNote
@@ -289,41 +325,47 @@ func installMCP(ctx context.Context, run execCommand, c mcpClient, scope string,
 	return res, nil
 }
 
-// register adds the server. If the tool refuses, a registration called cflk
-// exists: it is replaced only when it is ours, and put back if the new one
-// cannot be added. One that is not ours is never touched. res.Commands records
-// what ran.
+// register adds the server. A registration called cflk that exists is
+// replaced only when it is ours and install can write it again as it was
+// (replaceable), and is put back if the new one cannot be added; any other is
+// refused before anything is changed. res.Commands records what ran.
 func register(ctx context.Context, res *mcpInstall, run execCommand, c mcpClient, scope string, add []string) error {
-	do := func(argv []string) ([]byte, error) {
+	do := func(ctx context.Context, argv []string) ([]byte, error) {
 		res.Commands = append(res.Commands, argv)
 		return run(ctx, argv[0], argv[1:]...)
 	}
-	addOut, addErr := do(add)
-	if addErr == nil {
+	failed := func(argv []string, out []byte, err error) error {
+		return fmt.Errorf("%s: %w: %s", strings.Join(argv[:3], " "), err, strings.TrimSpace(string(out)))
+	}
+	current, err := do(ctx, c.getArgs())
+	switch {
+	case err != nil && !notFound(current):
+		return failed(c.getArgs(), current, err)
+	case err != nil:
+		if out, err := do(ctx, add); err != nil {
+			return failed(add, out, err)
+		}
 		return nil
-	}
-	refused := fmt.Errorf("%s: %w: %s", strings.Join(add[:3], " "), addErr, strings.TrimSpace(string(addOut)))
-	current, err := do(c.getArgs())
-	if err != nil {
-		return fmt.Errorf("%w (and `%s` could not read a registration to replace: nothing was changed)", refused, strings.Join(c.getArgs(), " "))
-	}
-	command, args, found := registration(current)
-	if !found || !ours(command, args) {
-		return domain.NewError(domain.CodeInvalidRequest, fmt.Sprintf("%s already has a server called %s that cflk did not register (%s): "+
-			"nothing was changed; remove it with `%s` and run this again", c.name, mcpServerName, strings.TrimSpace(command+" "+strings.Join(args, " ")),
+	case !replaceable(current):
+		command, args, _ := registration(current)
+		return domain.NewError(domain.CodeInvalidRequest, fmt.Sprintf("%s already has a server called %s that cflk cannot replace without losing settings (%s): "+
+			"nothing was changed; run `%s` and then this again", c.name, mcpServerName, strings.TrimSpace(command+" "+strings.Join(args, " ")),
 			strings.Join(c.removeArgs(scope), " ")), nil)
 	}
-	if _, err := do(c.removeArgs(scope)); err != nil {
-		return fmt.Errorf("could not replace the registration of %s: %w", mcpServerName, err)
+	command, args, _ := registration(current)
+	if out, err := do(ctx, c.removeArgs(scope)); err != nil {
+		return fmt.Errorf("could not replace the registration of %s: %w", mcpServerName, failed(c.removeArgs(scope), out, err))
 	}
-	if out, err := do(add); err != nil {
-		previous := c.addArgs(scope, command, args...)
-		if _, restoreErr := do(previous); restoreErr != nil {
-			return fmt.Errorf("%s: %w: %s (the previous registration could not be put back: `%s`)", strings.Join(add[:3], " "), err, strings.TrimSpace(string(out)), strings.Join(previous, " "))
-		}
-		return fmt.Errorf("%s: %w: %s (the previous registration was put back)", strings.Join(add[:3], " "), err, strings.TrimSpace(string(out)))
+	out, err := do(ctx, add)
+	if err == nil {
+		return nil
 	}
-	return nil
+	previous := c.addArgs(scope, command, args...)
+	// Put it back even if the install was cancelled meanwhile.
+	if _, restoreErr := do(context.WithoutCancel(ctx), previous); restoreErr != nil {
+		return fmt.Errorf("%w (the previous registration could not be put back: `%s`)", failed(add, out, err), strings.Join(previous, " "))
+	}
+	return fmt.Errorf("%w (the previous registration was put back)", failed(add, out, err))
 }
 
 // uninstallMCP removes the registration and the SKILL.md that cflk wrote; one
@@ -381,7 +423,10 @@ func removeServer(ctx context.Context, res *mcpInstall, run execCommand, c mcpCl
 	}
 	current, err := do(c.getArgs())
 	if err != nil {
-		return nil // the tool has no server called cflk
+		if notFound(current) {
+			return nil // the tool has no server called cflk
+		}
+		return fmt.Errorf("%s: %w: %s (the registration of %s may still be there, so the skill was kept)", strings.Join(c.getArgs()[:3], " "), err, strings.TrimSpace(string(current)), mcpServerName)
 	}
 	if command, args, found := registration(current); !found || !ours(command, args) {
 		return domain.NewError(domain.CodeInvalidRequest, fmt.Sprintf("%s has a server called %s that cflk did not register (%s): "+

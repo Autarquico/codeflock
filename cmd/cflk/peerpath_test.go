@@ -113,6 +113,14 @@ sleep 30`)
 	}
 }
 
+func TestAPathPrintedWholeCountsEvenIfADescendantKeepsThePipe(t *testing.T) {
+	shell := fakeShell(t, `printf '\n__CFLK_PATH__%s__CFLK_END__\n' "/login/bin"
+sleep 2 &`)
+	if got := loginShellPath(t.Context(), shell); got != "/login/bin" {
+		t.Errorf("PATH = %q", got)
+	}
+}
+
 func TestAFailedProbeIsRememberedBrieflyAndAGoodOneForAnHour(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "login-path")
 	good := "#!/bin/sh\n" + `printf '\n__CFLK_PATH__%s__CFLK_END__\n' "/login/bin"` + "\n"

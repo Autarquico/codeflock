@@ -32,8 +32,12 @@ func withFakeClaude(t *testing.T) (home string) {
 
 type recorded struct{ calls [][]string }
 
+// run answers like a client with nothing registered: `get` finds no server.
 func (r *recorded) run(_ context.Context, name string, args ...string) ([]byte, error) {
 	r.calls = append(r.calls, append([]string{name}, args...))
+	if args[1] == "get" {
+		return []byte("No MCP server named \"cflk\""), errors.New("exit 1")
+	}
 	return nil, nil
 }
 
@@ -45,15 +49,15 @@ func TestInstallRegistersTheServerAndWritesTheSkillOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	add := r.calls[0]
+	add := r.calls[1]
 	if got := strings.Join(add[:6], " "); got != "claude mcp add --scope user cflk" {
 		t.Errorf("add = %v", add)
 	}
 	if tail := strings.Join(add[len(add)-4:], " "); tail != "mcp serve --profile read" {
 		t.Errorf("add = %v", add)
 	}
-	if len(r.calls) != 1 || r.calls[0][2] != "add" {
-		t.Errorf("the registration is added first, and only that: %v", r.calls)
+	if verbs(r.calls) != "get add" {
+		t.Errorf("the registration is read, then added: %v", r.calls)
 	}
 	skill := filepath.Join(home, ".claude", "skills", "codeflock", "SKILL.md")
 	if res.Skill.State != "written" || res.Skill.Path != skill {
@@ -75,7 +79,7 @@ func TestInstallDryRunChangesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r.calls) != 0 || len(res.Commands) != 1 || len(res.Fallback) != 3 {
+	if len(r.calls) != 0 || len(res.Commands) != 2 || len(res.Fallback) != 1 {
 		t.Errorf("ran %v, would run %v", r.calls, res.Commands)
 	}
 	if _, err := os.Stat(filepath.Join(home, ".claude")); err == nil {
@@ -150,6 +154,7 @@ type fakeTool struct {
 	addFails    func(n int) bool // the n-th add (from 1) fails whatever the state
 	removeFails bool
 	adds        int
+	getFails    bool // `get` fails for a reason other than there being no server
 }
 
 func ourRegistration(command, profile string) string {
@@ -167,8 +172,11 @@ func (f *fakeTool) run(ctx context.Context, name string, args ...string) ([]byte
 		at := slices.Index(args, "--")
 		f.registered = "Command: " + args[at+1] + "\nArgs: " + strings.Join(args[at+2:], " ") + "\n"
 	case "get":
+		if f.getFails {
+			return []byte("cannot read config"), errors.New("exit 1")
+		}
 		if f.registered == "" {
-			return []byte("no server"), errors.New("exit 1")
+			return []byte("No MCP server named \"cflk\""), errors.New("exit 1")
 		}
 		return []byte(f.registered), nil
 	case "remove":
@@ -188,38 +196,73 @@ func verbs(calls [][]string) string {
 	return strings.Join(out, " ")
 }
 
-func TestInstallReplacesARegistrationOfOursOnlyWhenAddIsRefused(t *testing.T) {
+func TestInstallReplacesARegistrationThatItCanWriteAgain(t *testing.T) {
 	withFakeClaude(t)
 	f := &fakeTool{registered: ourRegistration("/old/bin/cflk", "read")}
 	if _, err := installMCP(t.Context(), f.run, claudeClient, "user", mcp.Write, false); err != nil {
 		t.Fatal(err)
 	}
-	if verbs(f.calls) != "add get remove add" || !strings.Contains(f.registered, "--profile write") {
+	if verbs(f.calls) != "get remove add" || !strings.Contains(f.registered, "--profile write") {
 		t.Errorf("calls %v, now %q", verbs(f.calls), f.registered)
 	}
 }
 
-func TestInstallNeverRemovesARegistrationThatIsNotOurs(t *testing.T) {
+func TestInstallNeverTouchesARegistrationItCannotWriteAgain(t *testing.T) {
 	withFakeClaude(t)
 	for _, other := range []string{
 		"Command: /usr/bin/other\nArgs: serve\n",
 		"Command: /usr/local/bin/cflk\nArgs: something else\n",
+		"Command: /usr/local/bin/cflk\nArgs: mcp serve --profile read --extra\n",
+		"Command: /usr/local/bin/cflk\nArgs: mcp serve --profile read\nEnvironment:\n    TOKEN=x\n",
+		"Command: /usr/local/bin/cflk\nArgs: mcp serve --profile read\nenv: TOKEN=*****\n",
 		"unreadable",
 	} {
-		f := &fakeTool{registered: other}
-		_, err := installMCP(t.Context(), f.run, claudeClient, "user", mcp.Write, false)
-		if err == nil || !strings.Contains(err.Error(), "did not register") || verbs(f.calls) != "add get" || f.registered != other {
-			t.Errorf("%q: err %v calls %v", other, err, verbs(f.calls))
+		for _, c := range []mcpClient{claudeClient, codexClient} {
+			withCodex(t)
+			f := &fakeTool{registered: other}
+			_, err := installMCP(t.Context(), f.run, c, "user", mcp.Write, false)
+			if err == nil || !strings.Contains(err.Error(), "mcp remove") || verbs(f.calls) != "get" || f.registered != other {
+				t.Errorf("%s %q: err %v calls %v", c.name, other, err, verbs(f.calls))
+			}
 		}
+	}
+}
+
+func TestInstallLeavesARegistrationAloneWhenItCannotTellWhetherThereIsOne(t *testing.T) {
+	withFakeClaude(t)
+	f := &fakeTool{registered: ourRegistration("/old/bin/cflk", "read"), getFails: true}
+	_, err := installMCP(t.Context(), f.run, claudeClient, "user", mcp.Write, false)
+	if err == nil || verbs(f.calls) != "get" {
+		t.Errorf("err %v calls %v", err, verbs(f.calls))
+	}
+}
+
+func TestInstallDoesNotRetryAnAddThatFailsOnNothingRegistered(t *testing.T) {
+	withFakeClaude(t)
+	f := &fakeTool{addFails: func(int) bool { return true }}
+	_, err := installMCP(t.Context(), f.run, claudeClient, "user", mcp.Write, false)
+	if err == nil || verbs(f.calls) != "get add" {
+		t.Errorf("err %v calls %v", err, verbs(f.calls))
 	}
 }
 
 func TestInstallPutsBackTheRegistrationWhenTheReplacementFails(t *testing.T) {
 	withFakeClaude(t)
 	before := ourRegistration("/old/bin/cflk", "read")
-	f := &fakeTool{registered: before, addFails: func(n int) bool { return n == 2 }}
-	_, err := installMCP(t.Context(), f.run, claudeClient, "user", mcp.Write, false)
-	if err == nil || !strings.Contains(err.Error(), "put back") || verbs(f.calls) != "add get remove add add" {
+	f := &fakeTool{registered: before, addFails: func(n int) bool { return n == 1 }}
+	ctx, cancel := context.WithCancel(t.Context())
+	run := func(c context.Context, name string, args ...string) ([]byte, error) {
+		out, err := f.run(c, name, args...)
+		if args[1] == "add" && err != nil {
+			cancel() // cancelled after the removal: the restore still goes through
+		}
+		if c.Err() != nil {
+			return nil, c.Err()
+		}
+		return out, err
+	}
+	_, err := installMCP(ctx, run, claudeClient, "user", mcp.Write, false)
+	if err == nil || !strings.Contains(err.Error(), "put back") || verbs(f.calls) != "get remove add add" {
 		t.Fatalf("err %v calls %v", err, verbs(f.calls))
 	}
 	if !strings.Contains(f.registered, "/old/bin/cflk") || !strings.Contains(f.registered, "--profile read") {
@@ -231,7 +274,7 @@ func TestInstallReportsWhatItRan(t *testing.T) {
 	withFakeClaude(t)
 	f := &fakeTool{}
 	res, err := installMCP(t.Context(), f.run, claudeClient, "user", mcp.Write, false)
-	if err != nil || len(res.Commands) != 1 || res.Commands[0][2] != "add" {
+	if err != nil || verbs(res.Commands) != "get add" {
 		t.Errorf("%v %v", err, res.Commands)
 	}
 }
@@ -269,6 +312,22 @@ func TestUninstallLeavesAServerThatIsNotOurs(t *testing.T) {
 	}
 }
 
+func TestUninstallKeepsEverythingWhenItCannotTellWhetherTheServerIsRegistered(t *testing.T) {
+	home := withFakeClaude(t)
+	f := &fakeTool{}
+	if _, err := installMCP(t.Context(), f.run, claudeClient, "user", mcp.Write, false); err != nil {
+		t.Fatal(err)
+	}
+	f.getFails = true
+	_, err := uninstallMCP(t.Context(), f.run, claudeClient, "user", false)
+	if err == nil || !strings.Contains(err.Error(), "cannot read config") {
+		t.Errorf("err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude", "skills", "codeflock", "SKILL.md")); err != nil {
+		t.Errorf("the skill went: %v", err)
+	}
+}
+
 func TestUninstallOfNothingRegisteredSucceeds(t *testing.T) {
 	withFakeClaude(t)
 	f := &fakeTool{}
@@ -302,8 +361,8 @@ func TestCodexUserScopeAddsWithoutScopeAndProjectScopeOnlyWritesTheSkill(t *test
 	if _, err := installMCP(t.Context(), r.run, codexClient, "user", mcp.Read, false); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(r.calls[0][1:3], " ") + " " + strings.Join(r.calls[0][3:], " "); !strings.HasPrefix(got, "mcp add cflk -- ") || !strings.HasSuffix(got, "mcp serve --profile read") {
-		t.Errorf("add = %v", r.calls[0])
+	if got := strings.Join(r.calls[1][1:3], " ") + " " + strings.Join(r.calls[1][3:], " "); !strings.HasPrefix(got, "mcp add cflk -- ") || !strings.HasSuffix(got, "mcp serve --profile read") {
+		t.Errorf("add = %v", r.calls[1])
 	}
 
 	repo := t.TempDir()

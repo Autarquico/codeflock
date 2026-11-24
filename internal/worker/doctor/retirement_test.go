@@ -14,7 +14,10 @@ import (
 )
 
 // fakeManager records the calls to the service manager.
-type fakeManager struct{ calls []string }
+type fakeManager struct {
+	home  string
+	calls []string
+}
 
 // exitError is a tool that ran and refused, with its exit code.
 type exitError int
@@ -29,7 +32,8 @@ func (f *fakeManager) run(_ context.Context, name string, args ...string) (strin
 	f.calls = append(f.calls, call)
 	switch {
 	case strings.HasPrefix(call, "systemctl --user show"):
-		return "KillMode=process\nActiveState=active\n", nil
+		unit := args[len(args)-1]
+		return "FragmentPath=" + filepath.Join(f.home, ".config", "systemd", "user", unit) + "\nKillMode=process\nActiveState=active\n", nil
 	case strings.HasPrefix(call, "launchctl print"):
 		return "", exitError(113)
 	}
@@ -59,7 +63,7 @@ func statuses(cs []doctor.Component) []string {
 func retirementOn(t *testing.T, goos string) (doctor.Retirement, *fakeManager, string) {
 	t.Helper()
 	home := t.TempDir()
-	m := &fakeManager{}
+	m := &fakeManager{home: home}
 	return doctor.Retirement{Home: home, GOOS: goos, UID: 501, Run: m.run}, m, home
 }
 
@@ -112,15 +116,15 @@ func TestRetirementOfALinuxMachine(t *testing.T) {
 }
 
 func TestRetirementOfAMacMachineBootsOutTheAgents(t *testing.T) {
-	r, m, home := retirementOn(t, "darwin")
-	agent := filepath.Join(home, "Library", "LaunchAgents", "com.codeflock.worker.plist")
-	write(t, agent, "<key>AbandonProcessGroup</key>")
+	r, m, agent := macAgent(t)
 
 	r.Fix(context.Background())
 
 	want := []string{
+		"launchctl print gui/501/com.codeflock.worker",
+		"plutil -extract AbandonProcessGroup raw -o - " + agent,
 		"launchctl bootout gui/501/com.codeflock.worker", "launchctl print gui/501/com.codeflock.worker",
-		"launchctl bootout user/501/com.codeflock.worker", "launchctl print user/501/com.codeflock.worker",
+		"launchctl print user/501/com.codeflock.worker",
 	}
 	if exists(agent) || !slices.Equal(m.calls, want) {
 		t.Errorf("agent exists=%v calls=%v", exists(agent), m.calls)
@@ -223,7 +227,7 @@ func TestRetirementKeepsAUnitItCouldNotStop(t *testing.T) {
 	write(t, unit, "")
 	r.Run = func(_ context.Context, _ string, args ...string) (string, error) {
 		if slices.Contains(args, "show") {
-			return "KillMode=process\nActiveState=active\n", nil
+			return "FragmentPath=" + unit + "\nKillMode=process\nActiveState=active\n", nil
 		}
 		return "", errors.New("no user bus")
 	}
@@ -242,7 +246,7 @@ func TestRetirementRefusesToStopAWorkerThatWouldTakeItsRunsWithIt(t *testing.T) 
 	run := r.Run
 	r.Run = func(ctx context.Context, name string, args ...string) (string, error) {
 		if slices.Contains(args, "show") {
-			return "KillMode=control-group\nActiveState=active\n", nil
+			return "FragmentPath=" + unit + "\nKillMode=control-group\nActiveState=active\n", nil
 		}
 		return run(ctx, name, args...)
 	}
@@ -251,6 +255,24 @@ func TestRetirementRefusesToStopAWorkerThatWouldTakeItsRunsWithIt(t *testing.T) 
 
 	if !exists(unit) || doctor.Failing(got) != 1 || !strings.Contains(got[0].Message, "KillMode") || slices.Contains(m.calls, "systemctl --user disable --now cf-worker.service") {
 		t.Errorf("unit exists=%v calls=%v: %+v", exists(unit), m.calls, got)
+	}
+}
+
+func TestRetirementRefusesAUnitSystemdLoadsFromAnotherFile(t *testing.T) {
+	for _, name := range []string{"cf-worker", "codeflock-controller"} {
+		r, m, home := retirementOn(t, "linux")
+		unit := filepath.Join(home, ".config", "systemd", "user", name+".service")
+		write(t, unit, "")
+		r.Run = func(_ context.Context, _ string, args ...string) (string, error) {
+			m.calls = append(m.calls, strings.Join(args, " "))
+			return "FragmentPath=/etc/systemd/user/" + name + ".service\nKillMode=process\nActiveState=active\n", nil
+		}
+
+		got := r.Fix(context.Background())
+
+		if !exists(unit) || doctor.Failing(got) != 1 || slices.Contains(m.calls, "--user disable --now "+name+".service") {
+			t.Errorf("%s: unit exists=%v calls=%v: %+v", name, exists(unit), m.calls, got)
+		}
 	}
 }
 
@@ -265,34 +287,48 @@ func TestRetirementIgnoresAUnitThatOnlyStartsLikeOurs(t *testing.T) {
 	}
 }
 
-func macAgent(t *testing.T) (doctor.Retirement, *fakeManager, string) {
+// launchd is a Mac with an agent loaded in one domain from plist, until it is
+// booted out. abandons is what plutil reads from the plist; plutilErr, that it cannot.
+type launchd struct {
+	*fakeManager
+	domain, plist, abandons string
+	plutilErr               error
+	loaded                  bool
+}
+
+func (l *launchd) run(ctx context.Context, name string, args ...string) (string, error) {
+	call := name + " " + strings.Join(args, " ")
+	switch {
+	case name == "plutil":
+		l.calls = append(l.calls, call)
+		return l.abandons + "\n", l.plutilErr
+	case strings.HasPrefix(call, "launchctl bootout "+l.domain):
+		l.loaded = false
+	case strings.HasPrefix(call, "launchctl print "+l.domain) && l.loaded:
+		l.calls = append(l.calls, call)
+		return "com.codeflock.worker = {\n\tpath = " + l.plist + "\n}\n", nil
+	}
+	return l.fakeManager.run(ctx, name, args...)
+}
+
+func macAgent(t *testing.T) (doctor.Retirement, *launchd, string) {
 	t.Helper()
 	r, m, home := retirementOn(t, "darwin")
 	agent := filepath.Join(home, "Library", "LaunchAgents", "com.codeflock.worker.plist")
-	write(t, agent, "<key>AbandonProcessGroup</key>")
-	return r, m, agent
+	write(t, agent, "")
+	l := &launchd{fakeManager: m, domain: "gui/501", plist: agent, abandons: "true", loaded: true}
+	r.Run = l.run
+	return r, l, agent
 }
 
 func TestRetirementBootsOutAnAgentLoadedInTheUserDomain(t *testing.T) {
-	r, m, agent := macAgent(t)
-	loaded := true
-	r.Run = func(ctx context.Context, name string, args ...string) (string, error) {
-		call := name + " " + strings.Join(args, " ")
-		switch call {
-		case "launchctl print user/501/com.codeflock.worker":
-			if loaded {
-				return "", nil
-			}
-		case "launchctl bootout user/501/com.codeflock.worker":
-			loaded = false
-		}
-		return m.run(ctx, name, args...)
-	}
+	r, l, agent := macAgent(t)
+	l.domain = "user/501"
 
 	got := r.Fix(context.Background())
 
-	if exists(agent) || doctor.Failing(got) != 0 || !slices.Contains(m.calls, "launchctl bootout user/501/com.codeflock.worker") {
-		t.Errorf("agent exists=%v calls=%v: %+v", exists(agent), m.calls, got)
+	if exists(agent) || doctor.Failing(got) != 0 || !slices.Contains(l.calls, "launchctl bootout user/501/com.codeflock.worker") {
+		t.Errorf("agent exists=%v calls=%v: %+v", exists(agent), l.calls, got)
 	}
 }
 
@@ -308,8 +344,13 @@ func TestRetirementKeepsAnAgentWhoseProbeFailsForAnyOtherReason(t *testing.T) {
 }
 
 func TestRetirementKeepsAnAgentThatIsStillLoaded(t *testing.T) {
-	r, _, agent := macAgent(t)
-	r.Run = func(context.Context, string, ...string) (string, error) { return "", nil } // print succeeds: loaded
+	r, l, agent := macAgent(t)
+	run := r.Run
+	r.Run = func(ctx context.Context, name string, args ...string) (string, error) {
+		out, err := run(ctx, name, args...)
+		l.loaded = true // bootout does nothing
+		return out, err
+	}
 
 	got := r.Fix(context.Background())
 
@@ -319,25 +360,42 @@ func TestRetirementKeepsAnAgentThatIsStillLoaded(t *testing.T) {
 }
 
 func TestRetirementRefusesAWorkerAgentThatDoesNotAbandonItsProcessGroup(t *testing.T) {
-	r, m, agent := macAgent(t)
-	write(t, agent, "")
+	for name, set := range map[string]func(*launchd){
+		"false":      func(l *launchd) { l.abandons = "false" },
+		"unreadable": func(l *launchd) { l.plutilErr = errors.New("no such key"); l.abandons = "" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, l, agent := macAgent(t)
+			set(l)
 
-	got := r.Fix(context.Background())
+			got := r.Fix(context.Background())
 
-	if !exists(agent) || doctor.Failing(got) != 1 || len(m.calls) != 0 {
-		t.Errorf("agent exists=%v calls=%v: %+v", exists(agent), m.calls, got)
+			if !exists(agent) || doctor.Failing(got) != 1 || !l.loaded || slices.ContainsFunc(l.calls, func(c string) bool { return strings.Contains(c, "bootout") }) {
+				t.Errorf("agent exists=%v calls=%v: %+v", exists(agent), l.calls, got)
+			}
+		})
 	}
 }
 
-func TestRetirementCountsAMacJobThatWasNotLoadedAsStopped(t *testing.T) {
-	r, _, agent := macAgent(t)
-	r.Run = func(context.Context, string, ...string) (string, error) {
-		return "", exitError(113) // bootout and print both say there is no such service
+func TestRetirementRefusesAnAgentLoadedFromAnotherPlist(t *testing.T) {
+	r, l, agent := macAgent(t)
+	l.plist = "/Users/other/Library/LaunchAgents/com.codeflock.worker.plist"
+
+	got := r.Fix(context.Background())
+
+	if !exists(agent) || doctor.Failing(got) != 1 || !l.loaded || slices.ContainsFunc(l.calls, func(c string) bool { return strings.Contains(c, "bootout") }) {
+		t.Errorf("agent exists=%v calls=%v: %+v", exists(agent), l.calls, got)
 	}
+}
+
+func TestRetirementRemovesTheFileOfAnAgentThatWasNotLoaded(t *testing.T) {
+	r, l, agent := macAgent(t)
+	l.loaded = false
+	l.abandons = "false" // never read: nothing is stopped
 
 	got := r.Fix(context.Background())
 
 	if exists(agent) || doctor.Failing(got) != 0 {
-		t.Errorf("agent exists=%v: %+v", exists(agent), got)
+		t.Errorf("agent exists=%v calls=%v: %+v", exists(agent), l.calls, got)
 	}
 }

@@ -82,27 +82,16 @@ func (r Retirement) Fix(ctx context.Context) []Component {
 	return r.report(found, results)
 }
 
-// stop stops the unit, and says why it did not. A Worker is only stopped when
-// that leaves its Runs alive: they are the user's work.
+// stop stops the unit, and says why it did not. It only stops the unit that
+// our file defines, and a Worker only when that leaves its Runs alive: they
+// are the user's work.
 func (r Retirement) stop(ctx context.Context, l leftover) error {
 	if r.GOOS == "darwin" {
 		return r.bootout(ctx, l)
 	}
-	if config.KindOf(l.unit) == "worker" {
-		if err := r.checkKillMode(ctx, l.unit); err != nil {
-			return err
-		}
-	}
-	_, err := r.Run(ctx, "systemctl", "--user", "disable", "--now", l.unit+".service")
-	return err
-}
-
-// checkKillMode refuses a running Worker unit whose KillMode is not process
-// (a drop-in can set it): stopping it would kill the Runs it started.
-func (r Retirement) checkKillMode(ctx context.Context, unit string) error {
-	out, err := r.Run(ctx, "systemctl", "--user", "show", "-p", "KillMode", "-p", "ActiveState", unit+".service")
+	out, err := r.Run(ctx, "systemctl", "--user", "show", "-p", "FragmentPath", "-p", "KillMode", "-p", "ActiveState", l.unit+".service")
 	if err != nil {
-		return fmt.Errorf("no se pudo leer %s.service: %w", unit, err)
+		return fmt.Errorf("no se pudo leer %s.service: %w", l.unit, err)
 	}
 	state := map[string]string{}
 	for line := range strings.Lines(out) {
@@ -110,31 +99,48 @@ func (r Retirement) checkKillMode(ctx context.Context, unit string) error {
 			state[key] = value
 		}
 	}
-	if slices.Contains([]string{"inactive", "failed", ""}, state["ActiveState"]) || state["KillMode"] == "process" {
-		return nil
+	switch fragment := state["FragmentPath"]; {
+	case fragment == "":
+		return nil // systemd has no such unit: only the file is left
+	case filepath.Clean(fragment) != l.path:
+		return fmt.Errorf("systemd carga %s.service de %s, no de %s: no es el servicio de 0.4", l.unit, fragment, l.path)
 	}
-	return fmt.Errorf("el KillMode de %s.service es %q, no process: pararlo mataría los Runs que lanzó; "+
-		"quita el override o sigue docs/runbooks/retire-controller.md", unit, state["KillMode"])
+	if config.KindOf(l.unit) == "worker" && !slices.Contains([]string{"inactive", "failed", ""}, state["ActiveState"]) && state["KillMode"] != "process" {
+		return fmt.Errorf("el KillMode de %s.service es %q, no process: pararlo mataría los Runs que lanzó; "+
+			"quita el override o sigue docs/runbooks/retire-controller.md", l.unit, state["KillMode"])
+	}
+	_, err = r.Run(ctx, "systemctl", "--user", "disable", "--now", l.unit+".service")
+	return err
 }
 
 // bootout boots the agent out of the two domains it may be loaded in, the
-// graphical session and the background one of a Mac with nobody logged in, and
-// confirms it is gone from both: launchd refuses to boot out a job that is not
-// loaded, which is the job already stopped, but only an answer of "not found"
-// proves it. A Worker that does not abandon its process group would take its
-// Runs with it.
+// graphical session and the background one of a Mac with nobody logged in. In
+// each it first reads the loaded job: only one that was loaded from our plist
+// is ours to stop, and a Worker only if its plist says that it abandons its
+// process group (stopping it would take its Runs with it). Whatever cannot be
+// proved is refused and nothing is stopped there. Afterwards the job must be
+// gone: launchd refuses to boot out one that is not loaded, so only an answer
+// of "not found" proves it.
 func (r Retirement) bootout(ctx context.Context, l leftover) error {
-	if config.KindOf(l.unit) == "worker" {
-		plist, err := os.ReadFile(l.path) //nolint:gosec // the path comes from the fixed names of OldUnits
-		if err == nil && !bytes.Contains(plist, []byte("AbandonProcessGroup")) {
-			return fmt.Errorf("%s no abandona su grupo de procesos: pararlo mataría los Runs que lanzó; "+
-				"sigue docs/runbooks/retire-controller.md", l.unit)
-		}
-	}
 	for _, domain := range []string{fmt.Sprintf("gui/%d", r.UID), fmt.Sprintf("user/%d", r.UID)} {
 		target := domain + "/" + l.unit
+		loaded, err := r.Run(ctx, "launchctl", "print", target)
+		if err != nil {
+			if notLoaded(err) {
+				continue
+			}
+			return fmt.Errorf("no se pudo comprobar %s: %w", target, err)
+		}
+		if path := loadedPath(loaded); path != l.path {
+			return fmt.Errorf("%s está cargado desde %q, no desde %s: no es el agente de 0.4", target, path, l.path)
+		}
+		if config.KindOf(l.unit) == "worker" {
+			if err := r.checkAbandons(ctx, l); err != nil {
+				return err
+			}
+		}
 		_, bootErr := r.Run(ctx, "launchctl", "bootout", target)
-		_, err := r.Run(ctx, "launchctl", "print", target)
+		_, err = r.Run(ctx, "launchctl", "print", target)
 		switch {
 		case err == nil:
 			still := fmt.Errorf("sigue cargado en %s tras launchctl bootout", domain)
@@ -145,6 +151,27 @@ func (r Retirement) bootout(ctx context.Context, l leftover) error {
 		case !notLoaded(err):
 			return fmt.Errorf("no se pudo comprobar %s: %w", target, err)
 		}
+	}
+	return nil
+}
+
+// loadedPath is the plist a job was loaded from, in the output of `launchctl print`.
+func loadedPath(out string) string {
+	for line := range strings.Lines(out) {
+		if key, value, ok := strings.Cut(strings.TrimSpace(line), " = "); ok && key == "path" {
+			return value
+		}
+	}
+	return ""
+}
+
+// checkAbandons refuses a Worker agent whose plist does not say, as a true
+// value, that launchd leaves its process group alone when it stops it.
+func (r Retirement) checkAbandons(ctx context.Context, l leftover) error {
+	out, err := r.Run(ctx, "plutil", "-extract", "AbandonProcessGroup", "raw", "-o", "-", l.path)
+	if err != nil || strings.TrimSpace(out) != "true" {
+		return fmt.Errorf("%s no abandona su grupo de procesos (o no se pudo leer): pararlo mataría los Runs que lanzó; "+
+			"sigue docs/runbooks/retire-controller.md", l.unit)
 	}
 	return nil
 }

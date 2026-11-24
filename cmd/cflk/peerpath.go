@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -85,8 +86,10 @@ func loginShellPath(ctx context.Context, shell string) string {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = pipeGrace
+	// A descendant that holds the pipe after the shell is done ends in
+	// ErrWaitDelay: what was printed is whole, and is judged by its markers.
 	out, err := cmd.Output()
-	if err != nil {
+	if err != nil && !errors.Is(err, exec.ErrWaitDelay) {
 		return ""
 	}
 	_, rest, ok := strings.Cut(string(out), "\n"+pathBegin)
