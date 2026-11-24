@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
 
 	"github.com/charmbracelet/x/term"
+	"github.com/spf13/cobra"
 
 	"github.com/Autarquico/codeflock/internal/cli"
 	"github.com/Autarquico/codeflock/internal/tui"
@@ -32,4 +34,17 @@ func openTUI(args []string, jobs cli.Jobs) (code int, opened bool) {
 		return 1, true
 	}
 	return 0, true
+}
+
+// newTUICommand lists `cflk tui` in the help; the command itself is opened by
+// openTUI before cobra runs.
+func newTUICommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "tui",
+		Short: "Open the terminal UI over the Jobs of every peer (also `cflk` alone in a terminal)",
+		Args:  cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			return errors.New("cflk tui needs a terminal")
+		},
+	}
 }

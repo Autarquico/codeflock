@@ -36,7 +36,7 @@ func run() int {
 	return cli.ExecuteWith(cli.Options{
 		Doctor:     checkThisMachine,
 		Jobs:       jobs,
-		Commands:   []*cobra.Command{newMCPCommand(jobs)},
+		Commands:   []*cobra.Command{newMCPCommand(jobs), newTUICommand()},
 		Wrapper:    runWrapper,
 		Notify:     runner.HandleNotify,
 		PeerServe:  local.servePeer,
