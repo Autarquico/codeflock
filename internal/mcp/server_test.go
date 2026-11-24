@@ -22,6 +22,9 @@ type fakeJobs struct {
 	runs     []cli.RunRequest
 	attached []bool
 	attach   error
+	moves    []cli.MoveRequest
+	pulls    []cli.PullRequest
+	cleaned  []string
 }
 
 func (f *fakeJobs) job(id string) cli.JobView {
@@ -70,6 +73,23 @@ func (f *fakeJobs) Screen(context.Context, string) (string, error) { return f.sc
 func (f *fakeJobs) Send(_ context.Context, id, text string) (cli.JobView, error) {
 	f.sent = append(f.sent, text)
 	f.state = "running"
+	return f.job(id), nil
+}
+
+func (f *fakeJobs) Move(_ context.Context, req cli.MoveRequest) (cli.JobView, error) {
+	f.moves = append(f.moves, req)
+	f.state = "moved"
+	return f.job(req.ID), nil
+}
+
+func (f *fakeJobs) Pull(_ context.Context, req cli.PullRequest) (cli.JobView, error) {
+	f.pulls = append(f.pulls, req)
+	f.state = "done"
+	return f.job(req.ID), nil
+}
+
+func (f *fakeJobs) Clean(_ context.Context, id string) (cli.JobView, error) {
+	f.cleaned = append(f.cleaned, id)
 	return f.job(id), nil
 }
 
@@ -201,7 +221,7 @@ func TestReadProfileExposesOnlyReadTools(t *testing.T) {
 	if got := toolNames(t, s); !slices.Equal(got, want) {
 		t.Errorf("tools = %v, want %v", got, want)
 	}
-	for _, tool := range []string{"jobs_run", "jobs_send", "jobs_stop", "jobs_resume"} {
+	for _, tool := range []string{"jobs_run", "jobs_send", "jobs_stop", "jobs_resume", "jobs_move", "jobs_pull", "jobs_clean"} {
 		if _, err := s.CallTool(t.Context(), &sdk.CallToolParams{Name: tool, Arguments: map[string]any{"job": "job-0000000001"}}); err == nil {
 			t.Errorf("%s answered in the read profile", tool)
 		}
@@ -209,7 +229,7 @@ func TestReadProfileExposesOnlyReadTools(t *testing.T) {
 }
 
 func TestWriteProfileExposesEveryTool(t *testing.T) {
-	want := []string{"jobs_attach", "jobs_get", "jobs_list", "jobs_resume", "jobs_run", "jobs_screen", "jobs_send", "jobs_stop", "peers_list"}
+	want := []string{"jobs_attach", "jobs_clean", "jobs_get", "jobs_list", "jobs_move", "jobs_pull", "jobs_resume", "jobs_run", "jobs_screen", "jobs_send", "jobs_stop", "peers_list"}
 	if got := toolNames(t, connect(t, mcp.Write, &fakeJobs{})); !slices.Equal(got, want) {
 		t.Errorf("tools = %v, want %v", got, want)
 	}
@@ -245,5 +265,60 @@ func TestErrorsKeepTheirCode(t *testing.T) {
 		if code := structured(t, res)["code"]; code == "" || code == nil {
 			t.Errorf("%s: no code in %v", tool, res.StructuredContent)
 		}
+	}
+}
+
+// Scenario: Todo desde Claude Code (mover, traer y limpiar).
+func TestMovePullAndCleanMapToTheirRequests(t *testing.T) {
+	f := &fakeJobs{}
+	s := connect(t, mcp.Write, f)
+	id := "job-0000000001"
+
+	if got := structured(t, call(t, s, "jobs_move", map[string]any{"job": id, "to": "mac-mini"})); got["state"] != "moved" {
+		t.Errorf("jobs_move = %v", got)
+	}
+	call(t, s, "jobs_move", map[string]any{"job": id, "retry": true})
+	call(t, s, "jobs_move", map[string]any{"job": id, "abort": true})
+	wantMoves := []cli.MoveRequest{{ID: id, To: "mac-mini"}, {ID: id, Retry: true}, {ID: id, Abort: true}}
+	if !slices.Equal(f.moves, wantMoves) {
+		t.Errorf("moves = %+v", f.moves)
+	}
+
+	call(t, s, "jobs_pull", map[string]any{"job": id})
+	call(t, s, "jobs_pull", map[string]any{"job": id, "finish": true, "push": true})
+	call(t, s, "jobs_pull", map[string]any{"job": id, "finish": true, "abort": true})
+	wantPulls := []cli.PullRequest{{ID: id}, {ID: id, Finish: true, Push: true}, {ID: id, Finish: true, Abort: true}}
+	if !slices.Equal(f.pulls, wantPulls) {
+		t.Errorf("pulls = %+v", f.pulls)
+	}
+
+	call(t, s, "jobs_clean", map[string]any{"job": id})
+	if !slices.Equal(f.cleaned, []string{id}) {
+		t.Errorf("cleaned = %v", f.cleaned)
+	}
+}
+
+func TestMoveAndPullRejectWhatTheCLIRejects(t *testing.T) {
+	f := &fakeJobs{}
+	s := connect(t, mcp.Write, f)
+	id := "job-0000000001"
+	for name, c := range map[string]struct {
+		tool string
+		args map[string]any
+	}{
+		"move without destination":  {"jobs_move", map[string]any{"job": id}},
+		"move retry and abort":      {"jobs_move", map[string]any{"job": id, "retry": true, "abort": true}},
+		"move retry with to":        {"jobs_move", map[string]any{"job": id, "retry": true, "to": "mac-mini"}},
+		"pull push without finish":  {"jobs_pull", map[string]any{"job": id, "push": true}},
+		"pull abort without finish": {"jobs_pull", map[string]any{"job": id, "abort": true}},
+		"pull push and abort":       {"jobs_pull", map[string]any{"job": id, "finish": true, "push": true, "abort": true}},
+	} {
+		res := call(t, s, c.tool, c.args)
+		if !res.IsError || structured(t, res)["code"] != string(domain.CodeInvalidRequest) {
+			t.Errorf("%s: %v", name, res.StructuredContent)
+		}
+	}
+	if len(f.moves)+len(f.pulls) != 0 {
+		t.Errorf("an invalid request reached the peer: %+v %+v", f.moves, f.pulls)
 	}
 }
