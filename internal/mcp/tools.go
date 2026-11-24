@@ -8,6 +8,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/Autarquico/codeflock/internal/cli"
+	"github.com/Autarquico/codeflock/internal/domain"
 )
 
 type tools struct {
@@ -34,6 +35,18 @@ type (
 	jobsSendInput struct {
 		Job  string `json:"job" jsonschema:"the Job id"`
 		Text string `json:"text" jsonschema:"typed into the agent of the Job, followed by Enter"`
+	}
+	jobsMoveInput struct {
+		Job   string `json:"job" jsonschema:"the Job id"`
+		To    string `json:"to,omitempty" jsonschema:"the peer the Job moves to; required unless retry or abort"`
+		Retry bool   `json:"retry,omitempty" jsonschema:"repeat a move left unconfirmed (state moving) with the same transfer; leave to out"`
+		Abort bool   `json:"abort,omitempty" jsonschema:"give up a move left unconfirmed: the Job goes back to stopped; leave to out"`
+	}
+	jobsPullInput struct {
+		Job    string `json:"job" jsonschema:"the Job id"`
+		Finish bool   `json:"finish,omitempty" jsonschema:"stop the Job where it is, bring its branch cflk/<id> into the repo of this session and mark it done; without it the Job moves to this peer"`
+		Push   bool   `json:"push,omitempty" jsonschema:"with finish, also push the branch to origin"`
+		Abort  bool   `json:"abort,omitempty" jsonschema:"with finish, give up a finish left unconfirmed (state finishing): the Job goes back to stopped"`
 	}
 	jobsAttachInput struct {
 		Job      string `json:"job" jsonschema:"the Job id"`
@@ -98,4 +111,28 @@ func (t tools) write(s *sdk.Server) {
 		func(ctx context.Context, in jobInput) (any, error) { return t.jobs.Stop(ctx, in.Job) })
 	add(t, s, "jobs_resume", "Start the agent of a stopped or lost Job again, in the same session and on the same peer. Returns the Job.", job,
 		func(ctx context.Context, in jobInput) (any, error) { return t.jobs.Resume(ctx, in.Job) })
+	add(t, s, "jobs_move", "Move a Job to another peer with its conversation and resume it there. With retry or abort (and no to) it resolves a move left unconfirmed (state moving). Returns the Job.", job,
+		func(ctx context.Context, in jobsMoveInput) (any, error) {
+			switch {
+			case in.Retry && in.Abort:
+				return nil, domain.NewError(domain.CodeInvalidRequest, "retry and abort are alternatives", nil)
+			case (in.Retry || in.Abort) && in.To != "":
+				return nil, domain.NewError(domain.CodeInvalidRequest, "retry and abort use the peer the move named: leave to out", nil)
+			case !in.Retry && !in.Abort && in.To == "":
+				return nil, domain.NewError(domain.CodeInvalidRequest, "say where the Job goes: to", nil)
+			}
+			return t.jobs.Move(ctx, cli.MoveRequest{ID: in.Job, To: in.To, Retry: in.Retry, Abort: in.Abort})
+		})
+	add(t, s, "jobs_pull", "Bring a Job to this peer: move it here, or with finish stop it and take its branch cflk/<id> into the repo of this session (the checkout does not change; the Job's branch field names the branch). Returns the Job.", job,
+		func(ctx context.Context, in jobsPullInput) (any, error) {
+			switch {
+			case (in.Push || in.Abort) && !in.Finish:
+				return nil, domain.NewError(domain.CodeInvalidRequest, "push and abort go with finish", nil)
+			case in.Push && in.Abort:
+				return nil, domain.NewError(domain.CodeInvalidRequest, "push and abort are alternatives", nil)
+			}
+			return t.jobs.Pull(ctx, cli.PullRequest{ID: in.Job, Finish: in.Finish, Push: in.Push, Abort: in.Abort})
+		})
+	add(t, s, "jobs_clean", "Delete what is left on this peer of a moved or done Job (worktrees, trust, mirror refs). Returns the Job.", job,
+		func(ctx context.Context, in jobInput) (any, error) { return t.jobs.Clean(ctx, in.Job) })
 }
