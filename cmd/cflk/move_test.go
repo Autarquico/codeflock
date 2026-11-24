@@ -250,7 +250,9 @@ func (n *moveNet) takeCut(peer string, op wire.Op) (cut, bool) {
 
 // fleet is the CLI as typed on the named peer.
 func (n *moveNet) fleet(name string) *fleet {
-	return &fleet{local: n.peers[name].localJobs, transport: n.dialer, discover: n.discover, timeout: 2 * time.Second}
+	f := &fleet{local: n.peers[name].localJobs, transport: n.dialer, discover: n.discover, timeout: 2 * time.Second}
+	f.local.net = &network{transport: f.transport, discover: f.discover}
+	return f
 }
 
 // launches is the agents started so far, as "peer session".
@@ -650,23 +652,23 @@ func TestAForcedResumeOfAMovingJobRunsItAndTheOldTransferNeverStarts(t *testing.
 	}
 	mustMove(t, n.fleet("laptop"), cli.MoveRequest{ID: v.ID, To: "mini"})
 	_, err := n.peers["mini"].activate(t.Context(), server.TransferInput{Job: v.ID, Gen: 2, Transfer: old})
-	if err == nil {
-		t.Fatal("the old transfer must not activate")
+	requireCode(t, err, wire.CodeTransferAborted)
+	if n.launchesOn("mini") != 1 {
+		t.Fatalf("mini launched %d times", n.launchesOn("mini"))
 	}
 }
 
 func TestCleanRemovesTheWorkOfAMovedJobAndKeepsThePointer(t *testing.T) {
 	n := newMoveNet(t, []fakeharness.Step{neverEnds}, "laptop", "mini")
 	v := n.started(t, "laptop")
-	if _, err := n.fleet("laptop").Clean(t.Context(), v.ID); err == nil {
+	if _, err := n.fleet("laptop").Clean(t.Context(), v.ID, false); err == nil {
 		t.Fatal("a running Job cannot be cleaned")
 	}
 	mustMove(t, n.fleet("laptop"), cli.MoveRequest{ID: v.ID, To: "mini"})
 	wt := n.peers["laptop"].store().WorktreeDir(v.ID, 1)
 	repo := n.peers["laptop"].mirrorOf(t)
-	_ = repo
 
-	cleaned, err := n.fleet("laptop").Clean(t.Context(), v.ID)
+	cleaned, err := n.fleet("laptop").Clean(t.Context(), v.ID, false)
 	if err != nil || cleaned.State != "moved" || cleaned.MovedTo != "mini" {
 		t.Fatalf("clean = %+v, %v", cleaned, err)
 	}
@@ -676,10 +678,18 @@ func TestCleanRemovesTheWorkOfAMovedJobAndKeepsThePointer(t *testing.T) {
 	if out := runGit(t, ".", "for-each-ref", "refs/cflk/"+v.ID+"/"); out != "" {
 		t.Fatalf("refs left in the user's repo: %s", out)
 	}
-	if _, err := n.fleet("laptop").Clean(t.Context(), v.ID); err != nil {
+	if _, err := os.Stat(repo); err == nil {
+		if out := runGit(t, repo, "for-each-ref", "refs/cflk/"+v.ID+"/"); out != "" {
+			t.Fatalf("refs left in the mirror: %s", out)
+		}
+	}
+	if runGit(t, ".", "rev-parse", "--verify", "cflk/"+v.ID) == "" {
+		t.Fatal("the user's branch is gone")
+	}
+	if _, err := n.fleet("laptop").Clean(t.Context(), v.ID, false); err != nil {
 		t.Fatalf("clean twice: %v", err)
 	}
-	if _, err := n.fleet("mini").Clean(t.Context(), v.ID); err == nil {
+	if _, err := n.fleet("mini").Clean(t.Context(), v.ID, false); err == nil {
 		t.Fatal("the Job that runs cannot be cleaned")
 	}
 }
@@ -694,7 +704,7 @@ func TestCleanForgetsADoneJobWhole(t *testing.T) {
 	if err := p.store.WithLock(v.ID, func(j *job.Job) error { j.State = job.Done; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := n.fleet("laptop").Clean(t.Context(), v.ID); err != nil {
+	if _, err := n.fleet("laptop").Clean(t.Context(), v.ID, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(p.store.Dir(v.ID)); !os.IsNotExist(err) {

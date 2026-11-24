@@ -391,9 +391,6 @@ func (f *fleet) ResumeForce(ctx context.Context, id string) (cli.JobView, error)
 // The peer that owns the Job does the work: it stops the Job, seals it and sends
 // it to the destination.
 func (f *fleet) Move(ctx context.Context, req cli.MoveRequest) (cli.JobView, error) {
-	if f.local.net == nil {
-		f.local.net = &network{transport: f.transport, discover: f.discover}
-	}
 	o, err := f.locate(ctx, req.ID)
 	if err != nil {
 		return cli.JobView{}, err
@@ -423,8 +420,8 @@ func (f *fleet) Move(ctx context.Context, req cli.MoveRequest) (cli.JobView, err
 }
 
 // Clean cleans this peer only: what other peers keep is theirs to clean.
-func (f *fleet) Clean(ctx context.Context, id string) (cli.JobView, error) {
-	return f.local.Clean(ctx, id)
+func (f *fleet) Clean(ctx context.Context, id string, force bool) (cli.JobView, error) {
+	return f.local.Clean(ctx, id, force)
 }
 
 func (f *fleet) Send(ctx context.Context, id, text string) (cli.JobView, error) {

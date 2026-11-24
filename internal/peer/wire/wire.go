@@ -149,8 +149,8 @@ var shapes = map[Op]shape{
 	OpMirror: {repo: true},
 
 	OpMove:      {job: true, gen: true, genRequired: true, to: true},
-	OpMoveRetry: {job: true, gen: true},
-	OpMoveAbort: {job: true, gen: true},
+	OpMoveRetry: {job: true, gen: true, genRequired: true},
+	OpMoveAbort: {job: true, gen: true, genRequired: true},
 	OpPrepare: {
 		job: true, gen: true, genRequired: true, run: true, repo: true, body: true, archive: true,
 		transfer: true, history: true,

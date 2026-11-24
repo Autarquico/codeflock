@@ -108,6 +108,9 @@ func (l *localJobs) moveStart(ctx context.Context, p *peer, in server.MoveInput)
 	if err := movable(j, in.Gen); err != nil {
 		return cli.JobView{}, err
 	}
+	if err := cleanSubmodules(ctx, p.store.WorktreeDir(j.ID, j.Gen)); err != nil {
+		return cli.JobView{}, err
+	}
 	if err := p.runner.Stop(ctx, in.Job, runner.Expect(in.Gen)); err != nil {
 		return cli.JobView{}, mapErr(err)
 	}
@@ -128,6 +131,9 @@ func movable(j job.Job, gen int) error {
 		return movingError(j)
 	case job.Done, job.Finishing, job.Moved:
 		return domain.NewError(domain.CodeInvalidTransition, fmt.Sprintf("job %s is %s: it cannot be moved", j.ID, j.State), nil)
+	}
+	if j.SessionID == "" {
+		return domain.NewError(domain.CodeInvalidTransition, fmt.Sprintf("job %s has no conversation to move: its agent never opened a session", j.ID), nil)
 	}
 	return nil
 }
@@ -153,9 +159,6 @@ func (p *peer) reserve(ctx context.Context, in server.MoveInput, to string) (job
 		}
 		if j.State != job.Stopped {
 			return domain.NewError(domain.CodeInvalidTransition, fmt.Sprintf("job %s is %s, not stopped: it cannot be moved until `cflk stop` ends its agent", j.ID, j.State), nil)
-		}
-		if j.SessionID == "" {
-			return domain.NewError(domain.CodeInvalidTransition, fmt.Sprintf("job %s has no conversation to move: its agent never opened a session", j.ID), nil)
 		}
 		wt := p.store.WorktreeDir(j.ID, j.Gen)
 		if err := cleanSubmodules(ctx, wt); err != nil {

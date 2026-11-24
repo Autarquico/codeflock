@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/Autarquico/codeflock/internal/cli"
@@ -55,6 +56,9 @@ func (l *localJobs) finish(ctx context.Context, in server.FinishInput) (wire.Fin
 	case job.Moving:
 		return wire.Finish{}, movingError(j)
 	default:
+		if err := cleanSubmodules(ctx, p.store.WorktreeDir(j.ID, j.Gen)); err != nil {
+			return wire.Finish{}, err
+		}
 		if err := p.runner.Stop(ctx, in.Job, runner.Expect(in.Gen)); err != nil {
 			return wire.Finish{}, mapErr(err)
 		}
@@ -241,6 +245,9 @@ func (f *fleet) finish(ctx context.Context, o owner, self string, push bool) (cl
 		info, from = *resp.Finish, p.mirrorDir(o.view.Repo)
 	}
 	branch := "cflk/" + o.view.ID
+	if err := p.releaseBranch(ctx, src.dir, o.view.ID, branch); err != nil {
+		return cli.JobView{}, finishStuck(o.view.ID, err)
+	}
 	if err := fetchBranch(ctx, src.dir, from, o.view.ID, o.view.Gen+1, info.Commit, branch); err != nil {
 		return cli.JobView{}, finishStuck(o.view.ID, err)
 	}
@@ -294,13 +301,56 @@ func fetchBranch(ctx context.Context, dir, from, id string, gen int, commit, bra
 	if _, err := git(ctx, dir, "fetch", "--quiet", "--no-tags", "--", from, "+"+ref+":"+ref); err != nil {
 		return fmt.Errorf("fetching the work: %w", err)
 	}
-	defer func() { _, _ = git(context.WithoutCancel(ctx), dir, "update-ref", "-d", ref) }()
+	// The ref stays when Place fails: for a Job of this repository it is the one
+	// that keeps the sealed commit alive, and a retry needs it.
 	switch _, err := checkout.Place(ctx, dir, ref, commit, branch); {
 	case errors.Is(err, checkout.ErrBranchExists), errors.Is(err, checkout.ErrBranchDiverged):
 		return domain.NewError(domain.CodeInvalidTransition, fmt.Sprintf("the branch %s is here with other work (%v)", branch, err), nil)
-	default:
+	case err != nil:
 		return err
 	}
+	_, err = git(context.WithoutCancel(ctx), dir, "update-ref", "-d", ref)
+	return err
+}
+
+// releaseBranch detaches the worktrees of this Job, here, that have its branch
+// checked out (`cflk run` leaves the first one so): the Job is not theirs any
+// more, and the branch cannot advance under a checkout. The files stay. Nothing
+// that is not a worktree of this Job in the repository of dir is touched.
+func (p *peer) releaseBranch(ctx context.Context, dir, id, branch string) error {
+	own, err := filepath.Glob(filepath.Join(p.store.Dir(id), "g*"))
+	if err != nil || len(own) == 0 {
+		return err
+	}
+	here, err := commonDir(ctx, dir)
+	if err != nil {
+		return err
+	}
+	return p.store.WithLock(id, func(j *job.Job) error {
+		if j.State != job.Moved && j.State != job.Finishing && j.State != job.Done {
+			return nil
+		}
+		for _, wt := range own {
+			if common, err := commonDir(ctx, wt); err != nil || common != here {
+				continue
+			}
+			if head, err := git(ctx, wt, "symbolic-ref", "--quiet", "HEAD"); err != nil || head != "refs/heads/"+branch {
+				continue
+			}
+			if _, err := git(ctx, wt, "switch", "--detach"); err != nil {
+				return fmt.Errorf("detaching %s from %s: %w", wt, branch, err)
+			}
+		}
+		return nil
+	})
+}
+
+func commonDir(ctx context.Context, dir string) (string, error) {
+	out, err := git(ctx, dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(out)
 }
 
 // pushBranch publishes the branch to origin as it is: no force, no hooks, no tags.

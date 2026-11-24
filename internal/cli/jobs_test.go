@@ -60,7 +60,7 @@ func (f *fakeJobs) Pull(_ context.Context, r PullRequest) (JobView, error) {
 	return JobView{ID: r.ID, Branch: "cflk/" + r.ID, State: "done"}, f.err
 }
 
-func (f *fakeJobs) Clean(_ context.Context, id string) (JobView, error) {
+func (f *fakeJobs) Clean(_ context.Context, id string, _ bool) (JobView, error) {
 	f.called = append(f.called, "clean "+id)
 	return JobView{ID: id, State: "moved"}, f.err
 }

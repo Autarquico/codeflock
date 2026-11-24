@@ -21,7 +21,7 @@ import (
 // the repositories of the worktrees and in the mirror. A Job that moved keeps its
 // record, the pointer to where it went; a Job that is done is forgotten whole.
 // Branches in the user's repository stay: they are the user's.
-func (l *localJobs) Clean(ctx context.Context, id string) (cli.JobView, error) {
+func (l *localJobs) Clean(ctx context.Context, id string, force bool) (cli.JobView, error) {
 	p, err := l.open()
 	if err != nil {
 		return cli.JobView{}, err
@@ -35,6 +35,11 @@ func (l *localJobs) Clean(ctx context.Context, id string) (cli.JobView, error) {
 		if j.State != job.Moved && j.State != job.Done {
 			return domain.NewError(domain.CodeInvalidTransition, fmt.Sprintf("job %s is %s: only a Job that moved or is done can be cleaned", j.ID, j.State), nil)
 		}
+		if j.State == job.Done && j.Finish == nil && !force {
+			if err := p.unsealedWork(ctx, *j); err != nil {
+				return err
+			}
+		}
 		if err := p.removeWork(ctx, *j); err != nil {
 			return err
 		}
@@ -44,6 +49,24 @@ func (l *localJobs) Clean(ctx context.Context, id string) (cli.JobView, error) {
 		return nil
 	})
 	return view(out, ""), mapErr(err)
+}
+
+// unsealedWork refuses a Job that ended by itself and whose worktrees hold
+// changes that nothing has sealed or retrieved: `pull --finish` does not take
+// such a Job, so clean would be the only thing that touches them.
+func (p *peer) unsealedWork(ctx context.Context, j job.Job) error {
+	worktrees, err := filepath.Glob(filepath.Join(p.store.Dir(j.ID), "g*"))
+	if err != nil {
+		return err
+	}
+	for _, wt := range worktrees {
+		out, err := git(ctx, wt, "status", "--porcelain")
+		if err != nil || out != "" {
+			return domain.NewError(domain.CodeInvalidTransition, fmt.Sprintf(
+				"job %s ended by itself and %s has changes that nothing retrieved: copy them out, or `cflk clean --force %s` to delete them", j.ID, wt, j.ID), nil)
+		}
+	}
+	return nil
 }
 
 // removeWork removes the worktrees of the Job and what hangs from them.

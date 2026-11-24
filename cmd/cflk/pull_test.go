@@ -277,3 +277,107 @@ func TestAFinishOfAJobHereTakesItsBranchFromItsWorktree(t *testing.T) {
 		t.Fatalf("view = %+v", done)
 	}
 }
+
+func TestAJobBroughtBackToWhereItStartedFinishesDetachingItsOwnOldWorktree(t *testing.T) {
+	n := newMoveNet(t, []fakeharness.Step{neverEnds}, "laptop", "mini")
+	v := n.started(t, "laptop")
+	mustMove(t, n.fleet("laptop"), cli.MoveRequest{ID: v.ID, To: "mini"})
+	n.writeInto(t, "mini", cli.JobView{ID: v.ID, Gen: 2}, "notes.txt", "from the mini")
+	old := n.peers["laptop"].store().WorktreeDir(v.ID, 1)
+	branch := "cflk/" + v.ID
+	if runGit(t, old, "branch", "--show-current") != branch {
+		t.Fatal("the first worktree should have the branch checked out")
+	}
+
+	done := mustPull(t, n.fleet("laptop"), cli.PullRequest{ID: v.ID, Finish: true})
+	if done.State != "done" {
+		t.Fatalf("view = %+v", done)
+	}
+	sealed := n.record(t, "mini", v.ID).Finish.Commit
+	if tip := runGit(t, ".", "rev-parse", branch); tip != sealed {
+		t.Fatalf("branch at %s, sealed %s", tip, sealed)
+	}
+	if runGit(t, old, "branch", "--show-current") != "" {
+		t.Fatal("the old worktree still has the branch")
+	}
+	if _, err := os.Stat(old); err != nil {
+		t.Fatalf("the old worktree is gone: %v", err)
+	}
+}
+
+func TestALocalFinishOfADirtyJobSealsItsChangesIntoTheBranch(t *testing.T) {
+	n := newMoveNet(t, []fakeharness.Step{neverEnds}, "laptop")
+	v := n.started(t, "laptop")
+	n.writeInto(t, "laptop", v, "notes.txt", "uncommitted")
+
+	done := mustPull(t, n.fleet("laptop"), cli.PullRequest{ID: v.ID, Finish: true})
+	if done.State != "done" {
+		t.Fatalf("view = %+v", done)
+	}
+	branch := "cflk/" + v.ID
+	if got := runGit(t, ".", "show", branch+":notes.txt"); got != "uncommitted" {
+		t.Fatalf("the branch lacks the work: %q", got)
+	}
+	if tip, sealed := runGit(t, ".", "rev-parse", branch), n.record(t, "laptop", v.ID).Finish.Commit; tip != sealed {
+		t.Fatalf("branch at %s, sealed %s", tip, sealed)
+	}
+	if left := runGit(t, ".", "for-each-ref", "refs/cflk/"); left != "" {
+		t.Fatalf("refs left: %s", left)
+	}
+}
+
+func TestAFinishRefusedByPlaceKeepsTheSealedWorkAndTheRetryFinishesWithTheSameId(t *testing.T) {
+	n := newMoveNet(t, []fakeharness.Step{neverEnds}, "laptop")
+	v := n.started(t, "laptop")
+	n.writeInto(t, "laptop", v, "notes.txt", "work")
+	branch := "cflk/" + v.ID
+	// The user's own worktree has the branch: not the Job's, so it is never touched.
+	runGit(t, n.peers["laptop"].store().WorktreeDir(v.ID, 1), "switch", "--detach")
+	theirs := filepath.Join(t.TempDir(), "theirs")
+	runGit(t, ".", "worktree", "add", theirs, branch)
+
+	_, err := n.fleet("laptop").Pull(t.Context(), cli.PullRequest{ID: v.ID, Finish: true})
+	if err == nil || !strings.Contains(err.Error(), "checked out") {
+		t.Fatalf("first finish = %v", err)
+	}
+	first := n.record(t, "laptop", v.ID)
+	if first.State != job.Finishing {
+		t.Fatalf("state = %s", first.State)
+	}
+	runGit(t, ".", "worktree", "remove", "--force", theirs)
+
+	done := mustPull(t, n.fleet("laptop"), cli.PullRequest{ID: v.ID, Finish: true})
+	if done.State != "done" || n.record(t, "laptop", v.ID).Finish.ID != first.Finish.ID {
+		t.Fatalf("retry = %+v", done)
+	}
+	if got := runGit(t, ".", "show", branch+":notes.txt"); got != "work" {
+		t.Fatalf("the branch lacks the work: %q", got)
+	}
+}
+
+func TestCleanRefusesADoneJobThatEndedByItselfWithUnsealedChanges(t *testing.T) {
+	n := newMoveNet(t, []fakeharness.Step{neverEnds}, "laptop")
+	v := n.started(t, "laptop")
+	p, _ := n.peers["laptop"].open()
+	if err := p.runner.Stop(t.Context(), v.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.store.WithLock(v.ID, func(j *job.Job) error { j.State = job.Done; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	n.writeInto(t, "laptop", v, "notes.txt", "mine")
+
+	_, err := n.fleet("laptop").Clean(t.Context(), v.ID, false)
+	requireCode(t, err, domain.CodeInvalidTransition)
+	if _, err := os.Stat(filepath.Join(p.store.WorktreeDir(v.ID, 1), "notes.txt")); err != nil {
+		t.Fatalf("the file is gone: %v", err)
+	}
+	if _, err := n.fleet("laptop").Clean(t.Context(), v.ID, true); err != nil {
+		t.Fatalf("forced clean: %v", err)
+	}
+}
+
+func TestMovableRefusesAJobWithoutASessionBeforeAnythingStops(t *testing.T) {
+	err := movable(job.Job{ID: "job-aaaaaaaaaa", State: job.Running, Gen: 1}, 1)
+	requireCode(t, err, domain.CodeInvalidTransition)
+}

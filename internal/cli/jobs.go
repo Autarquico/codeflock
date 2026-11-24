@@ -113,7 +113,8 @@ type Jobs interface {
 	// Pull moves the Job to this peer, or finishes it here; see PullRequest.
 	Pull(ctx context.Context, req PullRequest) (JobView, error)
 	// Clean deletes what is left of a moved or done Job on this peer.
-	Clean(ctx context.Context, id string) (JobView, error)
+	// Clean refuses a Job whose work nothing retrieved, unless force.
+	Clean(ctx context.Context, id string, force bool) (JobView, error)
 	Screen(ctx context.Context, id string) (string, error)
 	Send(ctx context.Context, id, text string) (JobView, error)
 	// Attach enters the terminal of the Job and returns when the person leaves it.
@@ -287,12 +288,15 @@ func newJobCmds(opts Options) []*cobra.Command {
 
 	clean := jobCmd(opts, "clean JOB", "Delete what is left on this peer of a moved or done Job (worktrees, trust, mirror refs)", cobra.ExactArgs(1),
 		func(cmd *cobra.Command, jobs Jobs, args []string) error {
-			v, err := jobs.Clean(cmd.Context(), args[0])
+			force, _ := cmd.Flags().GetBool("force")
+			v, err := jobs.Clean(cmd.Context(), args[0], force)
 			if err != nil {
 				return err
 			}
 			return emitJob(cmd, v)
 		})
+
+	clean.Flags().Bool("force", false, "also delete the uncommitted work of a Job that ended by itself")
 
 	screen := jobCmd(opts, "screen JOB", "Show what the terminal of the Job's agent shows now", cobra.ExactArgs(1),
 		func(cmd *cobra.Command, jobs Jobs, args []string) error {

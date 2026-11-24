@@ -179,7 +179,9 @@ cadena muestra el Job como «en `<peer>`, sin confirmar».
 - `cflk pull <job> --finish` lo para y sella en el peer que lo tiene (pasos 1 y 2), que escribe `finishing {finish: <aleatorio>, commit}`:
   mientras dure, ese Job no se reanuda ni se mueve. Este peer trae ese commit exacto como rama `cflk/<id>` al repo del
   directorio actual (`git fetch`) y avisa al dueño con ese `finish`, que solo entonces lo marca `done`; un aviso o un abort con otro `finish` se
-  rechaza. No cambia mi checkout: dice
+  rechaza. Si `cflk/<id>` ya existe aquí y va por detrás del `commit` sellado (un trabajo anterior del mismo Job), `pull --finish`
+  lo avanza (fast-forward) a ese commit; si un worktree de este peer, del mismo Job, lo tiene en checkout (el primero que creó `cflk run`),
+  lo deja en HEAD desacoplado, sin tocar sus ficheros; el worktree de cualquier otro nunca se toca. No cambia mi checkout: dice
   cómo hacerlo. Rechaza si el repo del directorio no es el del Job o si `cflk/<id>` ya existe aquí con otro commit.
   Si algo falla o no hay respuesta, el Job se queda en `finishing`: `pull --finish` lo reintenta y
   `pull --finish --abort` lo devuelve a `stopped`.
