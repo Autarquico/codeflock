@@ -155,11 +155,18 @@ func (s Stopper) Stop(ctx context.Context, t Target) (Outcome, error) {
 		return Stopped, nil
 	}
 	var killedAt time.Time
+	var denied error // the last EPERM of a signal: what the person is told if the group stays
 	if v == procident.Same {
 		switch s.verdict(t) {
 		case procident.Same:
+			// ESRCH: the group is gone. EPERM: macOS says it for a group that holds only
+			// zombies (the wrapper exited and is not reaped yet); the poll below decides
+			// whether anything is really left, and gives up after KillWait if so.
 			if err := s.signal(t.PGID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
-				return Survivors, err
+				if !errors.Is(err, syscall.EPERM) {
+					return Survivors, err
+				}
+				denied = err
 			}
 		case procident.Gone:
 			// It exited since the first look: from here on it is a wrapper that is gone.
@@ -173,7 +180,7 @@ func (s Stopper) Stop(ctx context.Context, t Target) (Outcome, error) {
 		if s.groupEmpty(t) {
 			return Stopped, nil
 		}
-		if s.kill(t) {
+		if s.kill(t, &denied) {
 			killedAt = time.Now()
 		}
 	}
@@ -194,10 +201,13 @@ func (s Stopper) Stop(ctx context.Context, t Target) (Outcome, error) {
 			return Stopped, nil
 		}
 		elapsed := time.Since(start)
-		if killedAt.IsZero() && (elapsed >= s.grace() || v != procident.Same) && s.kill(t) {
+		if killedAt.IsZero() && (elapsed >= s.grace() || v != procident.Same) && s.kill(t, &denied) {
 			killedAt = time.Now()
 		}
 		if !killedAt.IsZero() && time.Since(killedAt) >= s.killWait() {
+			if denied != nil {
+				return Survivors, fmt.Errorf("a process of the group survived the kill and could not be signalled: %w", denied)
+			}
 			return Survivors, nil
 		}
 	}
@@ -211,8 +221,9 @@ func (s Stopper) groupEmpty(t Target) bool {
 
 // kill sends SIGKILL to the group, after checking again who leads it: a wrapper that
 // is something else now is not signalled, and a wrapper that is gone is only followed
-// into its group while the group has members. It says whether it signalled.
-func (s Stopper) kill(t Target) bool {
+// into its group while the group has members. It says whether it signalled; an EPERM
+// of the signal is kept in denied.
+func (s Stopper) kill(t Target, denied *error) bool {
 	switch s.verdict(t) {
 	case procident.Same:
 	case procident.Gone:
@@ -222,6 +233,8 @@ func (s Stopper) kill(t Target) bool {
 	default:
 		return false
 	}
-	_ = s.signal(t.PGID, syscall.SIGKILL)
+	if err := s.signal(t.PGID, syscall.SIGKILL); errors.Is(err, syscall.EPERM) {
+		*denied = err
+	}
 	return true
 }

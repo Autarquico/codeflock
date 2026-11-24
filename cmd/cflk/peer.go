@@ -221,10 +221,12 @@ func (p *peer) startFromMirror(ctx context.Context, mirror, harnessID string, in
 
 // servePeer is `cflk peer`: one request on stdin, one response on stdout.
 func (l *localJobs) servePeer(ctx context.Context, in io.Reader, out io.Writer) error {
+	useLoginPath(ctx)
 	return peerService{l}.server().Serve(ctx, in, out)
 }
 
 // attachPeer is `cflk peer attach [--read-only] JOB`.
 func (l *localJobs) attachPeer(ctx context.Context, id string, readOnly bool) error {
+	useLoginPath(ctx)
 	return peerService{l}.server().Attach(ctx, id, readOnly)
 }

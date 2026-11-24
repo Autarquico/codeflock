@@ -158,8 +158,8 @@ func warnOldUnits(home func() (string, error)) {
 	}
 	for _, u := range OldUnits(h, runtime.GOOS) {
 		if _, seen := warnedVars.LoadOrStore("unit "+u.Name, true); !seen {
-			_, _ = fmt.Fprintf(legacyVarWarning, "cflk: the service %s still uses the old codefabric directories, so they were not moved; "+
-				"run `cflk %s install-service` to move them with the service\n", u.Name, u.Kind)
+			_, _ = fmt.Fprintf(legacyVarWarning, "cflk: the service %s of 0.4 is still installed, so the old codefabric directories were not moved; "+
+				"run `cflk doctor --fix` to remove it\n", u.Name)
 		}
 	}
 }

@@ -54,6 +54,28 @@ cflk doctor
 
 `cflk peers` lists the peers, whether they answer, their harnesses and how many Jobs they have. `cflk doctor` checks this machine: `git`, `tmux`, harnesses, and anything left from an older install.
 
+### Configure the peers
+
+Without Tailscale tags, list the machines in `~/.config/cflk/config.toml` (or `$XDG_CONFIG_HOME/cflk/config.toml`). Each entry is a host name that `ssh` can reach with a key, no password prompt: a short name, an mDNS name or a MagicDNS one.
+
+```toml
+peers = ["mac-mini.local", "omarch01"]
+```
+
+`cflk` reaches each one with `ssh <host> .local/bin/cflk peer`: ssh starts in your home, and `install.sh` puts `cflk` in `~/.local/bin`, which a non-interactive ssh does not have in its `PATH`. If `cflk` is somewhere else on a peer, say where, relative to its home or absolute:
+
+```toml
+[cflk_path]
+"mac-mini.local" = "bin/cflk"
+```
+
+On the peer, `cflk peer` adds the `PATH` of your login shell and the usual directories (`~/.local/bin`, Homebrew, mise) to its own, so `tmux`, `git`, `claude` and `codex` are found as in your terminal. Check it from here:
+
+```sh
+cflk peers    # the PROBLEM column says why a peer does not answer
+cflk doctor   # also asks each peer for a hello
+```
+
 The first time an agent starts in a new directory, Claude Code and Codex ask whether you trust the folder. For a Job, `cflk` marks its worktree as trusted before it starts the agent.
 
 ## Run a Job on another machine

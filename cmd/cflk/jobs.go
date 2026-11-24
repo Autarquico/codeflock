@@ -579,5 +579,6 @@ func windowArgv(c cfruntime.Command) []string {
 // runWrapper is `cflk internal wrapper`: execwrap on a launch directory, in the
 // terminal of the launch.
 func runWrapper(dir string) error {
+	useToolDirs()
 	return runner.RunWrapper(dir)
 }
