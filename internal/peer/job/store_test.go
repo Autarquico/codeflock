@@ -197,3 +197,17 @@ func TestWithLockSaveWritesBackWhatFnRestoredAfterSaving(t *testing.T) {
 		t.Errorf("state = %s, want running", got.State)
 	}
 }
+
+func TestCreateAsTakesTheIdItIsGivenAndRefusesATakenOne(t *testing.T) {
+	s := NewStore(t.TempDir())
+	j, err := s.CreateAs("job-abcdefghij", Job{State: Stopped})
+	if err != nil || j.ID != "job-abcdefghij" || j.Branch != "cflk/job-abcdefghij" {
+		t.Fatalf("CreateAs = %+v, %v", j, err)
+	}
+	if _, err := s.CreateAs("job-abcdefghij", Job{}); !errors.Is(err, ErrExists) {
+		t.Errorf("a taken id: %v", err)
+	}
+	if _, err := s.CreateAs("../x", Job{}); err == nil {
+		t.Error("an invalid id was accepted")
+	}
+}

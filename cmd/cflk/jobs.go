@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -42,18 +44,24 @@ type localJobs struct {
 
 // peer is this machine as a place where Jobs run.
 type peer struct {
-	name   string
-	store  *job.Store
-	tmux   *tmux.Runtime
-	runner *runner.Runner
+	name string
+	// mirrors holds the bare repositories other peers push the code of their
+	// delegations to: <share>/repos/<sha-repo>.git.
+	mirrors string
+	store   *job.Store
+	tmux    *tmux.Runtime
+	runner  *runner.Runner
 }
 
 // overrides are what a test of this package swaps in the composition: the
 // agents that stand for the harnesses, and the program a launch runs as its
 // wrapper. They are not flags of the binary.
 type overrides struct {
-	agents  map[string]runner.Agent
-	wrapper func(launchDir string) []string
+	// name, root and share place a peer apart from the machine's own: a test
+	// that runs two peers on one machine gives each its own.
+	name, root, share string
+	agents            map[string]runner.Agent
+	wrapper           func(launchDir string) []string
 }
 
 func newLocalJobs(exe string, over ...overrides) *localJobs {
@@ -74,11 +82,15 @@ func openPeer(exe string, over overrides) (*peer, error) {
 	if err != nil {
 		return nil, err
 	}
-	root := os.Getenv(stateDirVar)
+	root := cmp.Or(over.root, os.Getenv(stateDirVar))
 	if root == "" {
 		if root, err = job.DefaultRoot(); err != nil {
 			return nil, err
 		}
+	}
+	share, err := shareDir(home, over.share)
+	if err != nil {
+		return nil, err
 	}
 	host, err := localhost.New(localhost.Options{Home: home, Env: os.Environ()})
 	if err != nil {
@@ -97,9 +109,10 @@ func openPeer(exe string, over overrides) (*peer, error) {
 		wrapper = func(dir string) []string { return []string{exe, "internal", "wrapper", dir} }
 	}
 	return &peer{
-		name:  config.MachineName(hostname, "this machine"),
-		store: store,
-		tmux:  rt,
+		name:    cmp.Or(over.name, config.MachineName(hostname, "this machine")),
+		mirrors: filepath.Join(share, "repos"),
+		store:   store,
+		tmux:    rt,
 		runner: runner.New(runner.Config{
 			Store: store, Host: host, Tmux: rt,
 			Wrapper:   wrapper,
@@ -107,6 +120,17 @@ func openPeer(exe string, over overrides) (*peer, error) {
 			Agents:    over.agents,
 		}),
 	}, nil
+}
+
+// shareDirVar overrides where this peer keeps the mirrors (~/.local/share/cflk).
+const shareDirVar = "CFLK_SHARE_DIR"
+
+func shareDir(home, override string) (string, error) {
+	dir := cmp.Or(override, os.Getenv(shareDirVar), filepath.Join(home, ".local", "share", "cflk"))
+	if !filepath.IsAbs(dir) {
+		return "", fmt.Errorf("%s must be an absolute path, got %q", shareDirVar, dir)
+	}
+	return dir, nil
 }
 
 // harnessIDs are the names a person gives a harness.
@@ -122,55 +146,88 @@ func (l *localJobs) Run(ctx context.Context, req cli.RunRequest) (cli.JobView, e
 		return cli.JobView{}, invalid("unknown harness %q: use claude or codex", req.Harness)
 	}
 	if req.On != "" && req.On != "local" && req.On != p.name {
-		return cli.JobView{}, invalid("--on %q: other peers are not available yet; a Job runs on this peer (%s)", req.On, p.name)
+		return cli.JobView{}, invalid("--on %q: this runs Jobs on this peer (%s); other peers go through the fleet", req.On, p.name)
 	}
 	if err := p.tmux.Check(ctx); err != nil {
 		return cli.JobView{}, err
 	}
+	src, err := sourceOf(ctx, req.Branch)
+	if err != nil {
+		return cli.JobView{}, err
+	}
+	return p.start(ctx, startSpec{repoDir: src.dir, repo: src.repo, harness: harnessID, commit: src.commit, prompt: req.Prompt, createdBy: p.name})
+}
+
+// source is the code a Job starts from: a commit of the repository the person is in.
+type source struct{ dir, repo, commit string }
+
+// sourceOf resolves base (a branch or commit; empty is HEAD) in the repository of the current directory.
+func sourceOf(ctx context.Context, base string) (source, error) {
 	top, err := git(ctx, "", "rev-parse", "--show-toplevel")
 	if err != nil {
-		return cli.JobView{}, invalid("cflk run starts from a git repository: %v", err)
+		return source{}, invalid("cflk run starts from a git repository: %v", err)
 	}
 	origin, err := git(ctx, top, "remote", "get-url", "origin")
 	if err != nil {
-		return cli.JobView{}, invalid("the repository has no origin remote: %v", err)
+		return source{}, invalid("the repository has no origin remote: %v", err)
 	}
 	repo, err := job.NormalizeRepo(origin)
 	if err != nil {
-		return cli.JobView{}, invalid("origin %q: %v", origin, err)
+		return source{}, invalid("origin %q: %v", origin, err)
 	}
-	base := req.Branch
 	if base == "" {
 		base = "HEAD"
 	}
 	commit, err := git(ctx, top, "rev-parse", "--verify", "--end-of-options", base+"^{commit}")
 	if err != nil {
-		return cli.JobView{}, invalid("%q is not a commit of this repository: %v", base, err)
+		return source{}, invalid("%q is not a commit of this repository: %v", base, err)
 	}
-	j, err := p.store.Create(job.Job{Repo: repo, Harness: harnessID, Gen: 1, Peer: p.name, State: job.Stopped, CreatedBy: p.name})
+	return source{dir: top, repo: repo, commit: commit}, nil
+}
+
+// startSpec is a Job to create and launch from a commit of a repository on this
+// machine: the one the person is in, or the mirror a delegation was pushed to.
+type startSpec struct {
+	repoDir, repo, harness, commit, prompt, createdBy string
+	// id is the id another peer drew; empty draws one.
+	id string
+}
+
+// start creates the Job, its worktree at the commit and its first launch. When
+// nothing was started it leaves nothing behind.
+func (p *peer) start(ctx context.Context, sp startSpec) (cli.JobView, error) {
+	top := sp.repoDir
+	proto := job.Job{
+		Repo: sp.repo, Harness: sp.harness, Gen: 1, Peer: p.name, State: job.Stopped, CreatedBy: sp.createdBy,
+		History: []job.Entry{{Gen: 1, Peer: p.name, Commit: sp.commit}},
+	}
+	create := p.store.Create
+	if sp.id != "" {
+		create = func(j job.Job) (job.Job, error) { return p.store.CreateAs(sp.id, j) }
+	}
+	j, err := create(proto)
+	if errors.Is(err, job.ErrExists) {
+		return cli.JobView{}, domain.NewError(domain.CodeInvalidRequest, fmt.Sprintf("job %s already exists on %s", sp.id, p.name), nil)
+	}
 	if err != nil {
 		return cli.JobView{}, err
 	}
-	worktree := p.store.WorktreeDir(j.ID, j.Gen)
-	if _, err := git(ctx, top, "worktree", "add", "-b", j.Branch, worktree, commit); err != nil {
+	if err := p.addWorktree(ctx, top, j, sp.commit); err != nil {
 		_ = os.RemoveAll(p.store.Dir(j.ID))
+		_, _ = git(context.WithoutCancel(ctx), top, "worktree", "prune")
 		return cli.JobView{}, err
 	}
-	launched, err := p.runner.Launch(ctx, j.ID, req.Prompt)
+	launched, err := p.runner.Launch(ctx, j.ID, sp.prompt)
 	if err != nil {
 		// A launch is recorded before anything starts, so a Job that is stopped
 		// with none recorded ran nothing and was told nothing. That is decided
 		// and acted on under the Job's lock: a `resume` that got in between has
 		// recorded a launch, and its Job is not ours to delete.
-		bg := context.WithoutCancel(ctx)
 		removed := false
 		_ = p.store.WithLock(j.ID, func(left *job.Job) error {
-			if left.State != job.Stopped || left.Launch != nil {
-				return nil
+			if left.State == job.Stopped && left.Launch == nil {
+				removed = p.discard(ctx, top, *left)
 			}
-			_, _ = git(bg, top, "worktree", "remove", "--force", worktree)
-			_, _ = git(bg, top, "branch", "-D", j.Branch)
-			removed = os.RemoveAll(p.store.Dir(j.ID)) == nil
 			return nil
 		})
 		if !removed {
@@ -181,6 +238,42 @@ func (l *localJobs) Run(ctx context.Context, req cli.RunRequest) (cli.JobView, e
 		return cli.JobView{}, err
 	}
 	return view(launched, ""), nil
+}
+
+// addWorktree creates the worktree of j at commit on its new branch. A failure
+// (a post-checkout hook, a full disk) can leave the branch and git's registration
+// of the worktree behind: both are taken back, the branch only if it did not exist
+// before and is at the commit, which is where `worktree add -b` put it.
+func (p *peer) addWorktree(ctx context.Context, top string, j job.Job, commit string) error {
+	worktree := p.store.WorktreeDir(j.ID, j.Gen)
+	// Only a lookup that answered "no such branch" lets cleanup delete it; a
+	// lookup that failed, or found it, leaves the branch alone.
+	found, lookErr := git(context.WithoutCancel(ctx), top, "for-each-ref", "--format=%(refname)", "refs/heads/"+j.Branch)
+	existed := lookErr != nil || found != ""
+	_, err := git(ctx, top, "worktree", "add", "-b", j.Branch, worktree, commit)
+	if err == nil {
+		return nil
+	}
+	bg := context.WithoutCancel(ctx)
+	_, _ = git(bg, top, "worktree", "remove", "--force", worktree)
+	_ = os.RemoveAll(worktree)
+	_, _ = git(bg, top, "worktree", "prune")
+	if tip, tipErr := git(bg, top, "rev-parse", "--verify", "--quiet", "--end-of-options", "refs/heads/"+j.Branch); !existed && tipErr == nil && tip == commit {
+		_, _ = git(bg, top, "branch", "-D", "--", j.Branch)
+	}
+	return err
+}
+
+// discard takes back a Job that launched nothing: its worktree and registration,
+// its branch and its directory. It reports whether the directory is gone. The
+// caller holds the Job's lock.
+func (p *peer) discard(ctx context.Context, top string, j job.Job) bool {
+	bg := context.WithoutCancel(ctx)
+	_, _ = git(bg, top, "worktree", "remove", "--force", p.store.WorktreeDir(j.ID, j.Gen))
+	_, _ = git(bg, top, "branch", "-D", "--", j.Branch)
+	removed := os.RemoveAll(p.store.Dir(j.ID)) == nil
+	_, _ = git(bg, top, "worktree", "prune")
+	return removed
 }
 
 func (l *localJobs) List(ctx context.Context) ([]cli.JobView, error) {
@@ -200,6 +293,25 @@ func (l *localJobs) List(ctx context.Context) ([]cli.JobView, error) {
 			continue
 		}
 		views = append(views, view(j, ""))
+	}
+	return views, nil
+}
+
+// Stored is the Jobs as their records say, without observing their agents or
+// waiting for any lock: what a listing shows when a command has a Job busy.
+// problem is shown with each.
+func (l *localJobs) Stored(problem string) ([]cli.JobView, error) {
+	p, err := l.open()
+	if err != nil {
+		return nil, err
+	}
+	stored, err := p.store.List()
+	if err != nil {
+		return nil, err
+	}
+	views := make([]cli.JobView, len(stored))
+	for i, s := range stored {
+		views[i] = view(s, problem)
 	}
 	return views, nil
 }
@@ -262,20 +374,16 @@ func (l *localJobs) Send(ctx context.Context, id, text string) (cli.JobView, err
 }
 
 func (l *localJobs) Attach(ctx context.Context, id string, readOnly bool) error {
-	j, p, err := l.read(ctx, id)
+	j, attach, err := l.attachCommand(ctx, id, readOnly)
 	if err != nil {
 		return err
 	}
-	if err := hasTerminal(j, domain.CodeRunNotAttachable); err != nil {
-		return err
-	}
-	if err := p.tmux.Check(ctx); err != nil {
-		return err
-	}
-	attach, err := p.tmux.AttachCommand(p.tmux.HandleFor(j.Launch.Session), readOnly)
-	if err != nil {
-		return err
-	}
+	return enter(ctx, attachwindow.ExecRunner{}, attach, j.ID)
+}
+
+// enter runs the command that enters a terminal: here when this one is a
+// terminal, else in a new window of the one the person works in.
+func enter(ctx context.Context, windows attachwindow.Runner, attach cfruntime.Command, id string) error {
 	if isTerminal(os.Stdin) && isTerminal(os.Stdout) {
 		return runAttached(ctx, attach)
 	}
@@ -283,11 +391,40 @@ func (l *localJobs) Attach(ctx context.Context, id string, readOnly bool) error 
 	if !ok {
 		return domain.NewError(domain.CodeRunNotAttachable, "there is no terminal here to attach in; run `cflk attach` from a terminal", nil)
 	}
-	if err := launcher.Open(ctx, attachwindow.ExecRunner{}, windowArgv(attach), "cflk "+j.ID); err != nil {
+	if err := launcher.Open(ctx, windows, windowArgv(attach), "cflk "+id); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "opened a %s window attached to %s\n", launcher.Label(), j.ID)
+	fmt.Fprintf(os.Stderr, "opened a %s window attached to %s\n", launcher.Label(), id)
 	return nil
+}
+
+// AttachHere is Attach for a process whose terminal is the person's, as under
+// `ssh -t <peer> cflk peer attach`: it never opens a window.
+func (l *localJobs) AttachHere(ctx context.Context, id string, readOnly bool) error {
+	_, attach, err := l.attachCommand(ctx, id, readOnly)
+	if err != nil {
+		return err
+	}
+	if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
+		return domain.NewError(domain.CodeRunNotAttachable, "attach needs a terminal (ssh -t)", nil)
+	}
+	return runAttached(ctx, attach)
+}
+
+// attachCommand is the tmux client that enters the terminal of a running Job.
+func (l *localJobs) attachCommand(ctx context.Context, id string, readOnly bool) (job.Job, cfruntime.Command, error) {
+	j, p, err := l.read(ctx, id)
+	if err != nil {
+		return j, cfruntime.Command{}, err
+	}
+	if err := hasTerminal(j, domain.CodeRunNotAttachable); err != nil {
+		return j, cfruntime.Command{}, err
+	}
+	if err := p.tmux.Check(ctx); err != nil {
+		return j, cfruntime.Command{}, err
+	}
+	attach, err := p.tmux.AttachCommand(p.tmux.HandleFor(j.Launch.Session), readOnly)
+	return j, attach, err
 }
 
 // read is the Job as it is now: reconciled under its lock.
@@ -304,10 +441,17 @@ func (l *localJobs) read(ctx context.Context, id string) (job.Job, *peer, error)
 }
 
 func hasTerminal(j job.Job, code domain.Code) error {
-	if j.Launch == nil || (j.State != job.Running && j.State != job.Waiting) {
-		return domain.NewError(code, fmt.Sprintf("job %s is %s: its agent is not running", j.ID, j.State), nil)
+	if j.Launch == nil || !runsAgent(j.State) {
+		return notRunning(j.ID, j.State, code)
 	}
 	return nil
+}
+
+// runsAgent says whether a Job in this state has an agent running in a terminal.
+func runsAgent(state job.State) bool { return state == job.Running || state == job.Waiting }
+
+func notRunning(id string, state job.State, code domain.Code) error {
+	return domain.NewError(code, fmt.Sprintf("job %s is %s: its agent is not running", id, state), nil)
 }
 
 func view(j job.Job, problem string) cli.JobView {

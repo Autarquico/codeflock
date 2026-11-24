@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -28,6 +29,19 @@ type JobView struct {
 	Problem string `json:"problem,omitempty"`
 }
 
+// UnreachablePeer is a peer that did not answer a listing, and why.
+type UnreachablePeer struct {
+	Peer    string `json:"peer"`
+	Problem string `json:"problem"`
+}
+
+// JobList is what `cflk ps` lists: the Jobs of the peers that answered, and
+// apart from them the peers that did not.
+type JobList struct {
+	Jobs        []JobView         `json:"jobs"`
+	Unreachable []UnreachablePeer `json:"unreachable"`
+}
+
 // RunRequest asks for a new Job on the current repo.
 type RunRequest struct {
 	// Harness is the user's name for it ("claude", "codex"); empty is the default.
@@ -35,8 +49,23 @@ type RunRequest struct {
 	// Branch is the branch or commit the Job starts from; empty is the current commit.
 	Branch string
 	// On is the peer that runs it; empty is this one.
-	On     string
+	On string
+	// ID is the id of a delegation that failed or whose answer was lost: asking
+	// again with it starts nothing twice. Empty draws a new one.
+	ID     string
 	Prompt string
+}
+
+// PeerView is a peer as `cflk peers` shows it.
+type PeerView struct {
+	Name string `json:"name"`
+	// This is true for the machine the command runs on.
+	This      bool     `json:"this,omitempty"`
+	Reachable bool     `json:"reachable"`
+	Harnesses []string `json:"harnesses,omitempty"`
+	Jobs      int      `json:"jobs"`
+	// Problem is why the peer did not answer.
+	Problem string `json:"problem,omitempty"`
 }
 
 // Jobs is what the job commands need of a peer. cmd/cflk composes it (ADR 0001):
@@ -44,7 +73,11 @@ type RunRequest struct {
 // reconciles it first.
 type Jobs interface {
 	Run(ctx context.Context, req RunRequest) (JobView, error)
-	List(ctx context.Context) ([]JobView, error)
+	// List is the Jobs of every peer, or of the one named; a peer that does not
+	// answer is in Unreachable, not among the Jobs.
+	List(ctx context.Context, peer string) (JobList, error)
+	// Peers lists the peers and whether they answer.
+	Peers(ctx context.Context) ([]PeerView, error)
 	Show(ctx context.Context, id string) (JobView, error)
 	Stop(ctx context.Context, id string) (JobView, error)
 	Resume(ctx context.Context, id string) (JobView, error)
@@ -81,7 +114,7 @@ func emitJob(cmd *cobra.Command, v JobView) error {
 }
 
 func newJobCmds(opts Options) []*cobra.Command {
-	run := jobCmd(opts, "run [--harness claude|codex] [--branch B] [--on PEER] -- PROMPT",
+	run := jobCmd(opts, "run [--harness claude|codex] [--branch B] [--on PEER [--id JOB]] -- PROMPT",
 		"Start a Job: an agent working on a new branch cflk/<id> of this repo", cobra.ExactArgs(1),
 		func(cmd *cobra.Command, jobs Jobs, args []string) error {
 			f := cmd.Flags()
@@ -89,6 +122,7 @@ func newJobCmds(opts Options) []*cobra.Command {
 			req.Harness, _ = f.GetString("harness")
 			req.Branch, _ = f.GetString("branch")
 			req.On, _ = f.GetString("on")
+			req.ID, _ = f.GetString("id")
 			req.Prompt = args[0]
 			v, err := jobs.Run(cmd.Context(), req)
 			if err != nil {
@@ -98,18 +132,38 @@ func newJobCmds(opts Options) []*cobra.Command {
 		})
 	run.Flags().String("harness", "", "the agent: claude (default) or codex")
 	run.Flags().String("branch", "", "start from this branch or commit instead of the current one")
-	run.Flags().String("on", "", "the peer that runs it; only this peer for now")
+	run.Flags().String("on", "", "the peer that runs it: its name, or any for the one with fewest Jobs (default: this one)")
 
-	ps := jobCmd(opts, "ps", "List the Jobs of this peer", cobra.NoArgs,
+	run.Flags().String("id", "", "retry a delegation with the id its failure named (needs --on PEER): the peer answers the Job it already has instead of starting another")
+
+	ps := jobCmd(opts, "ps [--peer PEER]", "List the Jobs of every peer (or of one)", cobra.NoArgs,
 		func(cmd *cobra.Command, jobs Jobs, _ []string) error {
-			list, err := jobs.List(cmd.Context())
+			only, _ := cmd.Flags().GetString("peer")
+			list, err := jobs.List(cmd.Context(), only)
+			if err != nil {
+				return err
+			}
+			if list.Jobs == nil {
+				list.Jobs = []JobView{}
+			}
+			if list.Unreachable == nil {
+				list.Unreachable = []UnreachablePeer{}
+			}
+			return emit(cmd, list, func(w io.Writer) error { return printJobs(w, list) })
+		})
+
+	ps.Flags().String("peer", "", "only the Jobs of this peer")
+
+	peers := jobCmd(opts, "peers", "List the peers, whether they answer, their harnesses and their Jobs", cobra.NoArgs,
+		func(cmd *cobra.Command, jobs Jobs, _ []string) error {
+			list, err := jobs.Peers(cmd.Context())
 			if err != nil {
 				return err
 			}
 			if list == nil {
-				list = []JobView{}
+				list = []PeerView{}
 			}
-			return emit(cmd, list, func(w io.Writer) error { return printJobs(w, list) })
+			return emit(cmd, list, func(w io.Writer) error { return printPeers(w, list) })
 		})
 
 	show := jobCmd(opts, "show JOB", "Show a Job", cobra.ExactArgs(1),
@@ -166,22 +220,48 @@ func newJobCmds(opts Options) []*cobra.Command {
 		})
 	attach.Flags().Bool("read-only", false, "what you type does not reach the agent")
 
-	return []*cobra.Command{run, ps, show, stop, resume, screen, send, attach, newInternalCmd(opts)}
+	return []*cobra.Command{run, ps, peers, show, stop, resume, screen, send, attach, newPeerCmd(opts), newInternalCmd(opts)}
 }
 
-func printJobs(w io.Writer, jobs []JobView) error {
-	if len(jobs) == 0 {
-		_, err := fmt.Fprintln(w, "no Jobs")
-		return err
-	}
-	t := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(t, "JOB\tPEER\tSTATE\tHARNESS\tREPO\tBRANCH")
-	for _, j := range jobs {
-		state := printable(j.State)
-		if j.Problem != "" {
-			state += "?"
+func printJobs(w io.Writer, list JobList) error {
+	if len(list.Jobs) == 0 {
+		if _, err := fmt.Fprintln(w, "no Jobs"); err != nil {
+			return err
 		}
-		fmt.Fprintf(t, "%s\t%s\t%s\t%s\t%s\t%s\n", printable(j.ID), printable(j.Peer), state, printable(j.Harness), printable(j.Repo), printable(j.Branch))
+	} else {
+		t := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(t, "JOB\tPEER\tSTATE\tHARNESS\tREPO\tBRANCH")
+		for _, j := range list.Jobs {
+			state := printable(j.State)
+			if j.Problem != "" {
+				state += "?"
+			}
+			fmt.Fprintf(t, "%s\t%s\t%s\t%s\t%s\t%s\n", dash(printable(j.ID)), printable(j.Peer), state, dash(printable(j.Harness)), dash(printable(j.Repo)), dash(printable(j.Branch)))
+		}
+		if err := t.Flush(); err != nil {
+			return err
+		}
+	}
+	for _, u := range list.Unreachable {
+		if _, err := fmt.Fprintf(w, "unreachable: %s (%s)\n", printable(u.Peer), printable(u.Problem)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func printPeers(w io.Writer, peers []PeerView) error {
+	t := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(t, "PEER\tSTATE\tHARNESSES\tJOBS")
+	for _, p := range peers {
+		name, state, harnesses, jobs := printable(p.Name), "reachable", printable(strings.Join(p.Harnesses, ",")), fmt.Sprint(p.Jobs)
+		if p.This {
+			name += " (this)"
+		}
+		if !p.Reachable {
+			state, harnesses, jobs = "unreachable", "-", "-"
+		}
+		fmt.Fprintf(t, "%s\t%s\t%s\t%s\n", name, state, harnesses, jobs)
 	}
 	return t.Flush()
 }
@@ -237,4 +317,33 @@ func newInternalCmd(opts Options) *cobra.Command {
 	internal := &cobra.Command{Use: "internal", Hidden: true}
 	internal.AddCommand(wrapper, notify)
 	return internal
+}
+
+// newPeerCmd is `cflk peer`, what other peers run over ssh. It has a fixed argv:
+// the operation and its data come in on stdin (a header and a body, see
+// internal/peer/wire), so nothing a person or a peer wrote is ever an argument
+// of a shell. It is not for people.
+func newPeerCmd(opts Options) *cobra.Command {
+	attach := &cobra.Command{
+		Use: "attach [--read-only] JOB", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if opts.PeerAttach == nil {
+				return domain.NewError(domain.CodeNotImplemented, "this build does not serve peers", nil)
+			}
+			readOnly, _ := cmd.Flags().GetBool("read-only")
+			return opts.PeerAttach(cmd.Context(), args[0], readOnly)
+		},
+	}
+	attach.Flags().Bool("read-only", false, "what the person types does not reach the agent")
+	peer := &cobra.Command{
+		Use: "peer", Hidden: true, Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if opts.PeerServe == nil {
+				return domain.NewError(domain.CodeNotImplemented, "this build does not serve peers", nil)
+			}
+			return opts.PeerServe(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout())
+		},
+	}
+	peer.AddCommand(attach)
+	return peer
 }

@@ -37,6 +37,11 @@ type Options struct {
 	// Notify is the program Codex runs at the end of a turn (`cflk internal notify`).
 	Wrapper func(launchDir string) error
 	Notify  func(marker, sessionFile, payload string) error
+	// PeerServe answers one request of another peer read from stdin on stdout
+	// (`cflk peer`), and PeerAttach enters a Job's terminal for it
+	// (`cflk peer attach`). Both are what `ssh <peer> cflk peer` runs.
+	PeerServe  func(ctx context.Context, stdin io.Reader, stdout io.Writer) error
+	PeerAttach func(ctx context.Context, id string, readOnly bool) error
 }
 
 // ExecuteWith runs the cf command tree with the composition of the binary and
@@ -126,7 +131,7 @@ type errorBody struct {
 // request ID that finds it in the log, and --debug adds the rest of the details.
 func humanError(e *domain.Error, debug bool) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "error: %s: %s", e.Code, printable(e.Message))
+	fmt.Fprintf(&b, "error: %s: %s", printable(string(e.Code)), printable(e.Message))
 	if id, ok := e.Details["request_id"].(string); ok && e.Code == domain.CodeInternal {
 		fmt.Fprintf(&b, " (request %s)", printable(id))
 	}

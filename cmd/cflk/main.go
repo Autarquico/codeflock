@@ -24,11 +24,14 @@ func run() int {
 	if err != nil {
 		exe = os.Args[0]
 	}
+	local := newLocalJobs(exe)
 	return cli.ExecuteWith(cli.Options{
-		Doctor:  checkThisMachine,
-		Jobs:    newLocalJobs(exe),
-		Wrapper: runWrapper,
-		Notify:  runner.HandleNotify,
+		Doctor:     checkThisMachine,
+		Jobs:       newFleet(local),
+		Wrapper:    runWrapper,
+		Notify:     runner.HandleNotify,
+		PeerServe:  local.servePeer,
+		PeerAttach: local.attachPeer,
 	})
 }
 

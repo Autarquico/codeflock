@@ -10,9 +10,10 @@ import (
 )
 
 type fakeJobs struct {
-	list     []JobView
+	list     JobList
 	ran      RunRequest
 	attached []string
+	listed   string
 	err      error
 }
 
@@ -20,7 +21,16 @@ func (f *fakeJobs) Run(_ context.Context, r RunRequest) (JobView, error) {
 	f.ran = r
 	return JobView{ID: "job-aaaaaaaaaa", State: "running"}, f.err
 }
-func (f *fakeJobs) List(context.Context) ([]JobView, error) { return f.list, f.err }
+
+func (f *fakeJobs) List(_ context.Context, peer string) (JobList, error) {
+	f.listed = peer
+	return f.list, f.err
+}
+
+func (f *fakeJobs) Peers(context.Context) ([]PeerView, error) {
+	return []PeerView{{Name: "laptop", This: true, Reachable: true, Jobs: 1}, {Name: "mini"}}, f.err
+}
+
 func (f *fakeJobs) Show(_ context.Context, id string) (JobView, error) {
 	return JobView{ID: id, State: "waiting", Repo: "h/o/r", Branch: "cflk/" + id}, f.err
 }
@@ -66,21 +76,17 @@ func TestRunPassesTheFlagsAndThePromptAfterTheSeparator(t *testing.T) {
 	}
 }
 
-func TestPsIsATableAndJSONIsAnArrayEvenWhenEmpty(t *testing.T) {
-	f := &fakeJobs{list: []JobView{{ID: "job-aaaaaaaaaa", Peer: "mini", State: "waiting", Harness: "codex", Repo: "h/o/r", Branch: "cflk/x"}}}
+func TestPsIsATableAndJSONHasBothListsEvenWhenEmpty(t *testing.T) {
+	f := &fakeJobs{list: JobList{Jobs: []JobView{{ID: "job-aaaaaaaaaa", Peer: "mini", State: "waiting", Harness: "codex", Repo: "h/o/r", Branch: "cflk/x"}}}}
 	_, out, _ := runWith(Options{Jobs: f}, "ps")
 	for _, want := range []string{"JOB", "STATE", "job-aaaaaaaaaa", "waiting", "mini"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("table lacks %q:\n%s", want, out)
 		}
 	}
-	_, out, _ = runWith(Options{Jobs: &fakeJobs{}}, "ps", "--json")
-	if strings.TrimSpace(out) != "[]" {
-		t.Errorf("empty --json = %q", out)
-	}
 	_, out, _ = runWith(Options{Jobs: f}, "ps", "--json")
-	var got []JobView
-	if err := json.Unmarshal([]byte(out), &got); err != nil || len(got) != 1 || got[0].State != "waiting" {
+	var got JobList
+	if err := json.Unmarshal([]byte(out), &got); err != nil || len(got.Jobs) != 1 || got.Jobs[0].State != "waiting" {
 		t.Errorf("--json = %q, %v", out, err)
 	}
 }
@@ -151,5 +157,44 @@ func TestTheInternalCommandsAreHiddenAndCallTheirHandlers(t *testing.T) {
 	}
 	if code, _, e := runWith(opts, "internal", "notify", "/m", "/s", `{"type":"x"}`); code != 0 || strings.Join(notified, "|") != `/m|/s|{"type":"x"}` {
 		t.Errorf("notify: exit %d, args %v, %s", code, notified, e)
+	}
+}
+
+func TestPsPassesThePeerAndListsAnUnreachablePeerApartFromTheJobs(t *testing.T) {
+	f := &fakeJobs{list: JobList{
+		Jobs:        []JobView{{ID: "job-aaaaaaaaaa", Peer: "laptop", State: "running"}},
+		Unreachable: []UnreachablePeer{{Peer: "mini", Problem: "Connection refused\x1b[2J"}},
+	}}
+	_, out, _ := runWith(Options{Jobs: f}, "ps", "--peer", "mini")
+	if f.listed != "mini" || !strings.Contains(out, "unreachable: mini (Connection refused[2J)") || strings.Contains(out, "unreachable?") {
+		t.Errorf("listed %q:\n%s", f.listed, out)
+	}
+	if strings.Contains(out, "\x1b") {
+		t.Errorf("a control character reached the terminal: %q", out)
+	}
+
+	_, out, _ = runWith(Options{Jobs: f}, "ps", "--json")
+	var got JobList
+	if err := json.Unmarshal([]byte(out), &got); err != nil || len(got.Jobs) != 1 || got.Jobs[0].ID != "job-aaaaaaaaaa" || len(got.Unreachable) != 1 || got.Unreachable[0].Peer != "mini" {
+		t.Errorf("--json = %q, %v", out, err)
+	}
+
+	_, out, _ = runWith(Options{Jobs: &fakeJobs{}}, "ps", "--json")
+	if !strings.Contains(out, `"jobs":[]`) || !strings.Contains(out, `"unreachable":[]`) {
+		t.Errorf("an empty listing has null lists: %q", out)
+	}
+}
+
+func TestPeersIsATableWithThisMachineAndTheOnesThatDoNotAnswer(t *testing.T) {
+	_, out, _ := runWith(Options{Jobs: &fakeJobs{}}, "peers")
+	for _, want := range []string{"laptop (this)", "reachable", "mini", "unreachable"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("table lacks %q:\n%s", want, out)
+		}
+	}
+	_, out, _ = runWith(Options{Jobs: &fakeJobs{}}, "peers", "--json")
+	var got []PeerView
+	if err := json.Unmarshal([]byte(out), &got); err != nil || len(got) != 2 || got[1].Reachable {
+		t.Errorf("--json = %q, %v", out, err)
 	}
 }

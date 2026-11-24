@@ -1,0 +1,15 @@
+{
+  "Version": "1.80.0",
+  "BackendState": "Running",
+  "Self": {"ID": "nSELF0000CNTRL", "HostName": "laptop", "DNSName": "laptop.tail1234.ts.net.", "Online": true, "Tags": ["tag:cflk"]},
+  "Peer": {
+    "nodekey:aaa": {"ID": "nMAC00000CNTRL", "HostName": "mac-mini", "DNSName": "mac-mini.tail1234.ts.net.", "Online": true, "Tags": ["tag:cflk"]},
+    "nodekey:bbb": {"ID": "nOMARCH1CNTRL", "HostName": "omarch01", "DNSName": "omarch01.tail1234.ts.net.", "Online": false, "Tags": ["tag:server", "tag:cflk"]},
+    "nodekey:ccc": {"ID": "nPHONE00CNTRL", "HostName": "phone", "DNSName": "phone.tail1234.ts.net.", "Online": true},
+    "nodekey:ddd": {"ID": "nOTHER00CNTRL", "HostName": "printer", "DNSName": "printer.tail1234.ts.net.", "Online": true, "Tags": ["tag:printer"]},
+    "nodekey:eee": {"ID": "nEVIL00CNTRL", "HostName": "-oProxyCommand=x", "DNSName": "evil.tail1234.ts.net.", "Online": true, "Tags": ["tag:cflk"]},
+    "nodekey:ggg": {"ID": "nSHARED0CNTRL", "HostName": "friend-box", "DNSName": "friend-box.tail1234.ts.net.", "Online": true, "Tags": ["tag:cflk"], "ShareeNode": true},
+    "nodekey:hhh": {"ID": "nOTHERNETCNTRL", "HostName": "stranger", "DNSName": "stranger.tail9999.ts.net.", "Online": true, "Tags": ["tag:cflk"]},
+    "nodekey:fff": {"ID": "nSELF0000CNTRL", "HostName": "laptop", "DNSName": "laptop.tail1234.ts.net.", "Online": true, "Tags": ["tag:cflk"]}
+  }
+}

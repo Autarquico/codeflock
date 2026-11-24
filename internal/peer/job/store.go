@@ -16,6 +16,9 @@ import (
 // ErrNotFound is returned when a Job has no directory in the store.
 var ErrNotFound = errors.New("job: not found")
 
+// ErrExists is returned when the id asked for already has a directory.
+var ErrExists = errors.New("job: id already exists")
+
 // Store keeps the Jobs of this peer under <root>/jobs/<id>/.
 type Store struct {
 	root  string
@@ -70,21 +73,54 @@ func (s *Store) Create(j Job) (Job, error) {
 		return Job{}, fmt.Errorf("job: creating state root: %w", err)
 	}
 	for {
-		id := s.newID()
-		err := os.Mkdir(s.Dir(id), 0o700)
-		if errors.Is(err, os.ErrExist) {
+		created, err := s.create(j, s.newID())
+		if errors.Is(err, ErrExists) {
 			continue
 		}
-		if err != nil {
-			return Job{}, fmt.Errorf("job: creating %s: %w", id, err)
-		}
-		j.ID, j.Branch = id, "cflk/"+id
-		if err := s.write(j); err != nil {
-			_ = os.RemoveAll(s.Dir(id))
-			return Job{}, err
-		}
-		return j, nil
+		return created, err
 	}
+}
+
+// CreateAs is Create for an id someone else drew (a Job delegated by another
+// peer, whose code already travels under that id). An id that is taken is
+// ErrExists: the caller draws another.
+func (s *Store) CreateAs(id string, j Job) (Job, error) {
+	if !ValidID(id) {
+		return Job{}, fmt.Errorf("job: invalid id %q", id)
+	}
+	if err := os.MkdirAll(filepath.Join(s.root, "jobs"), 0o700); err != nil {
+		return Job{}, fmt.Errorf("job: creating state root: %w", err)
+	}
+	return s.create(j, id)
+}
+
+func (s *Store) create(j Job, id string) (Job, error) {
+	err := os.Mkdir(s.Dir(id), 0o700)
+	if errors.Is(err, os.ErrExist) {
+		return Job{}, ErrExists
+	}
+	if err != nil {
+		return Job{}, fmt.Errorf("job: creating %s: %w", id, err)
+	}
+	j.ID, j.Branch = id, "cflk/"+id
+	if err := s.write(j); err != nil {
+		_ = os.RemoveAll(s.Dir(id))
+		return Job{}, err
+	}
+	return j, nil
+}
+
+// LockStart takes the lock that serializes the start of the Job with this id,
+// whoever asks, and blocks until it has it. It is not the Job's lock: it exists
+// before the Job does, and is held across the creation, the worktree and the launch.
+func (s *Store) LockStart(id string) (release func(), err error) {
+	if !ValidID(id) {
+		return nil, fmt.Errorf("job: invalid id %q", id)
+	}
+	if err := os.MkdirAll(filepath.Join(s.root, "jobs"), 0o700); err != nil {
+		return nil, fmt.Errorf("job: creating state root: %w", err)
+	}
+	return flock.Lock(filepath.Join(s.root, "jobs", id+".start"))
 }
 
 // Get reads a Job. Callers that mean to change it use WithLock.
