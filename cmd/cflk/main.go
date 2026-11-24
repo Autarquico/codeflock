@@ -5,6 +5,8 @@ import (
 	"context"
 	"os"
 
+	"github.com/spf13/cobra"
+
 	"github.com/Autarquico/codeflock/internal/adapters/harness"
 	"github.com/Autarquico/codeflock/internal/adapters/harness/claude"
 	"github.com/Autarquico/codeflock/internal/adapters/harness/codex"
@@ -25,9 +27,11 @@ func run() int {
 		exe = os.Args[0]
 	}
 	local := newLocalJobs(exe)
+	jobs := newFleet(local)
 	return cli.ExecuteWith(cli.Options{
 		Doctor:     checkThisMachine,
-		Jobs:       newFleet(local),
+		Jobs:       jobs,
+		Commands:   []*cobra.Command{newMCPCommand(jobs)},
 		Wrapper:    runWrapper,
 		Notify:     runner.HandleNotify,
 		PeerServe:  local.servePeer,
