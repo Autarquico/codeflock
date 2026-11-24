@@ -52,11 +52,12 @@ func (l *localJobs) Clean(ctx context.Context, id string, force bool) (cli.JobVi
 	return view(out, ""), mapErr(err)
 }
 
-// unretrieved refuses a clean that would delete work nothing else holds. Only
-// the generation this peer last held can: every earlier one was sealed into the
-// commit the next one started from. The rules, without --force:
-//   - its worktree has no change beyond what was sealed when the Job left (a
-//     Job that ended by itself sealed nothing: no change at all), and
+// unretrieved refuses a clean that would delete work nothing else holds. It looks
+// at every worktree this peer keeps for the Job, one per generation it held. The
+// rules, without --force:
+//   - a worktree has nothing (file, untracked file or staged change) beyond what
+//     was sealed when the Job left it (a Job that ended by itself sealed nothing:
+//     any change at all counts), and
 //   - a Job that ended by itself has every commit of its work in a branch, tag
 //     or remote-tracking ref that the clean leaves (the mirror's own cflk/<id>
 //     does not count), or in the commit the Job started from.
@@ -64,25 +65,27 @@ func (l *localJobs) Clean(ctx context.Context, id string, force bool) (cli.JobVi
 // A moved Job's work is the destination's, and a finished Job's was fetched by the
 // peer that finished it, so they need only the first rule.
 func (p *peer) unretrieved(ctx context.Context, j job.Job) error {
-	wt := p.store.WorktreeDir(j.ID, j.Gen)
-	if _, err := os.Stat(wt); errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	sealed := ""
-	switch {
-	case j.Finish != nil:
-		sealed = j.Finish.Commit
-	case j.State == job.Moved:
-		if ref, err := wire.MirrorRef(j.ID, j.Gen+1); err == nil {
-			sealed, _ = git(ctx, wt, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	for gen := 0; gen <= j.Gen; gen++ {
+		wt := p.store.WorktreeDir(j.ID, gen)
+		if _, err := os.Stat(wt); errors.Is(err, os.ErrNotExist) {
+			continue
 		}
-	}
-	if err := changedSince(ctx, wt, sealed); err != nil {
-		return refuseClean(j, wt, err)
-	}
-	if j.State == job.Done && j.Finish == nil {
-		if err := p.unpublished(ctx, j, wt); err != nil {
+		sealed := ""
+		switch {
+		case gen == j.Gen && j.Finish != nil:
+			sealed = j.Finish.Commit
+		case gen < j.Gen || j.State == job.Moved:
+			if ref, err := wire.MirrorRef(j.ID, gen+1); err == nil {
+				sealed, _ = git(ctx, wt, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+			}
+		}
+		if err := changedSince(ctx, wt, sealed); err != nil {
 			return refuseClean(j, wt, err)
+		}
+		if gen == j.Gen && j.State == job.Done && j.Finish == nil {
+			if err := p.unpublished(ctx, j, wt); err != nil {
+				return refuseClean(j, wt, err)
+			}
 		}
 	}
 	return nil
@@ -102,10 +105,11 @@ type lostWork struct{ what string }
 
 func (l *lostWork) Error() string { return l.what }
 
-// changedSince reports a worktree whose files differ from the commit sealed (or,
-// with none, from HEAD), untracked ones included and ignored ones not.
+// changedSince reports a worktree whose files, or staged changes, differ from the
+// commit sealed (or, with none, from HEAD), untracked files included and ignored
+// ones not.
 func changedSince(ctx context.Context, wt, sealed string) error {
-	out, err := git(ctx, wt, "status", "--porcelain")
+	out, err := git(ctx, wt, "status", "--porcelain=v2", "--untracked-files=all")
 	if err != nil {
 		return err
 	}
@@ -132,6 +136,24 @@ func changedSince(ctx context.Context, wt, sealed string) error {
 	}
 	if diff != "" {
 		return &lostWork{"has changes made after the work was sealed"}
+	}
+	return stagedAfter(ctx, wt, sealed)
+}
+
+// stagedAfter reports a path staged in the real index whose staged content is not
+// the sealed one: the files may look sealed while the index holds the only copy.
+func stagedAfter(ctx context.Context, wt, sealed string) error {
+	staged, err := git(ctx, wt, "diff", "--cached", "--name-only", "-z", "HEAD")
+	if err != nil || staged == "" {
+		return err
+	}
+	args := append([]string{"diff", "--cached", "--name-only", sealed, "--"}, strings.Split(strings.TrimRight(staged, "\x00"), "\x00")...)
+	diff, err := gitEnv(ctx, wt, []string{"GIT_LITERAL_PATHSPECS=1"}, args...)
+	if err != nil {
+		return err
+	}
+	if diff != "" {
+		return &lostWork{"has staged changes made after the work was sealed"}
 	}
 	return nil
 }

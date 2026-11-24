@@ -10,6 +10,7 @@ import (
 	"github.com/Autarquico/codeflock/internal/cli"
 	"github.com/Autarquico/codeflock/internal/domain"
 	"github.com/Autarquico/codeflock/internal/peer/checkout"
+	"github.com/Autarquico/codeflock/internal/peer/discovery"
 	"github.com/Autarquico/codeflock/internal/peer/job"
 	"github.com/Autarquico/codeflock/internal/peer/remote"
 	"github.com/Autarquico/codeflock/internal/peer/runner"
@@ -47,12 +48,21 @@ func (l *localJobs) finish(ctx context.Context, in server.FinishInput) (wire.Fin
 	if err := j.ExpectGen(in.Gen); err != nil {
 		return wire.Finish{}, mapErr(err)
 	}
+	var target *discovery.Peer // resolved before anything is stopped or sealed
+	if in.To != "" && in.To != p.name {
+		t, err := l.reachable(ctx, in.To, in.ToNames)
+		if err != nil {
+			return wire.Finish{}, err
+		}
+		target = &t
+	}
 	switch j.State {
 	case job.Finishing:
 	case job.Done:
 		if j.Finish == nil {
 			return wire.Finish{}, domain.NewError(domain.CodeInvalidTransition, fmt.Sprintf("job %s is done: its agent ended by itself", j.ID), nil)
 		}
+		return wire.Finish{ID: j.Finish.ID, Commit: j.Finish.Commit}, nil // answered already; the commit was fetched
 	case job.Moving:
 		return wire.Finish{}, movingError(j)
 	default:
@@ -68,10 +78,10 @@ func (l *localJobs) finish(ctx context.Context, in server.FinishInput) (wire.Fin
 		return wire.Finish{}, err
 	}
 	out := wire.Finish{ID: sealed.Finish.ID, Commit: sealed.Finish.Commit}
-	if in.To == "" || in.To == p.name {
+	if target == nil {
 		return out, nil
 	}
-	if err := l.sendFinish(ctx, p, sealed, in.To); err != nil {
+	if err := l.sendFinish(ctx, p, sealed, *target); err != nil {
 		return wire.Finish{}, finishStuck(sealed.ID, err)
 	}
 	return out, nil
@@ -113,18 +123,24 @@ func (p *peer) sealFinish(ctx context.Context, in server.FinishInput) (job.Job, 
 	return out, mapErr(err)
 }
 
-// sendFinish pushes the sealed commit to the mirror of the peer that asked.
-func (l *localJobs) sendFinish(ctx context.Context, p *peer, j job.Job, to string) error {
+// reachable finds the peer a request names (by node ID, then by any of its names)
+// and checks that it is online.
+func (l *localJobs) reachable(ctx context.Context, to string, names []string) (discovery.Peer, error) {
 	if l.net == nil {
-		return invalid("this peer has no way to reach the others")
+		return discovery.Peer{}, invalid("this peer has no way to reach the others")
 	}
-	target, err := l.findTarget(ctx, to)
+	target, err := l.findTarget(ctx, to, names...)
 	if err != nil {
-		return err
+		return discovery.Peer{}, err
 	}
 	if !target.Online {
-		return domain.NewError(domain.CodePeerUnreachable, fmt.Sprintf("peer %s is offline (Tailscale)", target.Name), nil)
+		return discovery.Peer{}, domain.NewError(domain.CodePeerUnreachable, fmt.Sprintf("peer %s is offline (Tailscale)", target.Name), nil)
 	}
+	return target, nil
+}
+
+// sendFinish pushes the sealed commit to the mirror of the peer that asked.
+func (l *localJobs) sendFinish(ctx context.Context, p *peer, j job.Job, target discovery.Peer) error {
 	ref, err := wire.MirrorRef(j.ID, j.Gen+1)
 	if err != nil {
 		return err
@@ -211,21 +227,21 @@ func (f *fleet) Pull(ctx context.Context, req cli.PullRequest) (cli.JobView, err
 	if o.peer == nil && !req.Finish {
 		return cli.JobView{}, invalid("job %s is on this peer already", req.ID)
 	}
-	me := self
+	me, names := self, []string(nil)
 	if o.peer != nil {
-		if me, err = f.identity(ctx); err != nil {
+		if me, names, err = f.identity(ctx); err != nil {
 			return cli.JobView{}, err
 		}
 	}
 	if req.Finish {
-		return f.finish(ctx, o, me, req.Push)
+		return f.finish(ctx, o, me, names, req.Push)
 	}
-	return f.Move(ctx, cli.MoveRequest{ID: req.ID, To: me})
+	return f.move(ctx, cli.MoveRequest{ID: req.ID, To: me}, names)
 }
 
 // finish asks the owner for the finish and brings its commit to the repository of
 // the current directory as the branch cflk/<id>.
-func (f *fleet) finish(ctx context.Context, o owner, self string, push bool) (cli.JobView, error) {
+func (f *fleet) finish(ctx context.Context, o owner, self string, names []string, push bool) (cli.JobView, error) {
 	src, err := sourceOf(ctx, "")
 	if err != nil {
 		return cli.JobView{}, err
@@ -245,11 +261,14 @@ func (f *fleet) finish(ctx context.Context, o owner, self string, push bool) (cl
 		}
 		from = p.store.WorktreeDir(o.view.ID, o.view.Gen)
 	} else {
-		resp, _, err := f.callWith(ctx, o, wire.Request{Op: wire.OpFinish, To: self}, nil)
+		resp, _, err := f.callWith(ctx, o, wire.Request{Op: wire.OpFinish, To: self, ToNames: names}, nil)
 		if err != nil {
 			return cli.JobView{}, finishStuck(o.view.ID, err)
 		}
 		info, from = *resp.Finish, p.mirrorDir(o.view.Repo)
+	}
+	if o.view.State == string(job.Done) {
+		return o.view, nil // done already: its branch was fetched then, and the seal is gone
 	}
 	branch := "cflk/" + o.view.ID
 	if err := p.releaseBranch(ctx, src.dir, o.view.ID, branch); err != nil {

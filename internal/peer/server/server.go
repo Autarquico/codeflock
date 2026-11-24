@@ -39,10 +39,11 @@ const (
 // MoveInput is a Job to move, to retry or to take back. Gen is the generation the
 // sender expects the Job to be in.
 type MoveInput struct {
-	Job  string
-	Gen  int
-	To   string
-	Mode MoveMode
+	Job     string
+	Gen     int
+	To      string
+	ToNames []string // other names of To, tried when it is not known
+	Mode    MoveMode
 }
 
 // PrepareInput is a movement to receive: the code is in the local mirror under
@@ -68,9 +69,10 @@ type TransferInput struct {
 // FinishInput is a Job whose owner is asked to stop and seal it for `pull --finish`;
 // To is the peer that gets the commit.
 type FinishInput struct {
-	Job string
-	Gen int
-	To  string
+	Job     string
+	Gen     int
+	To      string
+	ToNames []string // other names of To, tried when it is not known
 }
 
 // FinishNotice names a finish the owner has under way: the notice that its
@@ -188,7 +190,7 @@ func (s Server) dispatch(ctx context.Context, req wire.Request, body []byte) (wi
 		path, err := s.Local.Mirror(ctx, req.Repo)
 		return wire.Response{Mirror: path}, nil, err
 	case wire.OpMove:
-		return one(s.Local.Move(ctx, MoveInput{Job: req.Job, Gen: req.Gen, To: req.To, Mode: MoveStart}))
+		return one(s.Local.Move(ctx, MoveInput{Job: req.Job, Gen: req.Gen, To: req.To, ToNames: req.ToNames, Mode: MoveStart}))
 	case wire.OpMoveRetry:
 		return one(s.Local.Move(ctx, MoveInput{Job: req.Job, Gen: req.Gen, Mode: MoveRetry}))
 	case wire.OpMoveAbort:
@@ -205,7 +207,7 @@ func (s Server) dispatch(ctx context.Context, req wire.Request, body []byte) (wi
 		t, err := s.Local.AbortTransfer(ctx, TransferInput{Job: req.Job, Gen: req.Gen, Transfer: req.Transfer})
 		return wire.Response{Transfer: &t}, nil, err
 	case wire.OpFinish:
-		f, err := s.Local.Finish(ctx, FinishInput{Job: req.Job, Gen: req.Gen, To: req.To})
+		f, err := s.Local.Finish(ctx, FinishInput{Job: req.Job, Gen: req.Gen, To: req.To, ToNames: req.ToNames})
 		return wire.Response{Finish: &f}, nil, err
 	case wire.OpFinishDone:
 		return one(s.Local.FinishDone(ctx, FinishNotice{Job: req.Job, Gen: req.Gen, Finish: req.Finish}))

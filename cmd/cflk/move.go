@@ -91,7 +91,7 @@ func (l *localJobs) moveStart(ctx context.Context, p *peer, in server.MoveInput)
 	if !wire.ValidName(p.name) {
 		return cli.JobView{}, invalid("the name of this machine, %q, cannot travel to a peer: use letters, digits, '.', '_' and '-'", p.name)
 	}
-	target, err := l.findTarget(ctx, in.To)
+	target, err := l.findTarget(ctx, in.To, in.ToNames...)
 	if err != nil {
 		return cli.JobView{}, err
 	}
@@ -287,7 +287,7 @@ func (l *localJobs) deliver(ctx context.Context, p *peer, target discovery.Peer,
 	if err := p.fault(pointPrepared); err != nil {
 		return cli.JobView{}, err
 	}
-	_, _, err = l.order(ctx, target, activateTimeout, wire.Request{Op: wire.OpActivate, Job: j.ID, Gen: mv.Gen, Transfer: mv.Transfer}, nil)
+	resp, _, err := l.order(ctx, target, activateTimeout, wire.Request{Op: wire.OpActivate, Job: j.ID, Gen: mv.Gen, Transfer: mv.Transfer}, nil)
 	if codeOf(err) == wire.CodeTransferAborted {
 		if _, endErr := p.endMove(j.ID, mv, job.Stopped); endErr != nil {
 			return cli.JobView{}, errors.Join(err, endErr)
@@ -307,6 +307,11 @@ func (l *localJobs) deliver(ctx context.Context, p *peer, target discovery.Peer,
 	}
 	if err := p.fault(pointMoved); err != nil {
 		return cli.JobView{}, err
+	}
+	if resp.Job != nil && resp.Job.Problem != "" {
+		return view(moved, ""), domain.NewError(domain.CodeInternal, fmt.Sprintf(
+			"job %s is on %s, but its agent did not start there and it is stopped: `cflk resume %s` on %s starts it again (%s)",
+			j.ID, target.Name, j.ID, target.Name, resp.Job.Problem), nil)
 	}
 	return view(moved, ""), nil
 }
@@ -377,12 +382,12 @@ func (l *localJobs) order(ctx context.Context, target discovery.Peer, timeout ti
 	return remote.Call(ctx, l.net.transport, target, req, body)
 }
 
-func (l *localJobs) findTarget(ctx context.Context, name string) (discovery.Peer, error) {
+func (l *localJobs) findTarget(ctx context.Context, name string, alsoKnownAs ...string) (discovery.Peer, error) {
 	res, err := l.net.discover(ctx)
 	if err != nil {
 		return discovery.Peer{}, err
 	}
-	return findPeer(res, name)
+	return findPeer(res, name, alsoKnownAs...)
 }
 
 // pending is the Job as it is while a movement waits to be resolved, and the

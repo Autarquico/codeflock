@@ -226,3 +226,31 @@ func TestTrustingThroughASymlinkedConfigEditsTheTargetAndKeepsTheLink(t *testing
 		t.Fatal("the target was not edited")
 	}
 }
+
+func TestTrustingThroughADanglingConfigLinkCreatesItsTargetAndKeepsTheLink(t *testing.T) {
+	home, file, host := trustHost(t, "")
+	target := filepath.Join(t.TempDir(), "dotfiles", "codex.toml") // not there yet
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, file); err != nil {
+		t.Fatal(err)
+	}
+	wt := filepath.Join(home, "wt")
+	if err := os.Mkdir(wt, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := (codex.Adapter{}).TrustFolder(host, wt); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Lstat(file); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the link was replaced: %v %v", info, err)
+	}
+	resolved, _ := filepath.EvalSymlinks(wt)
+	if got := trustOf(t, target, resolved); got == "" {
+		t.Fatal("the target was not written")
+	}
+}

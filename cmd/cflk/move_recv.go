@@ -147,15 +147,15 @@ func (l *localJobs) prepare(ctx context.Context, in server.PrepareInput, archive
 	if err := p.supersede(in.Job, in.Gen, in.Transfer); err != nil {
 		return out, err
 	}
+	if err := os.MkdirAll(dir, 0o700); err != nil { // from here on the transfer is on disk, even before its record
+		return out, err
+	}
 	p.dropWorktree(ctx, mirror, wt)
 	if _, err := git(ctx, mirror, "worktree", "add", "--quiet", "--force", "-B", "cflk/"+in.Job, wt, in.Commit); err != nil {
 		p.dropWorktree(ctx, mirror, wt)
 		return out, err
 	}
 	if err := p.fault(pointWorktree); err != nil {
-		return out, err
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return out, err
 	}
 	if err := atomicfile.Write(filepath.Join(dir, sessionFile), archive, 0o600); err != nil {
@@ -237,7 +237,8 @@ func (p *peer) dropTransfer(ctx context.Context, in server.TransferInput, mirror
 }
 
 // liveTransferFor says whether a transfer other than except, not given up, is
-// prepared for the generation: the g<gen> worktree belongs to it.
+// preparing or prepared for the generation: the g<gen> worktree belongs to it. One
+// with no record yet (a prepare that did not get to write it) may be building it.
 func (p *peer) liveTransferFor(id string, gen int, except string) bool {
 	entries, _ := os.ReadDir(filepath.Join(p.store.Dir(id), "transfers"))
 	for _, e := range entries {
@@ -245,7 +246,7 @@ func (p *peer) liveTransferFor(id string, gen int, except string) bool {
 		if e.Name() == except || isAborted(dir) {
 			continue
 		}
-		if rec, found, err := readPrepared(dir); err == nil && found && rec.Gen == gen {
+		if rec, found, err := readPrepared(dir); err != nil || !found || rec.Gen == gen {
 			return true
 		}
 	}

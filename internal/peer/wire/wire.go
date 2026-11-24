@@ -104,6 +104,9 @@ type Request struct {
 	CreatedBy string `json:"created_by,omitempty"`
 	// To is the peer a move sends the Job to.
 	To string `json:"to,omitempty"`
+	// ToNames are the other names the sender has (its hostname, the ones its
+	// peers may know it by), tried when To, its node ID, is not known to the owner.
+	ToNames []string `json:"to_names,omitempty"`
 	// Transfer identifies a movement; History is the ownership of the Job so far (the
 	// latest MaxHistory entries); Force asks a resume to go ahead of a movement
 	// that was not confirmed.
@@ -174,6 +177,9 @@ var (
 // '-', not starting with a symbol, so that it is never an option for ssh or git.
 func ValidName(s string) bool { return namePattern.MatchString(s) }
 
+// MaxToNames is how many alternative names a request may carry for its sender.
+const MaxToNames = 8
+
 // ValidCommit reports whether s is a full git object id.
 func ValidCommit(s string) bool { return commitPattern.MatchString(s) }
 
@@ -234,6 +240,11 @@ func (sh shape) bodyLimit() int64 {
 
 // validateTransfer checks the fields of a movement.
 func (r Request) validateTransfer(sh shape) error {
+	for _, n := range r.ToNames {
+		if !ValidName(n) {
+			return protocolf("%q cannot name a peer", n)
+		}
+	}
 	switch {
 	case sh.transfer != (r.Transfer != ""):
 		return protocolf("op %s: transfer is %s", r.Op, requiredOrForbidden(sh.transfer))
@@ -243,6 +254,8 @@ func (r Request) validateTransfer(sh shape) error {
 		return protocolf("op %s: to is %s", r.Op, requiredOrForbidden(sh.to))
 	case r.To != "" && !ValidName(r.To):
 		return protocolf("%q cannot name a peer", r.To)
+	case len(r.ToNames) > MaxToNames || (r.To == "" && len(r.ToNames) > 0):
+		return protocolf("op %s: %d names for the peer", r.Op, len(r.ToNames))
 	case !sh.finish && r.Finish != "", sh.finishRequired && r.Finish == "":
 		return protocolf("op %s: finish is %s", r.Op, requiredOrForbidden(sh.finishRequired))
 	case r.Finish != "" && !job.ValidTransferID(r.Finish):

@@ -303,8 +303,9 @@ func newJobCmds(opts Options) []*cobra.Command {
 entries and refs. Without --force it refuses when that would delete work nothing
 else holds:
 
-  - the last worktree here has changes made after the Job was sealed (a Job that
-    ended by itself sealed nothing: any uncommitted change counts), or
+  - any worktree here (one per generation the Job held) has files, untracked
+    files or staged changes beyond what was sealed when the Job left it (a Job
+    that ended by itself sealed nothing: any uncommitted change counts), or
   - a Job that ended by itself has commits that no branch, tag or remote-tracking
     ref of the repository keeps (the mirror's own cflk/<id> branch does not count).
 

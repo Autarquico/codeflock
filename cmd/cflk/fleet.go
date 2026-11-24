@@ -103,17 +103,29 @@ func (f *fleet) selfName() (string, error) {
 }
 
 // identity is how this peer names itself to the others: its stable Tailscale
-// node ID, which they resolve in their own discovery whatever the hostnames are.
-// Without Tailscale the hostname is all there is, and the others must list it.
-func (f *fleet) identity(ctx context.Context) (string, error) {
+// node ID, which they resolve in their own discovery whatever the hostnames are,
+// and the names it also goes by (its hostname, the name Tailscale gives it), for
+// an owner that knows it only by those. Without Tailscale the hostname is all
+// there is, and the others must list it.
+func (f *fleet) identity(ctx context.Context) (to string, names []string, err error) {
 	res, err := f.discover(ctx)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
+	host, err := f.selfName()
+	if err != nil {
+		return "", nil, err
+	}
+	to = host
 	if wire.ValidName(res.Self.ID) {
-		return res.Self.ID, nil
+		to = res.Self.ID
 	}
-	return f.selfName()
+	for _, n := range []string{host, res.Self.Name, res.Self.Host} {
+		if n != to && wire.ValidName(n) && !slices.Contains(names, n) && len(names) < wire.MaxToNames {
+			names = append(names, n)
+		}
+	}
+	return to, names, nil
 }
 
 func (f *fleet) isThis(name string) (bool, error) {
@@ -242,9 +254,11 @@ func (f *fleet) Peers(ctx context.Context) ([]cli.PeerView, error) {
 
 // findPeer is the discovered peer a person named; the name never becomes a host
 // unless discovery lists it.
-func findPeer(res discovery.Result, name string) (discovery.Peer, error) {
-	if p, ok := res.Find(name); ok {
-		return p, nil
+func findPeer(res discovery.Result, name string, alsoKnownAs ...string) (discovery.Peer, error) {
+	for _, n := range append([]string{name}, alsoKnownAs...) {
+		if p, ok := res.Find(n); ok {
+			return p, nil
+		}
 	}
 	known := make([]string, len(res.Peers))
 	for i, p := range res.Peers {
@@ -425,6 +439,11 @@ func (f *fleet) ResumeForce(ctx context.Context, id string) (cli.JobView, error)
 // The peer that owns the Job does the work: it stops the Job, seals it and sends
 // it to the destination.
 func (f *fleet) Move(ctx context.Context, req cli.MoveRequest) (cli.JobView, error) {
+	return f.move(ctx, req, nil)
+}
+
+// move is Move for a destination that goes by more than one name.
+func (f *fleet) move(ctx context.Context, req cli.MoveRequest, names []string) (cli.JobView, error) {
 	locate := f.locate
 	if req.Retry || req.Abort {
 		locate = f.locatePending
@@ -441,13 +460,13 @@ func (f *fleet) Move(ctx context.Context, req cli.MoveRequest) (cli.JobView, err
 		mode, op = server.MoveAbort, wire.OpMoveAbort
 	}
 	if o.peer == nil {
-		return f.local.move(ctx, server.MoveInput{Job: req.ID, Gen: o.view.Gen, To: req.To, Mode: mode})
+		return f.local.move(ctx, server.MoveInput{Job: req.ID, Gen: o.view.Gen, To: req.To, ToNames: names, Mode: mode})
 	}
 	to := req.To
 	if mode != server.MoveStart {
-		to = ""
+		to, names = "", nil
 	}
-	resp, _, err := f.callWith(ctx, o, wire.Request{Op: op, To: to}, nil)
+	resp, _, err := f.callWith(ctx, o, wire.Request{Op: op, To: to, ToNames: names}, nil)
 	if err != nil {
 		return cli.JobView{}, err
 	}

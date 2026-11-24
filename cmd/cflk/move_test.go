@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -41,6 +42,7 @@ const secretPlan = "the plan only this conversation knows"
 type moveAgent struct {
 	script, home, peer, log string
 	seq                     *int
+	broken                  *atomic.Bool // the agent cannot be prepared
 }
 
 var nonAlnum = regexp.MustCompile(`[^A-Za-z0-9]`)
@@ -48,6 +50,9 @@ var nonAlnum = regexp.MustCompile(`[^A-Za-z0-9]`)
 const uuidFmt = "%08x-1111-4222-8333-%012x"
 
 func (a moveAgent) Prepare(_ context.Context, in runner.Input) (runner.Plan, error) {
+	if a.broken.Load() {
+		return runner.Plan{}, errors.New("the agent is broken on " + a.peer)
+	}
 	id := in.SessionID
 	if id == "" {
 		*a.seq++
@@ -126,6 +131,7 @@ type movePeer struct {
 	home   string
 	faults *crashFaults
 	have   bool // the harness is installed
+	broken atomic.Bool
 }
 
 // cut is a dial that fails: before the peer hears the order, or after it carried it out.
@@ -171,7 +177,7 @@ func newMoveNet(t *testing.T, steps []fakeharness.Step, names ...string) *moveNe
 		mp.localJobs = newLocalJobs("/cflk", overrides{
 			name: name, root: shortDir(t), share: t.TempDir(), sessions: ss, faults: mp.faults,
 			installed: func(string) bool { return mp.have },
-			agents:    map[string]runner.Agent{claude.ID: moveAgent{script: script, home: mp.home, peer: name, log: n.log, seq: seq}},
+			agents:    map[string]runner.Agent{claude.ID: moveAgent{script: script, home: mp.home, peer: name, log: n.log, seq: seq, broken: &mp.broken}},
 			wrapper:   func(dir string) []string { return []string{"/usr/bin/env", asWrapper + "=" + dir, os.Args[0]} },
 			stopper:   runner.Stopper{Grace: 200 * time.Millisecond, KillWait: 2 * time.Second, Poll: 10 * time.Millisecond},
 		})
@@ -751,4 +757,27 @@ func shortDir(t *testing.T) string {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	return dir
+}
+
+func TestAnAgentThatDoesNotStartAtTheDestinationFailsTheMoveAndResumesThere(t *testing.T) {
+	n := newMoveNet(t, []fakeharness.Step{neverEnds}, "laptop", "mini")
+	v := n.started(t, "laptop")
+	n.peers["mini"].broken.Store(true)
+
+	_, err := n.fleet("laptop").Move(t.Context(), cli.MoveRequest{ID: v.ID, To: "mini"})
+	if err == nil || !strings.Contains(err.Error(), "the agent is broken on mini") || !strings.Contains(err.Error(), "cflk resume "+v.ID+"` on mini") {
+		t.Fatalf("the move must fail with the destination's problem and say where to resume: %v", err)
+	}
+	if got := n.record(t, "laptop", v.ID); got.State != job.Moved {
+		t.Fatalf("source = %s: the destination owns the Job once it wrote it", got.State)
+	}
+	if got := n.record(t, "mini", v.ID); got.State != job.Stopped || got.Gen != 2 {
+		t.Fatalf("destination = %s gen %d, want stopped gen 2", got.State, got.Gen)
+	}
+
+	n.peers["mini"].broken.Store(false)
+	if _, err := n.fleet("mini").Resume(t.Context(), v.ID); err != nil {
+		t.Fatalf("resume on the destination: %v", err)
+	}
+	eventually(t, "the Job runs on mini", func() bool { return n.launchesOn("mini") == 1 })
 }

@@ -65,7 +65,7 @@ func editTrust(host harness.Host, worktree string, change func(text, key string,
 	if err != nil {
 		return fmt.Errorf("codex: trusting the folder: %w", err)
 	}
-	path := filepath.Join(dir, configFile)
+	path := resolveLinks(filepath.Join(dir, configFile)) // a config managed elsewhere stays a link, and every alias shares the lock of its target
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("codex: trusting the folder: %w", err)
 	}
@@ -74,9 +74,6 @@ func editTrust(host harness.Host, worktree string, change func(text, key string,
 		return fmt.Errorf("codex: trusting the folder: %w", err)
 	}
 	defer release()
-	if target, err := filepath.EvalSymlinks(path); err == nil {
-		path = target // a config managed elsewhere stays a link: the rename replaces its target
-	}
 	perm := os.FileMode(0o600)
 	raw, err := os.ReadFile(path) //nolint:gosec // the configuration of the host
 	switch {
@@ -107,6 +104,25 @@ func editTrust(host harness.Host, worktree string, change func(text, key string,
 		return fmt.Errorf("codex: trusting the folder: %w", err)
 	}
 	return nil
+}
+
+// resolveLinks follows path through its symbolic links, a dangling one too: the
+// file to create is where the link points.
+func resolveLinks(path string) string {
+	if target, err := filepath.EvalSymlinks(path); err == nil {
+		return target
+	}
+	for range 40 {
+		link, err := os.Readlink(path)
+		if err != nil {
+			return path
+		}
+		if !filepath.IsAbs(link) {
+			link = filepath.Join(filepath.Dir(path), link)
+		}
+		path = link
+	}
+	return path
 }
 
 func trustKey(worktree string) (string, error) {
