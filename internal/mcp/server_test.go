@@ -88,7 +88,7 @@ func (f *fakeJobs) Pull(_ context.Context, req cli.PullRequest) (cli.JobView, er
 	return f.job(req.ID), nil
 }
 
-func (f *fakeJobs) Clean(_ context.Context, id string) (cli.JobView, error) {
+func (f *fakeJobs) Clean(_ context.Context, id string, _ bool) (cli.JobView, error) {
 	f.cleaned = append(f.cleaned, id)
 	return f.job(id), nil
 }

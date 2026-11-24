@@ -50,7 +50,7 @@ type Jobs interface {
 	Send(ctx context.Context, id, text string) (cli.JobView, error)
 	Move(ctx context.Context, req cli.MoveRequest) (cli.JobView, error)
 	Pull(ctx context.Context, req cli.PullRequest) (cli.JobView, error)
-	Clean(ctx context.Context, id string) (cli.JobView, error)
+	Clean(ctx context.Context, id string, force bool) (cli.JobView, error)
 	// Attach opens a window attached to the Job: the server has no terminal.
 	Attach(ctx context.Context, id string, readOnly bool) error
 }
