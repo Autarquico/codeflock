@@ -25,9 +25,13 @@ func run() int {
 		exe = os.Args[0]
 	}
 	local := newLocalJobs(exe)
+	jobs := newFleet(local)
+	if code, opened := openTUI(os.Args[1:], jobs); opened {
+		return code
+	}
 	return cli.ExecuteWith(cli.Options{
 		Doctor:     checkThisMachine,
-		Jobs:       newFleet(local),
+		Jobs:       jobs,
 		Wrapper:    runWrapper,
 		Notify:     runner.HandleNotify,
 		PeerServe:  local.servePeer,
