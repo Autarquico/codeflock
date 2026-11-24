@@ -65,7 +65,7 @@ A typical turn: the model calls `jobs_list`, sees a Job `waiting`, reads `jobs_s
 
 ## What is tested, and what is not
 
-The install and uninstall commands are tested in CI with fake `claude` and `codex` programs. They have not been run against every version of the real tools. The peer tools are in development: they have not yet been checked by hand on a set of real machines.
+The install and uninstall commands are tested in CI with fake `claude` and `codex` programs. They have not been run against every version of the real tools. On real machines, `cflk mcp serve` was checked to list its tools and the Jobs of the peers. The other peer tools call the same code as the CLI commands of the same name; what of that was checked by hand is in [Getting started](../getting-started/). `jobs_attach` was not.
 
 ## Running the server by hand
 

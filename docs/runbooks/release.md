@@ -105,6 +105,32 @@ Es la primera release sin Controller ni Worker. El flujo, en orden, con los paso
 6. El Controller sigue en marcha hasta que valides la red de peers. Cuando lo hagas, cada máquina ejecuta
    `cflk doctor --fix` y el host del Controller sigue [retire-controller](retire-controller.md).
 
+#### Prueba real de la flota (2026-11-24, `next` en 392d36d)
+
+Con `cflk` de `next` instalado como `~/.local/bin/cflk-next` (y `[cflk_path]` apuntando a él) en un MacBook
+(darwin-arm64), omarch01 (linux-amd64) y un Mac mini (darwin-amd64), sobre el repo de pruebas `cflk-sandbox`:
+
+| Paso | Resultado |
+| --- | --- |
+| `cflk peers` | los tres `reachable` |
+| `run --on omarch01` (Claude), `screen`, `send` | ok |
+| `pull` (omarch01 → MacBook) y `move --to omarch01` | ok: la conversación y los ficheros sin commit viajan en los dos sentidos |
+| `run --on omarch01 --harness codex`, `pull`, `pull --finish`, `clean` | ok: la rama `cflk/<job>` llega al repo sin tocar el checkout |
+| `cflk mcp serve`: `tools/list`, `jobs_list` | ok |
+
+Lo que encontró y se arregló en #230:
+
+- Un Job que volvía a un peer donde ya había estado se quedaba en `moving`.
+- Claude, arrancado por ssh en un Mac, abría "Not logged in": su login está en el llavero. La guía explica el
+  remedio.
+
+Sin probar en la flota:
+
+- moves entre el Mac mini y omarch01: sin ssh entre ellos;
+- devolver un Job de Codex al peer del que vino;
+- `attach`, `tui` y `cflk mcp install`;
+- omarch02.
+
 La release publica solo `cflk` para linux y darwin, amd64 y arm64 (`.goreleaser.yaml`); no hay binario `cf`.
 
 Después `pages.yml` construye y despliega el sitio con la versión del tag.

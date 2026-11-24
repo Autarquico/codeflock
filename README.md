@@ -10,7 +10,7 @@ Landing page: <https://autarquico.github.io/codeflock/>
 
 Pre-release. `v0.5.0-beta.1` is the first release of the peer network, and `v0.4.0-beta.8` is the last one with a Controller. The 0.5 betas have no compatibility with the Controller.
 
-What has been checked with the real CLIs: a Claude Code session exported on one machine and imported on another, in a different directory, is resumed and remembers the conversation; a Codex session does the same across directories on one machine. Moving a Job between machines, entering it, and bringing it back are in development and have not yet been checked by hand on a set of real machines. Codex between two machines has not been tried.
+What has been checked with the real CLIs: a Claude Code session exported on one machine and imported on another, in a different directory, is resumed and remembers the conversation; a Codex session does the same across directories on one machine. Checked by hand on two Macs and a Linux box: a Claude Code Job run on another peer, pulled here and moved back, remembering the conversation; a Codex Job run on another peer, pulled here and finished with `pull --finish`. Not yet checked by hand: entering a Job (`attach`, `tui`), `cflk mcp install`, a Codex Job moved back, and moves between every pair of machines.
 
 ## Install
 

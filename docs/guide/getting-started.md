@@ -8,7 +8,7 @@ Code Flock home: [autarquico.github.io/codeflock](https://autarquico.github.io/c
 This page takes you from nothing to a Job running on another machine of yours. You need two machines on the same [Tailscale](https://tailscale.com) tailnet, and a Git repository.
 
 :::note[What has been verified]
-This guide describes the behaviour of the 0.5.0 betas. Verified with the real CLIs: a Claude Code session moved to another machine, in another directory, is resumed and remembers the conversation; the same for Codex across directories on one machine. Running, entering, moving and pulling Jobs between machines is in development and has not yet been checked by hand on a set of real machines.
+This guide describes the behaviour of the 0.5.0 betas. Verified with the real CLIs: a Claude Code session moved to another machine, in another directory, is resumed and remembers the conversation; the same for Codex across directories on one machine. Checked by hand on two Macs and a Linux box: a Claude Code Job run on another peer, sent to, pulled here and moved back, remembering the conversation; a Codex Job run on another peer, pulled here, finished with `pull --finish` and cleaned. Not yet checked by hand: `attach`, `tui`, `cflk mcp install`, a Codex Job moved back, and moves between every pair of machines.
 :::
 
 ## What a machine needs
