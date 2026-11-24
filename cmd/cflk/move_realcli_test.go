@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Autarquico/codeflock/internal/adapters/harness/claude"
+	"github.com/Autarquico/codeflock/internal/adapters/harness/codex"
 	"github.com/Autarquico/codeflock/internal/cli"
 	"github.com/Autarquico/codeflock/internal/peer/discovery"
 	"github.com/Autarquico/codeflock/internal/peer/job"
@@ -61,6 +62,7 @@ func realPeers(t *testing.T, binary string) *fleet {
 				_ = p.runner.Stop(ctx, j.ID)
 				for _, wt := range mustGlob(p.store.Dir(j.ID)) {
 					_ = claude.Adapter{}.UntrustFolder(p.host, wt)
+					_ = codex.Adapter{}.UntrustFolder(p.host, wt)
 				}
 			}
 			_ = p.tmux.KillServer(ctx)
@@ -85,10 +87,6 @@ func realMoveKeepsTheConversation(t *testing.T, binary, harness string) {
 	f := realPeers(t, binary)
 	ctx := t.Context()
 	v, err := f.Run(ctx, cli.RunRequest{Harness: harness, Prompt: "The secret word is KUMQUAT. Remember it. Reply with the single word READY and nothing else."})
-	if err != nil && harness == "codex" && strings.Contains(err.Error(), "finding the session of the launch") {
-		// Codex asks to trust the git root of a worktree it was not told to trust, and waits.
-		t.Skipf("codex does not start without a trust decision for the repository: %v", err)
-	}
 	if err != nil {
 		t.Fatal(err)
 	}

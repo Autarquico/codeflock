@@ -243,3 +243,42 @@ func TestTheOrdersOfAMovementCarryOnlyWhatTheyNeed(t *testing.T) {
 		}
 	}
 }
+
+func TestTheOrdersOfAFinishCarryOnlyWhatTheyNeedAndTheAnswerIsTheOneAsked(t *testing.T) {
+	finish := "abcdefghijklmnop"
+	for name, req := range map[string]Request{
+		"finish":       {Op: OpFinish, Job: testJob, Gen: 1, To: "mac-mini"},
+		"done":         {Op: OpFinishDone, Job: testJob, Gen: 1, Finish: finish},
+		"abort":        {Op: OpFinishAbort, Job: testJob, Gen: 1},
+		"abort of one": {Op: OpFinishAbort, Job: testJob, Gen: 1, Finish: finish},
+	} {
+		if err := req.Validate(); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	for name, req := range map[string]Request{
+		"finish without destination": {Op: OpFinish, Job: testJob, Gen: 1},
+		"finish without generation":  {Op: OpFinish, Job: testJob, To: "mac-mini"},
+		"finish names a finish":      {Op: OpFinish, Job: testJob, Gen: 1, To: "mac-mini", Finish: finish},
+		"done without finish":        {Op: OpFinishDone, Job: testJob, Gen: 1},
+		"finish with shell":          {Op: OpFinishDone, Job: testJob, Gen: 1, Finish: "$(id)aaaaaaaaaaaa"},
+		"move names a finish":        {Op: OpMove, Job: testJob, Gen: 1, To: "mac-mini", Finish: finish},
+	} {
+		if err := req.Validate(); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	commit := strings.Repeat("a", 40)
+	if err := (Response{Finish: &Finish{ID: finish, Commit: commit}}).Expect(Request{Op: OpFinish, Job: testJob}); err != nil {
+		t.Errorf("a finish answered with its finish: %v", err)
+	}
+	if err := (Response{Job: &JobView{ID: testJob, State: "done"}}).Expect(Request{Op: OpFinish, Job: testJob}); err == nil {
+		t.Error("a finish answered with a Job view was accepted")
+	}
+	if err := (Response{Finish: &Finish{ID: "x", Commit: commit}}).Validate(); err == nil {
+		t.Error("a finish with a bad id was accepted")
+	}
+	if err := (Response{Finish: &Finish{ID: finish, Commit: commit}, Mirror: "/m"}).Validate(); err == nil {
+		t.Error("two results were accepted")
+	}
+}

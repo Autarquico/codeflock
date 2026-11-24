@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Autarquico/codeflock/internal/adapters/harness"
 	"github.com/Autarquico/codeflock/internal/adapters/harness/claude"
+	"github.com/Autarquico/codeflock/internal/adapters/harness/codex"
 	"github.com/Autarquico/codeflock/internal/cli"
 	"github.com/Autarquico/codeflock/internal/domain"
 	"github.com/Autarquico/codeflock/internal/peer/job"
@@ -55,10 +57,8 @@ func (p *peer) removeWork(ctx context.Context, j job.Job) error {
 		if common, err := git(ctx, wt, "rev-parse", "--path-format=absolute", "--git-common-dir"); err == nil {
 			repos = append(repos, common)
 		}
-		if j.Harness == claude.ID {
-			if err := (claude.Adapter{}).UntrustFolder(p.host, wt); err != nil {
-				return fmt.Errorf("removing the trust entry of %s: %w", wt, err)
-			}
+		if err := untrust(p.host, j.Harness, wt); err != nil {
+			return fmt.Errorf("removing the trust entry of %s: %w", wt, err)
 		}
 	}
 	for _, repo := range repos {
@@ -97,4 +97,15 @@ func dropRefs(ctx context.Context, repo, id string) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// untrust takes back the entry that launching the harness in the worktree wrote.
+func untrust(host harness.Host, harnessID, wt string) error {
+	switch harnessID {
+	case claude.ID:
+		return (claude.Adapter{}).UntrustFolder(host, wt)
+	case codex.ID:
+		return (codex.Adapter{}).UntrustFolder(host, wt)
+	}
+	return nil
 }

@@ -87,6 +87,20 @@ func (s peerService) AbortTransfer(ctx context.Context, in server.TransferInput)
 	return s.l.abortTransfer(ctx, in)
 }
 
+func (s peerService) Finish(ctx context.Context, in server.FinishInput) (wire.Finish, error) {
+	return s.l.finish(ctx, in)
+}
+
+func (s peerService) FinishDone(ctx context.Context, in server.FinishNotice) (wire.JobView, error) {
+	v, err := s.l.finishDone(ctx, in)
+	return wire.JobView(v), err
+}
+
+func (s peerService) FinishAbort(ctx context.Context, in server.FinishNotice) (wire.JobView, error) {
+	v, err := s.l.finishAbort(ctx, in)
+	return wire.JobView(v), err
+}
+
 func (s peerService) Screen(ctx context.Context, id string) (string, error) {
 	return s.l.Screen(ctx, id)
 }

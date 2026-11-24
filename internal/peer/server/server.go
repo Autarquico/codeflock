@@ -65,6 +65,22 @@ type TransferInput struct {
 	Transfer string
 }
 
+// FinishInput is a Job whose owner is asked to stop and seal it for `pull --finish`;
+// To is the peer that gets the commit.
+type FinishInput struct {
+	Job string
+	Gen int
+	To  string
+}
+
+// FinishNotice names a finish the owner has under way: the notice that its
+// commit arrived, or the order to give it up. Finish may be empty in an abort.
+type FinishNotice struct {
+	Job    string
+	Gen    int
+	Finish string
+}
+
 // Local is what this peer does with its own Jobs: the same use cases the local
 // commands run, so that a request from another peer and a command typed here
 // cannot differ.
@@ -90,6 +106,11 @@ type Local interface {
 	Activate(ctx context.Context, in TransferInput) (wire.JobView, error)
 	// AbortTransfer gives a movement up, unless it was activated already.
 	AbortTransfer(ctx context.Context, in TransferInput) (wire.Transfer, error)
+	// Finish stops and seals the Job, writes `finishing` and sends the commit to In.To.
+	Finish(ctx context.Context, in FinishInput) (wire.Finish, error)
+	// FinishDone marks done the Job whose finish arrived; FinishAbort gives the finish up.
+	FinishDone(ctx context.Context, in FinishNotice) (wire.JobView, error)
+	FinishAbort(ctx context.Context, in FinishNotice) (wire.JobView, error)
 	// AttachHere attaches the terminal of this process to the Job's, and fails if
 	// there is no terminal: it never opens a window.
 	AttachHere(ctx context.Context, id string, readOnly bool) error
@@ -183,6 +204,13 @@ func (s Server) dispatch(ctx context.Context, req wire.Request, body []byte) (wi
 	case wire.OpAbortTransfer:
 		t, err := s.Local.AbortTransfer(ctx, TransferInput{Job: req.Job, Gen: req.Gen, Transfer: req.Transfer})
 		return wire.Response{Transfer: &t}, nil, err
+	case wire.OpFinish:
+		f, err := s.Local.Finish(ctx, FinishInput{Job: req.Job, Gen: req.Gen, To: req.To})
+		return wire.Response{Finish: &f}, nil, err
+	case wire.OpFinishDone:
+		return one(s.Local.FinishDone(ctx, FinishNotice{Job: req.Job, Gen: req.Gen, Finish: req.Finish}))
+	case wire.OpFinishAbort:
+		return one(s.Local.FinishAbort(ctx, FinishNotice{Job: req.Job, Gen: req.Gen, Finish: req.Finish}))
 	}
 	return wire.Response{}, nil, domain.NewError(domain.CodeInvalidRequest, "unknown op", nil)
 }

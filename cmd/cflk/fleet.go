@@ -317,7 +317,7 @@ func (f *fleet) timeoutOf(op wire.Op) time.Duration {
 	switch op {
 	case wire.OpStop:
 		return cmp.Or(f.orderTimeout, stopTimeout)
-	case wire.OpMove, wire.OpMoveRetry, wire.OpMoveAbort:
+	case wire.OpMove, wire.OpMoveRetry, wire.OpMoveAbort, wire.OpFinish:
 		return cmp.Or(f.orderTimeout, moveTimeout)
 	}
 	return cmp.Or(f.orderTimeout, remote.DefaultOrderTimeout)

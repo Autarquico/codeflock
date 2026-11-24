@@ -80,6 +80,12 @@ const (
 	OpPrepare       Op = "prepare"
 	OpActivate      Op = "activate"
 	OpAbortTransfer Op = "abort-transfer"
+	// OpFinish asks the peer that owns a Job to stop it, seal it and send the commit
+	// to the peer named in `to`; OpFinishDone says the commit arrived, and the Job is
+	// done; OpFinishAbort gives the finish up.
+	OpFinish      Op = "finish"
+	OpFinishDone  Op = "finish-done"
+	OpFinishAbort Op = "finish-abort"
 )
 
 // Request is the header of what a peer asks. Fields an op does not use must be
@@ -104,6 +110,8 @@ type Request struct {
 	Transfer string         `json:"transfer,omitempty"`
 	History  []HistoryEntry `json:"history,omitempty"`
 	Force    bool           `json:"force,omitempty"`
+	// Finish identifies a `pull --finish` the owner has under way.
+	Finish string `json:"finish,omitempty"`
 	// Size is the length of the body that follows: the prompt of a run, the text
 	// of a send, the session archive of a prepare.
 	Size int64 `json:"size,omitempty"`
@@ -125,6 +133,8 @@ type shape struct {
 	to, transfer, history, force bool
 	// archive: the body is a session archive and may be as long as one.
 	archive bool
+	// finish: the id of a finish is allowed, and required if finishRequired.
+	finish, finishRequired bool
 }
 
 var shapes = map[Op]shape{
@@ -147,6 +157,10 @@ var shapes = map[Op]shape{
 	},
 	OpActivate:      {job: true, gen: true, genRequired: true, transfer: true},
 	OpAbortTransfer: {job: true, gen: true, genRequired: true, transfer: true},
+
+	OpFinish:      {job: true, gen: true, genRequired: true, to: true},
+	OpFinishDone:  {job: true, gen: true, genRequired: true, finish: true, finishRequired: true},
+	OpFinishAbort: {job: true, gen: true, genRequired: true, finish: true},
 }
 
 var (
@@ -170,7 +184,7 @@ func (r Request) checkPresent(keys map[string]bool) error {
 	for key, allowed := range map[string]bool{
 		"job": sh.job, "gen": sh.gen, "repo": sh.repo, "size": sh.body,
 		"harness": sh.run, "commit": sh.run, "created_by": sh.run,
-		"to": sh.to, "transfer": sh.transfer, "history": sh.history, "force": sh.force,
+		"to": sh.to, "transfer": sh.transfer, "history": sh.history, "force": sh.force, "finish": sh.finish,
 	} {
 		if keys[key] && !allowed {
 			return protocolf("op %s: field %s is not allowed", r.Op, key)
@@ -229,6 +243,10 @@ func (r Request) validateTransfer(sh shape) error {
 		return protocolf("op %s: to is %s", r.Op, requiredOrForbidden(sh.to))
 	case r.To != "" && !ValidName(r.To):
 		return protocolf("%q cannot name a peer", r.To)
+	case !sh.finish && r.Finish != "", sh.finishRequired && r.Finish == "":
+		return protocolf("op %s: finish is %s", r.Op, requiredOrForbidden(sh.finishRequired))
+	case r.Finish != "" && !job.ValidTransferID(r.Finish):
+		return protocolf("%q is not a finish id", r.Finish)
 	case !sh.history && len(r.History) > 0:
 		return protocolf("op %s takes no history", r.Op)
 	case len(r.History) > MaxHistory:
@@ -362,6 +380,21 @@ func (t Transfer) Validate() error {
 	return nil
 }
 
+// Finish is what the owner answers to a finish: the id of the finish and the
+// exact commit it sealed, which it has sent to the peer that asked.
+type Finish struct {
+	ID     string `json:"id"`
+	Commit string `json:"commit"`
+}
+
+// Validate checks the shape of what a peer says about a finish.
+func (f Finish) Validate() error {
+	if !job.ValidTransferID(f.ID) || !ValidCommit(f.Commit) {
+		return protocolf("finish %q is not valid", f.ID)
+	}
+	return nil
+}
+
 // Hello is what a peer says about itself.
 type Hello struct {
 	Name      string   `json:"name"`
@@ -379,6 +412,8 @@ type Response struct {
 	Mirror string   `json:"mirror,omitempty"`
 	// Transfer is the answer of prepare and abort-transfer.
 	Transfer *Transfer `json:"transfer,omitempty"`
+	// Finish is the answer of finish.
+	Finish *Finish `json:"finish,omitempty"`
 	// Listing says the body is the list of Jobs (a ps), which WriteResponse
 	// writes from Jobs and ReadResponse reads into it. An empty list is a
 	// non-nil empty Jobs.
@@ -413,7 +448,7 @@ func (r Response) Validate() error {
 		return protocolf("%d Jobs in one listing", len(r.Jobs))
 	}
 	results := 0
-	for _, present := range []bool{r.Hello != nil, r.Job != nil, r.Listing || r.Jobs != nil, r.Mirror != "", r.Transfer != nil} {
+	for _, present := range []bool{r.Hello != nil, r.Job != nil, r.Listing || r.Jobs != nil, r.Mirror != "", r.Transfer != nil, r.Finish != nil} {
 		if present {
 			results++
 		}
@@ -447,6 +482,11 @@ func (r Response) Validate() error {
 			return err
 		}
 	}
+	if r.Finish != nil {
+		if err := r.Finish.Validate(); err != nil {
+			return err
+		}
+	}
 	for _, v := range r.Jobs {
 		if err := v.Validate(); err != nil {
 			return err
@@ -459,18 +499,20 @@ func (r Response) Validate() error {
 // gives, about the Job that was asked, and nothing else.
 func (r Response) Expect(req Request) error {
 	var ok bool
-	bare := r.Transfer == nil
+	bare := r.Transfer == nil && r.Finish == nil
 	switch req.Op {
 	case OpHello:
 		ok = r.Hello != nil && r.Job == nil && !r.Listing && r.Mirror == "" && r.Size == 0 && bare
 	case OpPS:
 		ok = r.Listing && r.Hello == nil && r.Job == nil && r.Mirror == "" && bare
-	case OpShow, OpStop, OpResume, OpSend, OpRun, OpMove, OpMoveRetry, OpMoveAbort, OpActivate:
+	case OpShow, OpStop, OpResume, OpSend, OpRun, OpMove, OpMoveRetry, OpMoveAbort, OpActivate, OpFinishDone, OpFinishAbort:
 		ok = r.Job != nil && r.Job.ID == req.Job && r.Hello == nil && !r.Listing && r.Mirror == "" && r.Size == 0 && bare
 	case OpScreen:
 		ok = r.Hello == nil && r.Job == nil && !r.Listing && r.Mirror == "" && bare
 	case OpMirror:
 		ok = r.Mirror != "" && r.Hello == nil && r.Job == nil && !r.Listing && r.Size == 0 && bare
+	case OpFinish:
+		ok = r.Finish != nil && r.Hello == nil && r.Job == nil && !r.Listing && r.Mirror == "" && r.Size == 0 && r.Transfer == nil
 	case OpPrepare, OpAbortTransfer:
 		ok = r.Transfer != nil && r.Transfer.ID == req.Transfer && r.Transfer.Gen == req.Gen &&
 			r.Hello == nil && r.Job == nil && !r.Listing && r.Mirror == "" && r.Size == 0

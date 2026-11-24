@@ -55,6 +55,11 @@ func (f *fakeJobs) Move(_ context.Context, r MoveRequest) (JobView, error) {
 	return JobView{ID: r.ID, State: "moved", MovedTo: r.To}, f.err
 }
 
+func (f *fakeJobs) Pull(_ context.Context, r PullRequest) (JobView, error) {
+	f.called = append(f.called, fmt.Sprintf("pull %s finish=%v push=%v abort=%v", r.ID, r.Finish, r.Push, r.Abort))
+	return JobView{ID: r.ID, Branch: "cflk/" + r.ID, State: "done"}, f.err
+}
+
 func (f *fakeJobs) Clean(_ context.Context, id string) (JobView, error) {
 	f.called = append(f.called, "clean "+id)
 	return JobView{ID: id, State: "moved"}, f.err
@@ -233,6 +238,30 @@ func TestMoveNeedsADestinationUnlessItResolvesAMoveAndTheFlagsAreAlternatives(t 
 		"move --abort job-aaaaaaaaaa":   "move job-aaaaaaaaaa to= retry=false abort=true",
 		"resume --force job-aaaaaaaaaa": "resume-force job-aaaaaaaaaa",
 		"clean job-aaaaaaaaaa":          "clean job-aaaaaaaaaa",
+	} {
+		f := &fakeJobs{}
+		if code, _, errOut := runWith(Options{Jobs: f}, strings.Fields(args)...); code != 0 || len(f.called) != 1 || f.called[0] != want {
+			t.Errorf("%s: exit %d, called %v, stderr %q", args, code, f.called, errOut)
+		}
+	}
+}
+
+func TestPullFlagsGoWithFinishAndDoNotMix(t *testing.T) {
+	for _, args := range [][]string{
+		{"pull", "--push", "job-aaaaaaaaaa"},
+		{"pull", "--abort", "job-aaaaaaaaaa"},
+		{"pull", "--finish", "--push", "--abort", "job-aaaaaaaaaa"},
+	} {
+		f := &fakeJobs{}
+		if code, _, _ := runWith(Options{Jobs: f}, args...); code == 0 || len(f.called) != 0 {
+			t.Errorf("%v: exit %d, called %v", args, code, f.called)
+		}
+	}
+	for args, want := range map[string]string{
+		"pull job-aaaaaaaaaa":                  "pull job-aaaaaaaaaa finish=false push=false abort=false",
+		"pull --finish job-aaaaaaaaaa":         "pull job-aaaaaaaaaa finish=true push=false abort=false",
+		"pull --finish --push job-aaaaaaaaaa":  "pull job-aaaaaaaaaa finish=true push=true abort=false",
+		"pull --finish --abort job-aaaaaaaaaa": "pull job-aaaaaaaaaa finish=true push=false abort=true",
 	} {
 		f := &fakeJobs{}
 		if code, _, errOut := runWith(Options{Jobs: f}, strings.Fields(args)...); code != 0 || len(f.called) != 1 || f.called[0] != want {

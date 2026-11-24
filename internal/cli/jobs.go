@@ -69,6 +69,15 @@ type MoveRequest struct {
 	Retry, Abort bool
 }
 
+// PullRequest brings a Job to this peer.
+type PullRequest struct {
+	ID string
+	// Finish stops the Job where it is and brings its branch to the repository of
+	// the current directory; Push also publishes the branch to origin. Abort gives
+	// a finish that was left unconfirmed (finishing) up.
+	Finish, Push, Abort bool
+}
+
 // PeerView is a peer as `cflk peers` shows it.
 type PeerView struct {
 	Name string `json:"name"`
@@ -98,6 +107,8 @@ type Jobs interface {
 	ResumeForce(ctx context.Context, id string) (JobView, error)
 	// Move moves the Job to another peer and starts it there; see MoveRequest.
 	Move(ctx context.Context, req MoveRequest) (JobView, error)
+	// Pull moves the Job to this peer, or finishes it here; see PullRequest.
+	Pull(ctx context.Context, req PullRequest) (JobView, error)
 	// Clean deletes what is left of a moved or done Job on this peer.
 	Clean(ctx context.Context, id string) (JobView, error)
 	Screen(ctx context.Context, id string) (string, error)
@@ -244,6 +255,33 @@ func newJobCmds(opts Options) []*cobra.Command {
 	move.Flags().Bool("retry", false, "repeat a move that was left unconfirmed (moving) with the same transfer")
 	move.Flags().Bool("abort", false, "give up a move that was left unconfirmed: the Job goes back to stopped here")
 
+	pull := jobCmd(opts, "pull JOB | pull --finish [--push] JOB | pull --finish --abort JOB",
+		"Bring a Job here: move it to this peer, or stop it and take its branch cflk/<id> into this repository", cobra.ExactArgs(1),
+		func(cmd *cobra.Command, jobs Jobs, args []string) error {
+			f := cmd.Flags()
+			req := PullRequest{ID: args[0]}
+			req.Finish, _ = f.GetBool("finish")
+			req.Push, _ = f.GetBool("push")
+			req.Abort, _ = f.GetBool("abort")
+			switch {
+			case (req.Push || req.Abort) && !req.Finish:
+				return domain.NewError(domain.CodeInvalidRequest, "--push and --abort go with --finish", nil)
+			case req.Push && req.Abort:
+				return domain.NewError(domain.CodeInvalidRequest, "--push and --abort are alternatives", nil)
+			}
+			v, err := jobs.Pull(cmd.Context(), req)
+			if err != nil {
+				return err
+			}
+			if req.Finish && !req.Abort {
+				fmt.Fprintf(cmd.ErrOrStderr(), "the work is on the branch %s of this repository; your checkout was not changed: `git switch %s` to see it\n", v.Branch, v.Branch)
+			}
+			return emitJob(cmd, v)
+		})
+	pull.Flags().Bool("finish", false, "stop the Job where it is, bring its branch here and mark it done")
+	pull.Flags().Bool("push", false, "with --finish, also push the branch to origin")
+	pull.Flags().Bool("abort", false, "with --finish, give up a finish that was left unconfirmed: the Job goes back to stopped")
+
 	clean := jobCmd(opts, "clean JOB", "Delete what is left on this peer of a moved or done Job (worktrees, trust, mirror refs)", cobra.ExactArgs(1),
 		func(cmd *cobra.Command, jobs Jobs, args []string) error {
 			v, err := jobs.Clean(cmd.Context(), args[0])
@@ -280,7 +318,7 @@ func newJobCmds(opts Options) []*cobra.Command {
 		})
 	attach.Flags().Bool("read-only", false, "what you type does not reach the agent")
 
-	return []*cobra.Command{run, ps, peers, show, stop, resume, move, clean, screen, send, attach, newPeerCmd(opts), newInternalCmd(opts)}
+	return []*cobra.Command{run, ps, peers, show, stop, resume, move, pull, clean, screen, send, attach, newPeerCmd(opts), newInternalCmd(opts)}
 }
 
 func printJobs(w io.Writer, list JobList) error {
