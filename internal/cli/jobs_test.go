@@ -28,7 +28,7 @@ func (f *fakeJobs) List(_ context.Context, peer string) (JobList, error) {
 }
 
 func (f *fakeJobs) Peers(context.Context) ([]PeerView, error) {
-	return []PeerView{{Name: "laptop", This: true, Reachable: true, Jobs: 1}, {Name: "mini"}}, f.err
+	return []PeerView{{Name: "laptop", This: true, Reachable: true, Jobs: 1}, {Name: "mini", Problem: "exit status 255: Permission denied (publickey)"}}, f.err
 }
 
 func (f *fakeJobs) Show(_ context.Context, id string) (JobView, error) {
@@ -187,7 +187,7 @@ func TestPsPassesThePeerAndListsAnUnreachablePeerApartFromTheJobs(t *testing.T) 
 
 func TestPeersIsATableWithThisMachineAndTheOnesThatDoNotAnswer(t *testing.T) {
 	_, out, _ := runWith(Options{Jobs: &fakeJobs{}}, "peers")
-	for _, want := range []string{"laptop (this)", "reachable", "mini", "unreachable"} {
+	for _, want := range []string{"laptop (this)", "reachable", "mini", "unreachable", "Permission denied (publickey)"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("table lacks %q:\n%s", want, out)
 		}

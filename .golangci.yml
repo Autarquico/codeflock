@@ -99,14 +99,6 @@ linters:
           files: ["**/internal/support/redact/**", "!$test"]
           allow:
             - $gostd
-        # svcunit installs services; what the daemon they run does is not its business.
-        svcunit:
-          list-mode: strict
-          files: ["**/internal/support/svcunit/**", "!$test"]
-          allow:
-            - $gostd
-            - github.com/Autarquico/codeflock/internal/support/svcunit
-            - github.com/Autarquico/codeflock/internal/support/atomicfile
         # A peer runs Jobs on its own: the harness adapters, the leaf utilities and the
         # domain are all it needs, plus the Worker's survivors it shares: procident, execwrap, gitops.
         peer:

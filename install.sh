@@ -216,7 +216,7 @@ install_binaries() {
 		*":$DIR:"*) ;;
 		*) log "$DIR is not on your PATH; add this line to your shell profile (~/.profile, ~/.zshrc): export PATH=\"$DIR:\$PATH\"" ;;
 	esac
-	log "next: 'cflk controller init' on the machine that will be the Controller, or 'cflk setup' to join an existing one"
+	log "next: set up your peers (docs/guide/getting-started.md) and run 'cflk doctor'; it also lists what a 0.4 Controller or Worker left here, and 'cflk doctor --fix' removes the services once you have checked the peer network"
 }
 
 main() {

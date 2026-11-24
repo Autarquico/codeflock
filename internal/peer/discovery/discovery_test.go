@@ -131,3 +131,33 @@ func TestFindNamesAPeerOnlyAmongTheDiscovered(t *testing.T) {
 		t.Error("found a host nobody discovered")
 	}
 }
+
+func TestTheCflkPathOfAPeerComesFromTheConfigAndMustBePlain(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	cfg := `peers = ["mac-mini.local", "omarch01", "builder"]
+[cflk_path]
+"mac-mini.local" = "bin/cflk"
+omarch01 = "~/x"
+builder = "/opt/cflk/bin/cflk"
+`
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Discover(t.Context(), Options{Run: func(context.Context, string, ...string) ([]byte, error) {
+		return nil, errors.New("no tailscale")
+	}, ConfigPath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, p := range res.Peers {
+		got[p.Host] = p.Cflk
+	}
+	want := map[string]string{"mac-mini.local": "bin/cflk", "omarch01": "", "builder": "/opt/cflk/bin/cflk"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("cflk paths = %v, want %v", got, want)
+	}
+	if !strings.Contains(strings.Join(res.Warnings, "\n"), `cflk_path of "omarch01"`) {
+		t.Errorf("warnings = %v", res.Warnings)
+	}
+}

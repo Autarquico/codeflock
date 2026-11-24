@@ -66,6 +66,9 @@ type PeerView struct {
 	Jobs      int      `json:"jobs"`
 	// Problem is why the peer did not answer.
 	Problem string `json:"problem,omitempty"`
+	// Probe is the command that asks the peer what the transport asks it: what to
+	// try by hand when it does not answer.
+	Probe string `json:"-"`
 }
 
 // Jobs is what the job commands need of a peer. cmd/cflk composes it (ADR 0001):
@@ -252,16 +255,17 @@ func printJobs(w io.Writer, list JobList) error {
 
 func printPeers(w io.Writer, peers []PeerView) error {
 	t := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(t, "PEER\tSTATE\tHARNESSES\tJOBS")
+	fmt.Fprintln(t, "PEER\tSTATE\tHARNESSES\tJOBS\tPROBLEM")
 	for _, p := range peers {
 		name, state, harnesses, jobs := printable(p.Name), "reachable", printable(strings.Join(p.Harnesses, ",")), fmt.Sprint(p.Jobs)
+		problem := dash(printable(p.Problem))
 		if p.This {
 			name += " (this)"
 		}
 		if !p.Reachable {
 			state, harnesses, jobs = "unreachable", "-", "-"
 		}
-		fmt.Fprintf(t, "%s\t%s\t%s\t%s\n", name, state, harnesses, jobs)
+		fmt.Fprintf(t, "%s\t%s\t%s\t%s\t%s\n", name, state, harnesses, jobs, problem)
 	}
 	return t.Flush()
 }
