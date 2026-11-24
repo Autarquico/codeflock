@@ -30,6 +30,9 @@ func run() int {
 	}
 	local := newLocalJobs(exe)
 	jobs := newFleet(local)
+	if code, opened := openTUI(os.Args[1:], jobs); opened {
+		return code
+	}
 	return cli.ExecuteWith(cli.Options{
 		Doctor:     checkThisMachine,
 		Jobs:       jobs,
