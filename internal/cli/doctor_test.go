@@ -20,7 +20,7 @@ func runDoctor(t *testing.T, opts Options, args ...string) (code int, stdout, st
 }
 
 func withComponents(cs ...doctor.Component) Options {
-	return Options{Doctor: func(context.Context) ([]doctor.Component, error) { return cs, nil }}
+	return Options{Doctor: func(context.Context, bool) ([]doctor.Component, error) { return cs, nil }}
 }
 
 func TestDoctorShowsEachComponentWithItsAction(t *testing.T) {
@@ -54,6 +54,19 @@ func TestDoctorTextFromTheMachineHasNoControlCharacters(t *testing.T) {
 	_, stdout, _ := runDoctor(t, withComponents(doctor.Component{Name: "harness:x", Message: "a\x1b[31m\nb"}))
 	if strings.ContainsAny(stdout, "\x1b") || strings.Count(stdout, "\n") != 2 {
 		t.Errorf("%q", stdout)
+	}
+}
+
+func TestDoctorFixFlagReachesTheChecks(t *testing.T) {
+	var got []bool
+	opts := Options{Doctor: func(_ context.Context, fix bool) ([]doctor.Component, error) {
+		got = append(got, fix)
+		return nil, nil
+	}}
+	runDoctor(t, opts)
+	runDoctor(t, opts, "--fix")
+	if len(got) != 2 || got[0] || !got[1] {
+		t.Errorf("fix per call: %v", got)
 	}
 }
 

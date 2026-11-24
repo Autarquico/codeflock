@@ -4,6 +4,8 @@ package main
 import (
 	"context"
 	"os"
+	"os/exec"
+	"runtime"
 
 	"github.com/Autarquico/codeflock/internal/adapters/harness"
 	"github.com/Autarquico/codeflock/internal/adapters/harness/claude"
@@ -38,7 +40,7 @@ func run() int {
 // checkThisMachine is `cflk doctor`: the checks of the doctor over the harness
 // adapters of this binary and the home of the user. A machine without a home
 // directory fails when the checks run, not when cflk starts.
-func checkThisMachine(ctx context.Context) ([]doctor.Component, error) {
+func checkThisMachine(ctx context.Context, fix bool) ([]doctor.Component, error) {
 	paths, err := config.ResolveFromEnv()
 	if err != nil {
 		return nil, err
@@ -58,5 +60,15 @@ func checkThisMachine(ctx context.Context) ([]doctor.Component, error) {
 		Worker:   config.MachineName(hostname, "esta máquina"),
 		DataDir:  paths.DataDir,
 	})
-	return d.Check(ctx), nil
+	retirement := doctor.Retirement{Home: home, GOOS: runtime.GOOS, UID: os.Getuid(), Run: runTool}
+	components := d.Check(ctx)
+	if fix {
+		return append(components, retirement.Fix(ctx)...), nil
+	}
+	return append(components, retirement.Check()...), nil
+}
+
+// runTool runs a tool of the service manager (systemctl, launchctl).
+func runTool(ctx context.Context, name string, args ...string) error {
+	return exec.CommandContext(ctx, name, args...).Run() //nolint:gosec // the tool is a constant of the doctor, never user input
 }
