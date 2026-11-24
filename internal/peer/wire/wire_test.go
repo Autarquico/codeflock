@@ -249,7 +249,6 @@ func TestTheOrdersOfAFinishCarryOnlyWhatTheyNeedAndTheAnswerIsTheOneAsked(t *tes
 	for name, req := range map[string]Request{
 		"finish":       {Op: OpFinish, Job: testJob, Gen: 1, To: "mac-mini"},
 		"done":         {Op: OpFinishDone, Job: testJob, Gen: 1, Finish: finish},
-		"abort":        {Op: OpFinishAbort, Job: testJob, Gen: 1},
 		"abort of one": {Op: OpFinishAbort, Job: testJob, Gen: 1, Finish: finish},
 	} {
 		if err := req.Validate(); err != nil {
@@ -257,6 +256,7 @@ func TestTheOrdersOfAFinishCarryOnlyWhatTheyNeedAndTheAnswerIsTheOneAsked(t *tes
 		}
 	}
 	for name, req := range map[string]Request{
+		"abort without the finish":   {Op: OpFinishAbort, Job: testJob, Gen: 1},
 		"finish without destination": {Op: OpFinish, Job: testJob, Gen: 1},
 		"finish without generation":  {Op: OpFinish, Job: testJob, To: "mac-mini"},
 		"finish names a finish":      {Op: OpFinish, Job: testJob, Gen: 1, To: "mac-mini", Finish: finish},

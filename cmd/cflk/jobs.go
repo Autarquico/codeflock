@@ -513,6 +513,9 @@ func view(j job.Job, problem string) cli.JobView {
 	if j.MovedTo != nil {
 		v.MovedTo, v.MovedGen = j.MovedTo.Peer, j.MovedTo.Gen
 	}
+	if j.State == job.Finishing && j.Finish != nil {
+		v.FinishID = j.Finish.ID
+	}
 	return v
 }
 
@@ -536,8 +539,16 @@ func mapErr(err error) error {
 
 // git runs git with a fixed argv in dir (the current directory if empty) and returns its trimmed stdout.
 func git(ctx context.Context, dir string, args ...string) (string, error) {
+	return gitEnv(ctx, dir, nil, args...)
+}
+
+// gitEnv is git with more environment variables (an index of its own, say).
+func gitEnv(ctx context.Context, dir string, env []string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...) //nolint:gosec // a fixed git argv; the variable parts are single arguments, never a shell
 	cmd.Dir = dir
+	if env != nil {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	var out, errOut bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	if err := cmd.Run(); err != nil {

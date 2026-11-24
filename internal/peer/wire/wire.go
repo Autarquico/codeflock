@@ -160,7 +160,7 @@ var shapes = map[Op]shape{
 
 	OpFinish:      {job: true, gen: true, genRequired: true, to: true},
 	OpFinishDone:  {job: true, gen: true, genRequired: true, finish: true, finishRequired: true},
-	OpFinishAbort: {job: true, gen: true, genRequired: true, finish: true},
+	OpFinishAbort: {job: true, gen: true, genRequired: true, finish: true, finishRequired: true},
 }
 
 var (
@@ -316,6 +316,8 @@ type JobView struct {
 	// MovedTo and MovedGen say where a Job that is moved lives now.
 	MovedTo  string `json:"moved_to,omitempty"`
 	MovedGen int    `json:"moved_gen,omitempty"`
+	// FinishID is the finish in progress of a Job that is finishing.
+	FinishID string `json:"finish_id,omitempty"`
 }
 
 // maxViewText bounds each text field of a view.

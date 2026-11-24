@@ -74,6 +74,9 @@ func editTrust(host harness.Host, worktree string, change func(text, key string,
 		return fmt.Errorf("codex: trusting the folder: %w", err)
 	}
 	defer release()
+	if target, err := filepath.EvalSymlinks(path); err == nil {
+		path = target // a config managed elsewhere stays a link: the rename replaces its target
+	}
 	perm := os.FileMode(0o600)
 	raw, err := os.ReadFile(path) //nolint:gosec // the configuration of the host
 	switch {

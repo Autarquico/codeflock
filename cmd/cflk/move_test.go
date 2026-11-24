@@ -250,9 +250,27 @@ func (n *moveNet) takeCut(peer string, op wire.Op) (cut, bool) {
 
 // fleet is the CLI as typed on the named peer.
 func (n *moveNet) fleet(name string) *fleet {
-	f := &fleet{local: n.peers[name].localJobs, transport: n.dialer, discover: n.discover, timeout: 2 * time.Second}
-	f.local.net = &network{transport: f.transport, discover: f.discover}
-	return f
+	discover := func(ctx context.Context) (discovery.Result, error) {
+		res, _ := n.discover(ctx)
+		for _, p := range res.Peers {
+			if p.ID == "n"+name {
+				res.Self = p // what Tailscale says of the machine the command is typed on
+			}
+		}
+		return res, nil
+	}
+	return &fleet{local: n.peers[name].localJobs, transport: n.dialer, discover: discover, timeout: 2 * time.Second}
+}
+
+// tailnetName gives a peer the name its tailnet knows it by, which is not the
+// hostname it calls itself: the others reach it, and know it, by that name and its node ID.
+func (n *moveNet) tailnetName(peer, name string) {
+	for i, p := range n.found {
+		if p.ID == "n"+peer {
+			n.found[i].Name, n.found[i].Host = name, name+".ts.net"
+			n.dialer.Peers[name] = n.dialer.Peers[peer]
+		}
+	}
 }
 
 // launches is the agents started so far, as "peer session".

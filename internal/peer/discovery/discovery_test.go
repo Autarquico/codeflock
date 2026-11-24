@@ -161,3 +161,28 @@ builder = "/opt/cflk/bin/cflk"
 		t.Errorf("warnings = %v", res.Warnings)
 	}
 }
+
+func TestAMachineNamedWithSpacesAndACaseDifferingConfigHostAreTheSamePeer(t *testing.T) {
+	raw := `{"Self": {"ID": "nSELF", "HostName": "Alejandros-MacBook-Pro", "DNSName": "alejandros-macbook-pro.tail1.ts.net."},
+	  "Peer": {"k": {"ID": "nMINI", "HostName": "Mac mini", "DNSName": "mac-mini.tail1.ts.net.", "Online": true, "Tags": ["tag:cflk"]}}}`
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(`peers = ["Mac-Mini.local", "alejandros-macbook-pro.local"]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run := func(context.Context, string, ...string) ([]byte, error) { return []byte(raw), nil }
+	res, err := Discover(t.Context(), Options{Run: run, ConfigPath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := names(res.Peers); !reflect.DeepEqual(got, []string{"Mac-mini"}) || res.Peers[0].ID != "nMINI" || res.Peers[0].Host != "mac-mini.tail1.ts.net" {
+		t.Fatalf("peers = %+v", res.Peers)
+	}
+	if res.Self.ID != "nSELF" {
+		t.Fatalf("self = %+v", res.Self)
+	}
+	for _, name := range []string{"nMINI", "mac-mini", "MAC-MINI", "Mac-mini"} {
+		if p, ok := res.Find(name); !ok || p.ID != "nMINI" {
+			t.Errorf("Find(%q) = %+v, %v", name, p, ok)
+		}
+	}
+}

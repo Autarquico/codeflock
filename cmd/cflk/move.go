@@ -232,12 +232,28 @@ func cleanSubmodules(ctx context.Context, wt string) error {
 		return err
 	}
 	for line := range strings.SplitSeq(out, "\n") {
-		f := strings.Fields(line)
-		if len(f) > 9 && (f[0] == "1" || f[0] == "2") && len(f[2]) == 4 && f[2][0] == 'S' && (f[2][2] == 'M' || f[2][3] == 'U') {
-			return domain.NewError(domain.CodeInvalidTransition, fmt.Sprintf("the submodule %s has changes that a move would not take: commit or discard them first", f[len(f)-1]), nil)
+		if sub, path, ok := changedEntry(line); ok && len(sub) == 4 && sub[0] == 'S' && (sub[2] == 'M' || sub[3] == 'U') {
+			return domain.NewError(domain.CodeInvalidTransition, fmt.Sprintf("the submodule %s has changes that a move would not take: commit or discard them first", path), nil)
 		}
 	}
 	return nil
+}
+
+// changedEntry reads an ordinary ("1") or renamed ("2") record of `status
+// --porcelain=v2`: its submodule field (N..., or S followed by c, m, u) and its path, which is the last field and may
+// hold spaces (a renamed one is followed by a tab and the original path).
+func changedEntry(line string) (sub, path string, ok bool) {
+	kind, _, _ := strings.Cut(line, " ")
+	fields := map[string]int{"1": 9, "2": 10}[kind]
+	if fields == 0 {
+		return "", "", false
+	}
+	f := strings.SplitN(line, " ", fields)
+	if len(f) != fields {
+		return "", "", false
+	}
+	path, _, _ = strings.Cut(f[fields-1], "\t")
+	return f[2], path, true
 }
 
 // deliver is steps 4 to 6 for the Job as reserved: push the code, prepare, activate

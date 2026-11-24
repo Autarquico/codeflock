@@ -133,6 +133,6 @@ func (t tools) write(s *sdk.Server) {
 			}
 			return t.jobs.Pull(ctx, cli.PullRequest{ID: in.Job, Finish: in.Finish, Push: in.Push, Abort: in.Abort})
 		})
-	add(t, s, "jobs_clean", "Delete what is left on this peer of a moved or done Job (worktrees, trust, mirror refs). Refuses a Job with uncommitted work: the user decides with `cflk clean --force`. Returns the Job.", job,
+	add(t, s, "jobs_clean", "Delete what is left on this peer of a moved or done Job (worktrees, trust, mirror refs). Refuses a Job whose work nothing else holds (uncommitted changes, commits no branch keeps): the user decides with `cflk clean --force`. Returns the Job.", job,
 		func(ctx context.Context, in jobInput) (any, error) { return t.jobs.Clean(ctx, in.Job, false) })
 }

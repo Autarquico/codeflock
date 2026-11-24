@@ -230,7 +230,26 @@ func (p *peer) dropTransfer(ctx context.Context, in server.TransferInput, mirror
 	if j, err := p.store.Get(in.Job); err == nil && j.Gen >= in.Gen {
 		return
 	}
+	if p.liveTransferFor(in.Job, in.Gen, in.Transfer) {
+		return // the worktree is another transfer's now: a replayed abort must not take it
+	}
 	p.dropWorktree(ctx, mirror, p.store.WorktreeDir(in.Job, in.Gen))
+}
+
+// liveTransferFor says whether a transfer other than except, not given up, is
+// prepared for the generation: the g<gen> worktree belongs to it.
+func (p *peer) liveTransferFor(id string, gen int, except string) bool {
+	entries, _ := os.ReadDir(filepath.Join(p.store.Dir(id), "transfers"))
+	for _, e := range entries {
+		dir := p.store.TransferDir(id, e.Name())
+		if e.Name() == except || isAborted(dir) {
+			continue
+		}
+		if rec, found, err := readPrepared(dir); err == nil && found && rec.Gen == gen {
+			return true
+		}
+	}
+	return false
 }
 
 func (l *localJobs) activate(ctx context.Context, in server.TransferInput) (wire.JobView, error) {
@@ -247,14 +266,13 @@ func (l *localJobs) activate(ctx context.Context, in server.TransferInput) (wire
 	if isAborted(dir) {
 		return wire.JobView{}, transferAborted(in.Job, "it was given up before it was activated")
 	}
-	var prev *job.Job
 	if j, err := p.store.Get(in.Job); err == nil && p.arrivedBy(j, in.Transfer, in.Gen) {
 		if j.Gen != in.Gen || j.Launch != nil || j.State != job.Stopped {
 			// Activated already: what happened to the Job since is the answer.
 			cur, err := p.runner.Reconcile(ctx, in.Job)
 			return wire.JobView(view(cur, "")), mapErr(err)
 		}
-		return l.launchArrived(ctx, p, in, nil) // written, never launched: a crash between the two
+		return l.launchArrived(ctx, p, in) // written, never launched: a crash between the two
 	}
 	rec, found, err := readPrepared(dir)
 	switch {
@@ -289,8 +307,6 @@ func (l *localJobs) activate(ctx context.Context, in server.TransferInput) (wire
 			if j.State != job.Moved || j.Gen >= in.Gen {
 				return domain.NewError(domain.CodeStaleLease, fmt.Sprintf("job %s changed here: it is %s at generation %d", j.ID, j.State, j.Gen), nil)
 			}
-			old := *j
-			prev = &old
 		} else {
 			j.Repo, j.Harness, j.CreatedBy = rec.Repo, harnessID, rec.CreatedBy
 		}
@@ -305,7 +321,7 @@ func (l *localJobs) activate(ctx context.Context, in server.TransferInput) (wire
 	if err := p.fault(pointWritten); err != nil {
 		return wire.JobView{}, err
 	}
-	return l.launchArrived(ctx, p, in, prev)
+	return l.launchArrived(ctx, p, in)
 }
 
 func historyOf(h []wire.HistoryEntry) []job.Entry {
@@ -316,48 +332,23 @@ func historyOf(h []wire.HistoryEntry) []job.Entry {
 	return out
 }
 
-// launchArrived starts the agent of a Job that was written here. If the launch
-// came to nothing and left no process (the Job is as it was written), the
-// transfer is given up and the record taken back: the source still has the Job. If
-// the Job stays here in any other state it is this peer's, however it went, and the
-// answer is that state.
-func (l *localJobs) launchArrived(ctx context.Context, p *peer, in server.TransferInput, prev *job.Job) (wire.JobView, error) {
+// launchArrived starts the agent of a Job that was written here. From the write
+// on the Job is this peer's, however the launch goes: if it came to nothing the
+// Job stays stopped here with the problem, `cflk resume` (or the source's retry,
+// which launches again) tries once more, and the answer is that state.
+func (l *localJobs) launchArrived(ctx context.Context, p *peer, in server.TransferInput) (wire.JobView, error) {
 	launched, err := p.runner.Launch(ctx, in.Job, "")
 	if err != nil {
 		cur, getErr := p.store.Get(in.Job)
 		if getErr != nil {
 			return wire.JobView{}, errors.Join(err, getErr)
 		}
-		if cur.State != job.Stopped || cur.Launch != nil {
-			return wire.JobView(view(cur, clip(err.Error()))), nil
-		}
-		rec, _, _ := readPrepared(p.store.TransferDir(in.Job, in.Transfer))
-		mirror := p.mirrorDir(rec.Repo)
-		if rbErr := p.takeBack(in, prev); rbErr != nil {
-			return wire.JobView{}, errors.Join(err, rbErr)
-		}
-		return wire.JobView{}, p.refuse(ctx, in, mirror, err)
+		return wire.JobView(view(cur, clip(err.Error()))), nil
 	}
 	if err := p.fault(pointLaunched); err != nil {
 		return wire.JobView{}, err
 	}
 	return wire.JobView(view(launched, "")), nil
-}
-
-// takeBack restores the record the arrival replaced (or removes it), only if
-// nobody has launched or changed the Job since it was written.
-func (p *peer) takeBack(in server.TransferInput, prev *job.Job) error {
-	return p.store.WithLockNew(in.Job, func(j *job.Job, exists bool, drop func()) error {
-		if !exists || j.ArrivedBy != in.Transfer || j.State != job.Stopped || j.Launch != nil {
-			return nil
-		}
-		if prev != nil {
-			*j = *prev
-			return nil
-		}
-		drop()
-		return nil
-	})
 }
 
 func clip(s string) string {

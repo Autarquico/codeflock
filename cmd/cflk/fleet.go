@@ -102,6 +102,20 @@ func (f *fleet) selfName() (string, error) {
 	return p.name, nil
 }
 
+// identity is how this peer names itself to the others: its stable Tailscale
+// node ID, which they resolve in their own discovery whatever the hostnames are.
+// Without Tailscale the hostname is all there is, and the others must list it.
+func (f *fleet) identity(ctx context.Context) (string, error) {
+	res, err := f.discover(ctx)
+	if err != nil {
+		return "", err
+	}
+	if wire.ValidName(res.Self.ID) {
+		return res.Self.ID, nil
+	}
+	return f.selfName()
+}
+
 func (f *fleet) isThis(name string) (bool, error) {
 	self, err := f.selfName()
 	return name == "local" || name == self, err
@@ -306,6 +320,26 @@ func (f *fleet) locate(ctx context.Context, id string) (owner, error) {
 	return owner{}, domain.NewError(domain.CodeNotFound, fmt.Sprintf("no peer has job %s", id), nil)
 }
 
+// locatePending is locate for a move that waits to be resolved: the peer that
+// holds the `moving` record is the one that resolves it, though the destination
+// may already hold a later generation of the Job.
+func (f *fleet) locatePending(ctx context.Context, id string) (owner, error) {
+	if !job.ValidID(id) {
+		return owner{}, invalid("%q is not a Job id (job-xxxxxxxxxx)", id)
+	}
+	if v, err := f.local.Show(ctx, id); err == nil && v.State == string(job.Moving) {
+		return owner{view: v}, nil
+	}
+	if res, err := f.discover(ctx); err == nil {
+		for _, r := range f.ask(ctx, res.Peers, wire.Request{Op: wire.OpShow, Job: id}) {
+			if r.err == nil && r.resp.Job != nil && r.resp.Job.ID == id && r.resp.Job.State == string(job.Moving) {
+				return owner{peer: &r.peer, view: cli.JobView(*r.resp.Job)}, nil
+			}
+		}
+	}
+	return f.locate(ctx, id)
+}
+
 // stopTimeout is how long a peer has to stop a Job: the windows the stopper
 // itself gives the agent (the wrapper's grace, the margin after it, the wait
 // after the kill) and the usual time of an order for the rest.
@@ -391,7 +425,11 @@ func (f *fleet) ResumeForce(ctx context.Context, id string) (cli.JobView, error)
 // The peer that owns the Job does the work: it stops the Job, seals it and sends
 // it to the destination.
 func (f *fleet) Move(ctx context.Context, req cli.MoveRequest) (cli.JobView, error) {
-	o, err := f.locate(ctx, req.ID)
+	locate := f.locate
+	if req.Retry || req.Abort {
+		locate = f.locatePending
+	}
+	o, err := locate(ctx, req.ID)
 	if err != nil {
 		return cli.JobView{}, err
 	}

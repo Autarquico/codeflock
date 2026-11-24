@@ -153,8 +153,8 @@ func (l *localJobs) finishDone(ctx context.Context, in server.FinishNotice) (cli
 	return l.endFinish(ctx, in, job.Done)
 }
 
-// finishAbort gives the finish up: the Job is stopped again. An empty Finish
-// stands for the one in progress.
+// finishAbort gives the finish up: the Job is stopped again, if Finish is the one
+// in progress (a delayed abort of an earlier finish must not cancel a later one).
 func (l *localJobs) finishAbort(ctx context.Context, in server.FinishNotice) (cli.JobView, error) {
 	return l.endFinish(ctx, in, job.Stopped)
 }
@@ -176,7 +176,7 @@ func (l *localJobs) endFinish(_ context.Context, in server.FinishNotice, to job.
 		if j.State == to && to == job.Done && j.Finish != nil && j.Finish.ID == in.Finish {
 			return nil // the same notice, answered already
 		}
-		if j.State != job.Finishing || j.Finish == nil || (in.Finish != "" && j.Finish.ID != in.Finish) {
+		if j.State != job.Finishing || j.Finish == nil || j.Finish.ID != in.Finish {
 			return domain.NewError(domain.CodeInvalidTransition, fmt.Sprintf("job %s is %s: that is not the finish in progress", j.ID, j.State), nil)
 		}
 		if err := j.Transition(to); err != nil {
@@ -205,15 +205,22 @@ func (f *fleet) Pull(ctx context.Context, req cli.PullRequest) (cli.JobView, err
 	if err != nil {
 		return cli.JobView{}, err
 	}
-	switch {
-	case req.Abort:
+	if req.Abort {
 		return f.abortFinish(ctx, o)
-	case req.Finish:
-		return f.finish(ctx, o, self, req.Push)
-	case o.peer == nil:
+	}
+	if o.peer == nil && !req.Finish {
 		return cli.JobView{}, invalid("job %s is on this peer already", req.ID)
 	}
-	return f.Move(ctx, cli.MoveRequest{ID: req.ID, To: self})
+	me := self
+	if o.peer != nil {
+		if me, err = f.identity(ctx); err != nil {
+			return cli.JobView{}, err
+		}
+	}
+	if req.Finish {
+		return f.finish(ctx, o, me, req.Push)
+	}
+	return f.Move(ctx, cli.MoveRequest{ID: req.ID, To: me})
 }
 
 // finish asks the owner for the finish and brings its commit to the repository of
@@ -262,22 +269,28 @@ func (f *fleet) finish(ctx context.Context, o owner, self string, push bool) (cl
 	notice := server.FinishNotice{Job: o.view.ID, Gen: o.view.Gen, Finish: info.ID}
 	if o.peer == nil {
 		v, err := f.local.finishDone(ctx, notice)
-		return v, mapErr(err)
+		if err != nil {
+			return v, mapErr(err)
+		}
+		return v, dropSealRef(ctx, src.dir, o.view.ID, o.view.Gen+1)
 	}
 	resp, _, err := f.callWith(ctx, o, wire.Request{Op: wire.OpFinishDone, Finish: info.ID}, nil)
 	if err != nil {
 		return cli.JobView{}, finishStuck(o.view.ID, fmt.Errorf("the branch %s is here, but %s did not confirm it: %w", branch, o.peer.Name, err))
 	}
-	return cli.JobView(*resp.Job), nil
+	return cli.JobView(*resp.Job), dropSealRef(ctx, src.dir, o.view.ID, o.view.Gen+1)
 }
 
 // abortFinish asks the owner to leave `finishing`. It only counts when the owner answers.
 func (f *fleet) abortFinish(ctx context.Context, o owner) (cli.JobView, error) {
+	if o.view.FinishID == "" {
+		return cli.JobView{}, domain.NewError(domain.CodeInvalidTransition, fmt.Sprintf("job %s is %s: it has no finish to give up", o.view.ID, o.view.State), nil)
+	}
 	if o.peer == nil {
-		v, err := f.local.finishAbort(ctx, server.FinishNotice{Job: o.view.ID, Gen: o.view.Gen})
+		v, err := f.local.finishAbort(ctx, server.FinishNotice{Job: o.view.ID, Gen: o.view.Gen, Finish: o.view.FinishID})
 		return v, mapErr(err)
 	}
-	resp, _, err := f.callWith(ctx, o, wire.Request{Op: wire.OpFinishAbort}, nil)
+	resp, _, err := f.callWith(ctx, o, wire.Request{Op: wire.OpFinishAbort, Finish: o.view.FinishID}, nil)
 	if err != nil {
 		return cli.JobView{}, domain.NewError(cmpCode(err), fmt.Sprintf("the abort is refused: %s did not confirm it (%s); job %s stays as it was", o.peer.Name, cleanMessage(err), o.view.ID), nil)
 	}
@@ -292,7 +305,9 @@ func cmpCode(err error) domain.Code {
 }
 
 // fetchBranch brings the commit under refs/cflk/<job>/g<gen> of the repository in dir
-// and puts it on the branch, without touching the checkout; the ref is dropped after.
+// and puts it on the branch, without touching the checkout. The ref stays: for a
+// Job of this repository it is the seal's keep-alive and what a retry fetches,
+// so it is dropped (dropSealRef) only once the finish is done.
 func fetchBranch(ctx context.Context, dir, from, id string, gen int, commit, branch string) error {
 	ref, err := wire.MirrorRef(id, gen)
 	if err != nil {
@@ -301,12 +316,20 @@ func fetchBranch(ctx context.Context, dir, from, id string, gen int, commit, bra
 	if _, err := git(ctx, dir, "fetch", "--quiet", "--no-tags", "--", from, "+"+ref+":"+ref); err != nil {
 		return fmt.Errorf("fetching the work: %w", err)
 	}
-	// The ref stays when Place fails: for a Job of this repository it is the one
-	// that keeps the sealed commit alive, and a retry needs it.
 	switch _, err := checkout.Place(ctx, dir, ref, commit, branch); {
 	case errors.Is(err, checkout.ErrBranchExists), errors.Is(err, checkout.ErrBranchDiverged):
 		return domain.NewError(domain.CodeInvalidTransition, fmt.Sprintf("the branch %s is here with other work (%v)", branch, err), nil)
 	case err != nil:
+		return err
+	}
+	return nil
+}
+
+// dropSealRef removes the ref a finish fetched the work under, once the branch
+// holds it and the owner has marked the Job done.
+func dropSealRef(ctx context.Context, dir, id string, gen int) error {
+	ref, err := wire.MirrorRef(id, gen)
+	if err != nil {
 		return err
 	}
 	_, err = git(context.WithoutCancel(ctx), dir, "update-ref", "-d", ref)

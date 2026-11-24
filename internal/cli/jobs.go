@@ -30,6 +30,9 @@ type JobView struct {
 	// MovedTo and MovedGen say where a Job that is moved lives now.
 	MovedTo  string `json:"moved_to,omitempty"`
 	MovedGen int    `json:"moved_gen,omitempty"`
+	// FinishID is the finish in progress of a Job that is finishing: the one a
+	// `pull --finish --abort` gives up.
+	FinishID string `json:"finish_id,omitempty"`
 }
 
 // UnreachablePeer is a peer that did not answer a listing, and why.
@@ -296,7 +299,17 @@ func newJobCmds(opts Options) []*cobra.Command {
 			return emitJob(cmd, v)
 		})
 
-	clean.Flags().Bool("force", false, "also delete the uncommitted work of a Job that ended by itself")
+	clean.Long = `Delete what is left on this peer of a moved or done Job: its worktrees, trust
+entries and refs. Without --force it refuses when that would delete work nothing
+else holds:
+
+  - the last worktree here has changes made after the Job was sealed (a Job that
+    ended by itself sealed nothing: any uncommitted change counts), or
+  - a Job that ended by itself has commits that no branch, tag or remote-tracking
+    ref of the repository keeps (the mirror's own cflk/<id> branch does not count).
+
+Work that moved to another peer, or was fetched by a finish, is theirs.`
+	clean.Flags().Bool("force", false, "delete the work even if nothing else holds it")
 
 	screen := jobCmd(opts, "screen JOB", "Show what the terminal of the Job's agent shows now", cobra.ExactArgs(1),
 		func(cmd *cobra.Command, jobs Jobs, args []string) error {

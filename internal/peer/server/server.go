@@ -74,7 +74,7 @@ type FinishInput struct {
 }
 
 // FinishNotice names a finish the owner has under way: the notice that its
-// commit arrived, or the order to give it up. Finish may be empty in an abort.
+// commit arrived, or the order to give it up.
 type FinishNotice struct {
 	Job    string
 	Gen    int
