@@ -137,7 +137,7 @@ Con `cflk 0.5.0-beta.1` en el MacBook, omarch01 y el Mac mini, y ssh entre todos
 
 | Paso | Resultado |
 | --- | --- |
-| ssh omarch01 ↔ Mac mini | ok tras dos ajustes: la clave de omarch01 en el Mac mini, y en Tailscale SSH una regla `accept` para usuarios no root (la `check` por defecto se queda esperando un login en el navegador; ver la guía) |
+| ssh omarch01 ↔ Mac mini | ok tras dos ajustes: la clave de omarch01 en el Mac mini, y en Tailscale SSH una regla `accept` para usuarios no root (la `check` por defecto se queda esperando un login en el navegador, y omarch01 recibe las reglas `check` antes que las `accept` aunque la política las ponga en otro orden: se vio con `tailscale debug netmap`; ver la guía) |
 | Claude: Job lanzado en omarch01, `move --to mac-mini` desde omarch01 | ok: recuerda la conversación (FALCON) |
 | Claude: Job lanzado en el Mac mini, `move --to omarch01` desde el Mac mini | ok: recuerda la conversación (BADGER) |
 | `pull --finish` de un Job en el Mac mini, y `clean` en cada peer | ok, cuando el Mac mini tiene `peers` en su config y ssh al MacBook |
