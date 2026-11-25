@@ -30,14 +30,14 @@ This guide describes the behaviour of the 0.5.0 betas. Verified with the real CL
 On every machine of the network:
 
 ```sh
-curl -fsSL https://github.com/Autarquico/codeflock/releases/download/v0.5.0-beta.1/install.sh | CFLK_VERSION=v0.5.0-beta.1 sh
+curl -fsSL https://github.com/Autarquico/codeflock/releases/download/v0.5.0-beta.2/install.sh | CFLK_VERSION=v0.5.0-beta.2 sh
 ```
 
 `releases/latest` skips prereleases, so while 0.5.0 is a beta, pin the version as above. The installer puts `cflk` in `~/.local/bin`. Two variables change that:
 
 | Variable | Meaning |
 | --- | --- |
-| `CFLK_VERSION` | The version to install, such as `v0.5.0-beta.1`. |
+| `CFLK_VERSION` | The version to install, such as `v0.5.0-beta.2`. |
 | `CFLK_INSTALL_DIR` | Where to put `cflk`. Default: `~/.local/bin`. |
 
 Before it installs anything, the script checks an OpenSSH signature on the list of checksums, then the checksum of the archive. It needs OpenSSH 8.2 or later (`ssh-keygen`). If a check fails, nothing is written. The installer and its signing chain are tested in CI against a throwaway key; it has not yet been verified on a clean machine against a published release.

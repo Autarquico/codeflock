@@ -17,7 +17,7 @@ What has been checked with the real CLIs: a Claude Code session exported on one 
 On every machine of the network:
 
 ```bash
-curl -fsSL https://github.com/Autarquico/codeflock/releases/download/v0.5.0-beta.1/install.sh | CFLK_VERSION=v0.5.0-beta.1 sh
+curl -fsSL https://github.com/Autarquico/codeflock/releases/download/v0.5.0-beta.2/install.sh | CFLK_VERSION=v0.5.0-beta.2 sh
 ```
 
 `releases/latest` skips prereleases: pin the version, as above, while 0.5.0 is a beta. A machine needs `git`, `tmux` and at least one harness (`claude`, `codex`). Then follow the [getting started guide](docs/guide/getting-started.md).

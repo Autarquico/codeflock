@@ -160,6 +160,10 @@ La release publica solo `cflk` para linux y darwin, amd64 y arm64 (`.goreleaser.
 
 Después `pages.yml` construye y despliega el sitio con la versión del tag.
 
+### v0.5.0-beta.2 (paciencia con peers lentos)
+
+Lleva sobre beta.1: el aviso de login de Claude en un Mac por ssh (`claude setup-token`, #233), la doc de la prueba de la flota (#234) y #235 (un comando sobre un Job espera hasta 15 s a los peers, ssh 15 s a conectar, `move --abort`/`--retry` va al peer con `moving`, la tecla para salir del attach, la landing sin «What is not there any more»). Mismo flujo que beta.1 desde el paso 3, con el tag `v0.5.0-beta.2` sobre `main` tras mergear el PR que sube los comandos de instalación a beta.2.
+
 ## 6. Verificar una release a mano
 
 Con la release ya publicada:

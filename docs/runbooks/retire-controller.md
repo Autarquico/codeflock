@@ -45,7 +45,7 @@ Keep the file outside the data directory of step 4.
 On every machine:
 
 ```sh
-curl -fsSL https://github.com/Autarquico/codeflock/releases/download/v0.5.0-beta.1/install.sh | CFLK_VERSION=v0.5.0-beta.1 sh
+curl -fsSL https://github.com/Autarquico/codeflock/releases/download/v0.5.0-beta.2/install.sh | CFLK_VERSION=v0.5.0-beta.2 sh
 ```
 
 This replaces `cflk` only. The Controller and the Worker services of beta.8 stay as they are (they keep running the old binary until you stop them). Then follow the [getting started guide](../guide/getting-started.md) and use the peer network until you trust it.
