@@ -221,3 +221,19 @@ func TestADirtySubmoduleIsSeenWhateverItsChange(t *testing.T) {
 		}
 	}
 }
+
+func TestAnAbortFromTheDestinationThatRunsTheNextGenerationGoesToTheSource(t *testing.T) {
+	n := newMoveNet(t, []fakeharness.Step{neverEnds}, "laptop", "mini")
+	v := n.started(t, "laptop")
+	n.cutNext("mini", wire.OpActivate, true)
+	_, _ = n.fleet("laptop").Move(t.Context(), cli.MoveRequest{ID: v.ID, To: "mini"})
+	if got := n.record(t, "mini", v.ID); got.Gen != 2 {
+		t.Fatalf("destination = gen %d", got.Gen)
+	}
+
+	_, err := n.fleet("mini").Move(t.Context(), cli.MoveRequest{ID: v.ID, Abort: true})
+	requireCode(t, err, domain.CodeInvalidTransition)
+	if got := n.record(t, "laptop", v.ID); got.State != job.Moved || got.MovedTo == nil || got.MovedTo.Peer != "mini" {
+		t.Fatalf("source = %+v", got)
+	}
+}

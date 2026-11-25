@@ -95,9 +95,6 @@ export const landing = {
 			{ title: 'Bring it here', command: 'cflk pull <job>', text: 'The Job moves to this machine and keeps running.' },
 			{ title: 'Finish', command: 'cflk pull <job> --finish', text: 'The agent stops and its branch arrives in your repository. Your checkout is not touched; you are told how to merge it.' },
 		],
-		noLongerTitle: 'What is not there any more',
-		noLonger: 'The Controller, Projects, Workflows, Environments and centrally stored secrets are gone from 0.5.0. Each machine keeps its own Claude and Codex login and its own git credentials. If you ran the 0.4 Controller, run cflk doctor --fix on each machine; the retire runbook lists what else to stop and delete.',
-		noLongerLink: 'Retire the Controller',
 		claimsTitle: 'What is verified, and what is not',
 		verifiedTitle: 'Verified',
 		verified: [
@@ -158,9 +155,6 @@ export const landing = {
 			{ title: 'Tráelo aquí', command: 'cflk pull <job>', text: 'El Job pasa a esta máquina y sigue corriendo.' },
 			{ title: 'Termínalo', command: 'cflk pull <job> --finish', text: 'El agente se para y su rama llega a tu repositorio. Tu checkout no se toca; se te dice cómo integrarla.' },
 		],
-		noLongerTitle: 'Lo que ya no está',
-		noLonger: 'El Controller, los Projects, los Workflows, los Environments y los secretos centralizados desaparecen en la 0.5.0. Cada máquina conserva su login de Claude y Codex y sus credenciales de git. Si usabas el Controller de la 0.4, ejecuta cflk doctor --fix en cada máquina; el runbook de retirada lista qué más parar y borrar.',
-		noLongerLink: 'Retirar el Controller (en inglés)',
 		claimsTitle: 'Qué está verificado y qué no',
 		verifiedTitle: 'Verificado',
 		verified: [

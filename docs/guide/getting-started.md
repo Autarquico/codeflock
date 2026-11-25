@@ -129,7 +129,7 @@ cflk send <job> "yes, go on"  # type into the agent
 cflk attach <job>             # enter it
 ```
 
-A Job that stopped to ask something shows as `waiting`. Claude Code reports it through its hooks and Codex through its notify program; a harness that cannot never shows `waiting`. `cflk attach --read-only <job>` watches without typing. To leave, press Ctrl+] (on a keyboard where `]` needs Option, closing the terminal tab works too): the agent keeps running. Ctrl+C reaches the agent, and the usual tmux keys do nothing.
+A Job that stopped to ask something shows as `waiting`. Claude Code reports it through its hooks and Codex through its notify program; a harness that cannot never shows `waiting`. `cflk attach --read-only <job>` watches without typing. To leave, press Ctrl+] (on a keyboard where `]` needs Option, closing the terminal tab works too): the agent keeps running. In an attach that is not `--read-only`, Ctrl+C reaches the agent; the usual tmux keys do nothing.
 
 Without a terminal on its input, `cflk attach` opens the Job in a new window when it runs inside tmux, iTerm2 or Terminal.app. That is what `jobs_attach` does from Claude Code, see [Use cflk from Claude Code](../mcp/). The first time on macOS, the system asks whether your terminal may control iTerm2 or Terminal.app; allow it.
 
