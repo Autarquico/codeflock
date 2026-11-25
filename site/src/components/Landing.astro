@@ -15,7 +15,6 @@ const { network, move } = diagrams[lang];
 const version = siteVersion();
 const commands = installCommands(version);
 const docs = routeFor('getting-started');
-const retire = `${REPO_URL}/blob/${repoRef()}/docs/runbooks/retire-controller.md`;
 ---
 
 <!doctype html>
@@ -99,11 +98,6 @@ const retire = `${REPO_URL}/blob/${repoRef()}/docs/runbooks/retire-controller.md
 						</li>
 					))}
 				</ol>
-			</section>
-
-			<section aria-labelledby="gone-title">
-				<h2 id="gone-title">{t.noLongerTitle}</h2>
-				<p class="intro">{t.noLonger} <a href={retire} hreflang="en">{t.noLongerLink}</a>.</p>
 			</section>
 
 			<section aria-labelledby="claims-title">

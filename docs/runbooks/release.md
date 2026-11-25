@@ -142,6 +142,7 @@ Con `cflk 0.5.0-beta.1` en el MacBook, omarch01 y el Mac mini, y ssh entre todos
 | Claude: Job lanzado en el Mac mini, `move --to omarch01` desde el Mac mini | ok: recuerda la conversación (BADGER) |
 | `pull --finish` de un Job en el Mac mini, y `clean` en cada peer | ok, cuando el Mac mini tiene `peers` en su config y ssh al MacBook |
 | `tui` | ok: lista los Jobs de los tres peers |
+| `attach` desde el MacBook (iTerm2) a un Job en omarch01 | ok; se sale con Ctrl+] (con teclado español, cerrando la pestaña). Falló una vez con `CF_PEER_NO_ANSWER`: abrir el ssh a omarch01 tardaba a veces 4–11 s y cflk esperaba 4. El PR de los plazos da 15 s a ssh y a la búsqueda del Job; no se ha vuelto a medir en la flota |
 | `cflk mcp install --claude`, y `peers_list` y `jobs_run` desde Claude Code | ok; una registración de la 0.4 hay que quitarla antes a mano |
 | `cflk doctor --fix` en los tres | ok: retira el Worker de omarch01 y los binarios `cf`/`cf.prev` |
 
@@ -153,7 +154,7 @@ Lo que encontró, sin arreglar todavía:
 - `doctor` aún recomienda "un Worker dedicado".
 - En el Mac mini, `~/.local/bin` no está en el `PATH` de un shell de login.
 
-Sin probar en la flota: `attach`, entrar en un Job desde `tui`, `cflk mcp install --codex`, devolver un Job de Codex al peer del que vino, moves entre el MacBook y el Mac mini, y omarch02.
+Sin probar en la flota: entrar en un Job desde `tui`, `cflk mcp install --codex`, devolver un Job de Codex al peer del que vino, moves entre el MacBook y el Mac mini, y omarch02.
 
 La release publica solo `cflk` para linux y darwin, amd64 y arm64 (`.goreleaser.yaml`); no hay binario `cf`.
 
