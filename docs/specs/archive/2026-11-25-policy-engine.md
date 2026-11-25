@@ -1,8 +1,8 @@
 ---
 codename: codefabric
-title: "Policy engine"
+title: Policy engine
 type: task
-status: draft
+status: abandoned
 priority: P2
 size: L
 issue: null
@@ -13,14 +13,16 @@ depends_on: [secrets-local, confirmations-sessions-permissions]
 supersedes: []
 related_specs: [codefabric-spec, phase-9-policies]
 created: 2026-10-10
-updated: 2026-10-10
+updated: 2026-11-25
+abandoned_at: 2026-11-25
+abandoned_reason: "Red de peers (v0.5): sin políticas ni elegibilidad del Controller"
 ---
 
 # Policy engine
 
 ## Contexto / problema
 
-Milestone de la [Fase 9 — Policies, budgets y scheduler avanzado](phase-9-policies.md). Implementa §16.1, §16.2, §16.8 de `docs/codefabric-spec.md`.
+Milestone de la [Fase 9 — Policies, budgets y scheduler avanzado](2026-11-25-phase-9-policies.md). Implementa §16.1, §16.2, §16.8 de `docs/codefabric-spec.md`.
 
 Owner previsto en el bucle Develop: backend-eng.
 

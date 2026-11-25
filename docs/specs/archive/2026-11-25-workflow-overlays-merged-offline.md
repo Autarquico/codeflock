@@ -1,8 +1,8 @@
 ---
 codename: codefabric
-title: "Overlays, `merged` y sync offline"
+title: Overlays, `merged` y sync offline
 type: task
-status: draft
+status: abandoned
 priority: P2
 size: L
 issue: null
@@ -13,14 +13,16 @@ depends_on: [workflow-apply-drift-lock]
 supersedes: []
 related_specs: [codefabric-spec, phase-9-policies]
 created: 2026-10-10
-updated: 2026-10-10
+updated: 2026-11-25
+abandoned_at: 2026-11-25
+abandoned_reason: "Red de peers (v0.5): sin Workflows"
 ---
 
 # Overlays, `merged` y sync offline
 
 ## Contexto / problema
 
-Milestone de la [Fase 9 — Policies, budgets y scheduler avanzado](phase-9-policies.md). Implementa §8.3, §8.4, §8.5, §8.7 de `docs/codefabric-spec.md`.
+Milestone de la [Fase 9 — Policies, budgets y scheduler avanzado](2026-11-25-phase-9-policies.md). Implementa §8.3, §8.4, §8.5, §8.7 de `docs/codefabric-spec.md`.
 
 Owner previsto en el bucle Develop: backend-eng.
 

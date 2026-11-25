@@ -1,8 +1,8 @@
 ---
 codename: codefabric
-title: "Fase 4 — Logs, recovery y reconciliation"
+title: Fase 4 — Logs, recovery y reconciliation
 type: epic
-status: draft
+status: abandoned
 priority: P1
 size: XL
 issue: null
@@ -13,7 +13,9 @@ depends_on: [phase-3-tui]
 supersedes: []
 related_specs: [codefabric-spec]
 created: 2026-10-10
-updated: 2026-10-10
+updated: 2026-11-25
+abandoned_at: 2026-11-25
+abandoned_reason: "Red de peers (v0.5): journal, replay y backup del Controller"
 ---
 
 # Fase 4 — Logs, recovery y reconciliation

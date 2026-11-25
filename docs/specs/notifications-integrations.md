@@ -1,6 +1,6 @@
 ---
 codename: codefabric
-title: "Notificaciones e integraciones"
+title: Notificaciones e integraciones
 type: task
 status: draft
 priority: P2
@@ -13,14 +13,16 @@ depends_on: [palette-search-notify, promote]
 supersedes: []
 related_specs: [codefabric-spec, phase-10-elastic]
 created: 2026-10-10
-updated: 2026-10-10
+updated: 2026-11-25
 ---
 
 # Notificaciones e integraciones
 
+> **Pendiente de reescribir para la red de peers (v0.5, sin Controller).** Lo que se escribió aquí supone un Controller. La versión p2p: avisar (ntfy/Slack) cuando un Job pasa a `waiting` o `done`, desde los hooks y el `notify` que ya existen (`cflk internal notify`). Ver [la hoja de ruta](../ROADMAP.md).
+
 ## Contexto / problema
 
-Milestone de la [Fase 10 — Elastic workers e integrations](phase-10-elastic.md). Implementa §26, §12.5 de `docs/codefabric-spec.md`.
+Milestone de la [Fase 10 — Elastic workers e integrations](archive/2026-11-25-phase-10-elastic.md). Implementa §26, §12.5 de `docs/codefabric-spec.md`.
 
 Owner previsto en el bucle Develop: backend-eng.
 

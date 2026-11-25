@@ -1,6 +1,6 @@
 ---
 codename: codefabric
-title: "Distribución de binarios y upgrade"
+title: Distribución de binarios y upgrade
 type: task
 status: draft
 priority: P2
@@ -13,14 +13,16 @@ depends_on: [service-units]
 supersedes: []
 related_specs: [codefabric-spec, phase-10-elastic]
 created: 2026-10-10
-updated: 2026-10-10
+updated: 2026-11-25
 ---
 
 # Distribución de binarios y upgrade
 
+> **Pendiente de reescribir para la red de peers (v0.5, sin Controller).** Lo que se escribió aquí supone un Controller. La versión p2p: `cflk peers upgrade [peer|--all]` por ssh con el `install.sh` firmado; sin `/v1/binaries`. Ver [la hoja de ruta](../ROADMAP.md).
+
 ## Contexto / problema
 
-Milestone de la [Fase 10 — Elastic workers e integrations](phase-10-elastic.md). Implementa §9.6, §41 de `docs/codefabric-spec.md`.
+Milestone de la [Fase 10 — Elastic workers e integrations](archive/2026-11-25-phase-10-elastic.md). Implementa §9.6, §41 de `docs/codefabric-spec.md`.
 
 Owner previsto en el bucle Develop: devops-eng y backend-eng.
 

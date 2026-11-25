@@ -1,6 +1,6 @@
 ---
 codename: codefabric
-title: "Evaluators"
+title: Evaluators
 type: task
 status: draft
 priority: P2
@@ -9,18 +9,20 @@ issue: null
 prs: []
 related_issues: []
 sub_issues: []
-depends_on: [artifacts, repo-config-environment-host]
+depends_on: [repo-config-environment-host]
 supersedes: []
 related_specs: [codefabric-spec, phase-7-experiments]
 created: 2026-10-10
-updated: 2026-10-10
+updated: 2026-11-25
 ---
 
 # Evaluators
 
+> **Pendiente de reescribir para la red de peers (v0.5, sin Controller).** Lo que se escribió aquí supone un Controller. La versión p2p: `cflk eval <job> -- make test` en el worktree del Job, en su peer (al hacer `pull`/`finish` o a demanda). Ver [la hoja de ruta](../ROADMAP.md).
+
 ## Contexto / problema
 
-Milestone de la [Fase 7 — Experiments](phase-7-experiments.md). Implementa §13, §10.5, §11.7 de `docs/codefabric-spec.md`.
+Milestone de la [Fase 7 — Experiments](archive/2026-11-25-phase-7-experiments.md). Implementa §13, §10.5, §11.7 de `docs/codefabric-spec.md`.
 
 Owner previsto en el bucle Develop: backend-eng.
 

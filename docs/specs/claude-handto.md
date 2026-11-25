@@ -20,7 +20,7 @@ updated: 2026-11-13
 
 ## Contexto / problema
 
-Milestone de la [Fase 5 — Checkpoint/handoff](phase-5-handoff.md). Dentro de una sesión de Claude Code
+Milestone de la [Fase 5 — Checkpoint/handoff](archive/2026-11-25-phase-5-handoff.md). Dentro de una sesión de Claude Code
 abierta en la máquina del usuario, `/handto <worker>` transfiere esa sesión (contexto y repo, también lo no
 commiteado) a ese Worker. `cf` instala lo que Claude Code necesita para ello.
 

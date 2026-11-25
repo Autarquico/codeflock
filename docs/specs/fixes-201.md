@@ -2,7 +2,7 @@
 codename: codefabric
 title: Arreglos de la batería de live-attach y Claude Code (beta.5)
 type: task
-status: active
+status: shipped
 priority: P1
 size: L
 issue: 201
@@ -15,7 +15,7 @@ related_specs:
   - claude-code-adapter
   - logs-output-storage
 created: 2026-11-18
-updated: 2026-11-18
+updated: 2026-11-25
 ---
 
 # Arreglos de la batería de live-attach y Claude Code (beta.5)

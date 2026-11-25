@@ -1,8 +1,8 @@
 ---
 codename: codefabric
-title: "Environment providers devcontainer, mise y nix"
+title: Environment providers devcontainer, mise y nix
 type: task
-status: draft
+status: abandoned
 priority: P2
 size: M
 issue: null
@@ -13,14 +13,16 @@ depends_on: [docker-environment-runtime]
 supersedes: []
 related_specs: [codefabric-spec, phase-10-elastic]
 created: 2026-10-10
-updated: 2026-10-10
+updated: 2026-11-25
+abandoned_at: 2026-11-25
+abandoned_reason: "Red de peers (v0.5): sin Environments"
 ---
 
 # Environment providers devcontainer, mise y nix
 
 ## Contexto / problema
 
-Milestone de la [Fase 10 — Elastic workers e integrations](phase-10-elastic.md). Implementa §25.3 de `docs/codefabric-spec.md`.
+Milestone de la [Fase 10 — Elastic workers e integrations](2026-11-25-phase-10-elastic.md). Implementa §25.3 de `docs/codefabric-spec.md`.
 
 Owner previsto en el bucle Develop: backend-eng.
 

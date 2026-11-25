@@ -1,6 +1,6 @@
 ---
 codename: codefabric
-title: "Analytics e historial"
+title: Analytics e historial
 type: task
 status: draft
 priority: P2
@@ -13,14 +13,16 @@ depends_on: [evaluators, usage-attribution]
 supersedes: []
 related_specs: [codefabric-spec, phase-7-experiments]
 created: 2026-10-10
-updated: 2026-10-10
+updated: 2026-11-25
 ---
 
 # Analytics e historial
 
+> **Pendiente de reescribir para la red de peers (v0.5, sin Controller).** Lo que se escribió aquí supone un Controller. La versión p2p: `cflk stats` a partir del historial de Jobs (`history`/`gen`) de todos los peers, por harness, peer o repo. Ver [la hoja de ruta](../ROADMAP.md).
+
 ## Contexto / problema
 
-Milestone de la [Fase 7 — Experiments](phase-7-experiments.md). Implementa §39 de `docs/codefabric-spec.md`.
+Milestone de la [Fase 7 — Experiments](archive/2026-11-25-phase-7-experiments.md). Implementa §39 de `docs/codefabric-spec.md`.
 
 Owner previsto en el bucle Develop: backend-eng.
 

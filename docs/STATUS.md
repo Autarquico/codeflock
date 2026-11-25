@@ -1,8 +1,8 @@
-# STATUS — CodeFabric
+# STATUS — Code Flock
 
 > Tracking operativo. Las secciones marcadas con `<!-- pm-sync:* -->` las regenera `/pm sync` — no edites su contenido. El resto es prosa libre.
 
-**Última actualización:** 2026-10-10
+**Última actualización:** 2026-11-25
 
 ---
 
@@ -42,3 +42,5 @@ _(nada)_
 ## Notas humanas
 
 <!-- Añade lo que quieras aquí. `/pm sync` no toca contenido fuera de los markers. -->
+
+- 2026-11-25: v0.5.0-beta.2 publicada (red de peers sin Controller). Backlog revisado: lo que dependía del Controller está archivado como `abandoned`; lo que sigue, en [la hoja de ruta](ROADMAP.md).

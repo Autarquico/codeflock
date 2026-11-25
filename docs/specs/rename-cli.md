@@ -2,7 +2,7 @@
 codename: codefabric
 title: El CLI pasa a llamarse cflk
 type: task
-status: active
+status: shipped
 priority: P1
 size: L
 issue: 195
@@ -12,7 +12,7 @@ depends_on: []
 supersedes: []
 related_specs: []
 created: 2026-11-15
-updated: 2026-11-19
+updated: 2026-11-25
 ---
 
 # El CLI pasa a llamarse cflk

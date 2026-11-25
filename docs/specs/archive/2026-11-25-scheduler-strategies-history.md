@@ -1,8 +1,8 @@
 ---
 codename: codefabric
-title: "Estrategias de scheduling e historial"
+title: Estrategias de scheduling e historial
 type: task
-status: draft
+status: abandoned
 priority: P2
 size: M
 issue: null
@@ -13,14 +13,16 @@ depends_on: [analytics-history, concurrency-quotas-model-limits]
 supersedes: []
 related_specs: [codefabric-spec, phase-9-policies]
 created: 2026-10-10
-updated: 2026-10-10
+updated: 2026-11-25
+abandoned_at: 2026-11-25
+abandoned_reason: "Red de peers (v0.5): sin scheduler; el peer lo elige quien lanza o --on any"
 ---
 
 # Estrategias de scheduling e historial
 
 ## Contexto / problema
 
-Milestone de la [Fase 9 — Policies, budgets y scheduler avanzado](phase-9-policies.md). Implementa §10.2, §10.6, §39 de `docs/codefabric-spec.md`.
+Milestone de la [Fase 9 — Policies, budgets y scheduler avanzado](2026-11-25-phase-9-policies.md). Implementa §10.2, §10.6, §39 de `docs/codefabric-spec.md`.
 
 Owner previsto en el bucle Develop: backend-eng.
 

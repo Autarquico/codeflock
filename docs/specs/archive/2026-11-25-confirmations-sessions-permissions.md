@@ -1,8 +1,8 @@
 ---
 codename: codefabric
-title: "Confirmaciones, sesiones MCP y permisos"
+title: Confirmaciones, sesiones MCP y permisos
 type: task
-status: draft
+status: abandoned
 priority: P2
 size: M
 issue: null
@@ -13,14 +13,16 @@ depends_on: [projects-tasks-runs-api]
 supersedes: []
 related_specs: [codefabric-spec, phase-8-mcp-plans]
 created: 2026-10-10
-updated: 2026-10-10
+updated: 2026-11-25
+abandoned_at: 2026-11-25
+abandoned_reason: "Red de peers (v0.5): dependía de tablas del Controller; los perfiles MCP ya son locales"
 ---
 
 # Confirmaciones, sesiones MCP y permisos
 
 ## Contexto / problema
 
-Milestone de la [Fase 8 — MCP y Plans](phase-8-mcp-plans.md). Implementa §16.3, §16.5, §16.6 de `docs/codefabric-spec.md`.
+Milestone de la [Fase 8 — MCP y Plans](2026-11-25-phase-8-mcp-plans.md). Implementa §16.3, §16.5, §16.6 de `docs/codefabric-spec.md`.
 
 Owner previsto en el bucle Develop: backend-eng.
 

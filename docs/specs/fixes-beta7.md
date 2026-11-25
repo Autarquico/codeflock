@@ -2,7 +2,7 @@
 codename: codefabric
 title: Arreglos de la beta.7 (attach de solo lectura y Run headless que no sale)
 type: task
-status: active
+status: shipped
 priority: P1
 size: M
 issue: 208
@@ -11,7 +11,7 @@ related_issues: [208, 203]
 depends_on: [live-attach, claude-code-adapter]
 related_specs: [live-attach, claude-code-adapter]
 created: 2026-11-19
-updated: 2026-11-19
+updated: 2026-11-25
 ---
 
 # Arreglos de la beta.7 (attach de solo lectura y Run headless que no sale)

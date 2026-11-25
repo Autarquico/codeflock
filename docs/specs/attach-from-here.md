@@ -2,7 +2,7 @@
 codename: codefabric
 title: Attach desde aquí (abrir una terminal con el attach)
 type: feature
-status: active
+status: shipped
 priority: P2
 size: M
 issue: 218
@@ -11,7 +11,7 @@ related_issues: [218]
 depends_on: [live-attach]
 related_specs: [live-attach, claude-handto]
 created: 2026-11-20
-updated: 2026-11-20
+updated: 2026-11-25
 ---
 
 # Attach desde aquí (abrir una terminal con el attach)

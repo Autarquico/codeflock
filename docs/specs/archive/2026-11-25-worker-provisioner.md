@@ -1,8 +1,8 @@
 ---
 codename: codefabric
-title: "Worker provisioner"
+title: Worker provisioner
 type: task
-status: draft
+status: abandoned
 priority: P2
 size: L
 issue: null
@@ -13,14 +13,16 @@ depends_on: [binary-distribution-upgrade, budgets-core]
 supersedes: []
 related_specs: [codefabric-spec, phase-10-elastic]
 created: 2026-10-10
-updated: 2026-10-10
+updated: 2026-11-25
+abandoned_at: 2026-11-25
+abandoned_reason: "Red de peers (v0.5): sin cola ni presupuestos que lo disparen"
 ---
 
 # Worker provisioner
 
 ## Contexto / problema
 
-Milestone de la [Fase 10 — Elastic workers e integrations](phase-10-elastic.md). Implementa §30, §16.3 de `docs/codefabric-spec.md`.
+Milestone de la [Fase 10 — Elastic workers e integrations](2026-11-25-phase-10-elastic.md). Implementa §30, §16.3 de `docs/codefabric-spec.md`.
 
 Owner previsto en el bucle Develop: backend-eng y devops-eng.
 
