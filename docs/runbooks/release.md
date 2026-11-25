@@ -153,7 +153,7 @@ Lo que encontró, sin arreglar todavía:
 - `doctor` aún recomienda "un Worker dedicado".
 - En el Mac mini, `~/.local/bin` no está en el `PATH` de un shell de login.
 
-Sin probar en la flota: `attach`, devolver un Job de Codex al peer del que vino, y omarch02.
+Sin probar en la flota: `attach`, entrar en un Job desde `tui`, `cflk mcp install --codex`, devolver un Job de Codex al peer del que vino, moves entre el MacBook y el Mac mini, y omarch02.
 
 La release publica solo `cflk` para linux y darwin, amd64 y arm64 (`.goreleaser.yaml`); no hay binario `cf`.
 
