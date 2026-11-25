@@ -49,22 +49,25 @@ jobs:
             printf 'go=true\nmacos=true\n' >> "$GITHUB_OUTPUT"; exit 0
           fi
           # Both sides of a rename, NUL-separated: a moved file counts where it was and where it went.
-          mapfile -d '' files < <(git diff --name-only -z --no-renames "$BASE...$HEAD")
+          # The same baseline for the list and for the old content: the merge base.
+          mb="$(git merge-base "$BASE" "$HEAD")"
+          git diff --name-only -z --no-renames "$mb" "$HEAD" > "$RUNNER_TEMP/files"
+          mapfile -d '' files < "$RUNNER_TEMP/files"
           go=false; mac=false
           for f in "${files[@]}"; do
             # Only docs, the site and the Markdown at the root are not code: a .md elsewhere can be
-            # embedded in the binary (internal/cli/skills).
-            if [[ "$f" =~ ^(docs/|site/) || "$f" =~ ^[^/]+\.md$ ]]; then continue; fi
+            # embedded in the binary (internal/cli/skills), and a .go file anywhere is built by ./...
+            if [[ "$f" != *.go && ( "$f" =~ ^(docs/|site/) || "$f" =~ ^[^/]+\.md$ ) ]]; then continue; fi
             go=true
-            if [[ "$f" =~ darwin|^install\.sh$|^packaging/|^internal/adapters/runtime/tmux/|^internal/adapters/pty/|^internal/attachwindow/|^\.github/workflows/|^go\.(mod|sum)$ ]]; then
+            if [[ "$f" =~ darwin|^install\.sh$|^packaging/|^internal/adapters/runtime/tmux/|^internal/adapters/pty/|^internal/attachwindow/|^\.github/workflows/|^go\.(mod|sum)$|^Makefile$|_(linux|darwin|unix|windows|bsd)(_test)?\.go$ ]]; then
               mac=true; continue
             fi
             # A Go file whose old or new content names the OS or carries a build constraint.
             if [[ "$f" == *.go ]]; then
-              for side in "$BASE" "$HEAD"; do
+              for side in "$mb" "$HEAD"; do
                 if git cat-file -e "$side:$f" 2>/dev/null; then
                   git show "$side:$f" > "$RUNNER_TEMP/side.go"
-                  rc=0; grep -q -E 'darwin|GOOS|keychain|^//go:build' "$RUNNER_TEMP/side.go" || rc=$?
+                  rc=0; grep -q -E 'darwin|GOOS|keychain|^//go:build|^// \+build' "$RUNNER_TEMP/side.go" || rc=$?
                   case "$rc" in 0) mac=true ;; 1) ;; *) exit "$rc" ;; esac
                 fi
               done
@@ -74,7 +77,7 @@ jobs:
           # The label is read now, not from the event, so that a re-run after adding it sees it.
           label="$(gh pr view "$PR" --json labels -q '[.labels[].name] | index("ci/macos") != null')"
           macos=false
-          if [ "$go" = true ] && { [ "$label" = true ] || [ "$mac" = true ]; }; then macos=true; fi
+          if [ "$label" = true ] || { [ "$go" = true ] && [ "$mac" = true ]; }; then macos=true; fi
           printf 'go=%s\nmacos=%s\n' "$go" "$macos" | tee -a "$GITHUB_OUTPUT"
 
   lint:
