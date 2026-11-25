@@ -22,7 +22,7 @@ updated: 2026-11-25
 
 ## Contexto / problema
 
-Milestone de la [Fase 7 — Experiments](phase-7-experiments.md). Implementa §39 de `docs/codefabric-spec.md`.
+Milestone de la [Fase 7 — Experiments](archive/2026-11-25-phase-7-experiments.md). Implementa §39 de `docs/codefabric-spec.md`.
 
 Owner previsto en el bucle Develop: backend-eng.
 

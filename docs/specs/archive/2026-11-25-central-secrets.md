@@ -22,7 +22,7 @@ abandoned_reason: "Red de peers (v0.5): cada peer tiene su login y sus credencia
 
 ## Contexto / problema
 
-Milestone de la [Fase 10 — Elastic workers e integrations](phase-10-elastic.md). Implementa §16.7 de `docs/codefabric-spec.md`.
+Milestone de la [Fase 10 — Elastic workers e integrations](2026-11-25-phase-10-elastic.md). Implementa §16.7 de `docs/codefabric-spec.md`.
 
 Owner previsto en el bucle Develop: backend-eng.
 

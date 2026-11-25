@@ -24,9 +24,9 @@ updated: 2026-11-07
 
 ## Contexto / problema
 
-§17 pide que un modelo controle CodeFabric desde una sesión MCP sin shell arbitraria. Esta spec lo adelanta desde la [Fase 8](phase-8-mcp-plans.md) a la v0.2.0, decisión del 2026-11-07. El objetivo es usar `cf` desde las CLIs de Claude Code y Codex sin salir de ellas.
+§17 pide que un modelo controle CodeFabric desde una sesión MCP sin shell arbitraria. Esta spec lo adelanta desde la [Fase 8](archive/2026-11-25-phase-8-mcp-plans.md) a la v0.2.0, decisión del 2026-11-07. El objetivo es usar `cf` desde las CLIs de Claude Code y Codex sin salir de ellas.
 
-Se recorta a lo que ya existe en el Core. Plans, fork/compare/promote, budgets, artifacts, models y confirmaciones entran cuando existan sus specs: [plans-dag](plans-dag.md), [confirmations-sessions-permissions](confirmations-sessions-permissions.md), etc. Cada tool nueva se añade aquí con el mismo nombre de §17.2.
+Se recorta a lo que ya existe en el Core. Plans, fork/compare/promote, budgets, artifacts, models y confirmaciones entran cuando existan sus specs: [plans-dag](archive/2026-11-25-plans-dag.md), [confirmations-sessions-permissions](archive/2026-11-25-confirmations-sessions-permissions.md), etc. Cada tool nueva se añade aquí con el mismo nombre de §17.2.
 
 Decisiones:
 - **Transporte:** `cf mcp serve` por stdio, con el go-sdk oficial. Habla con el Controller a través del Client SDK, usando la identidad mTLS del cliente ya enrolado (`cf connect`). El MCP por HTTP servido por el Controller queda como followup.

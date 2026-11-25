@@ -22,7 +22,7 @@ abandoned_reason: "Absorbida por live-attach (#179)"
 
 ## Contexto / problema
 
-Milestone de la [Fase 10 — Elastic workers e integrations](phase-10-elastic.md). Implementa §5.4 de `docs/codefabric-spec.md`.
+Milestone de la [Fase 10 — Elastic workers e integrations](2026-11-25-phase-10-elastic.md). Implementa §5.4 de `docs/codefabric-spec.md`.
 
 Owner previsto en el bucle Develop: backend-eng.
 

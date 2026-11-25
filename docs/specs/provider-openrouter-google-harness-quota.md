@@ -18,11 +18,11 @@ updated: 2026-11-25
 
 # OpenRouter, Google y cuota vía harness
 
-> **Pendiente de reescribir para la red de peers (v0.5, sin Controller).** Lo que se escribió aquí supone un Controller. La versión p2p: La cuota del harness de cada peer (los `rate_limits` de Codex) en `cflk peers`, para elegir `--on`. Ver [la hoja de ruta](../ROADMAP.md).
+> **Pendiente de reescribir para la red de peers (v0.5, sin Controller).** Lo que se escribió aquí supone un Controller. La versión p2p: la cuota del harness de cada peer (los `rate_limits` de Codex) en `cflk peers`, para elegir `--on`. Ver [la hoja de ruta](../ROADMAP.md).
 
 ## Contexto / problema
 
-Milestone de la [Fase 6 — Models/usage](phase-6-models-usage.md). Implementa §14.2–14.3 de `docs/codefabric-spec.md`.
+Milestone de la [Fase 6 — Models/usage](archive/2026-11-25-phase-6-models-usage.md). Implementa §14.2–14.3 de `docs/codefabric-spec.md`.
 
 Owner previsto en el bucle Develop: backend-eng.
 

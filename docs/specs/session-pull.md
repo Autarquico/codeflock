@@ -20,7 +20,7 @@ updated: 2026-11-13
 
 ## Contexto / problema
 
-Milestone de la [Fase 5 — Checkpoint/handoff](phase-5-handoff.md). Cierra la vuelta del flujo
+Milestone de la [Fase 5 — Checkpoint/handoff](archive/2026-11-25-phase-5-handoff.md). Cierra la vuelta del flujo
 Mac → Worker → Mac: la máquina del usuario no es un Worker, así que retomar en ella necesita traer
 la rama y la sesión de Claude al checkout local.
 

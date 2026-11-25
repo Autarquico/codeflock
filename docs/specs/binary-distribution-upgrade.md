@@ -22,7 +22,7 @@ updated: 2026-11-25
 
 ## Contexto / problema
 
-Milestone de la [Fase 10 — Elastic workers e integrations](phase-10-elastic.md). Implementa §9.6, §41 de `docs/codefabric-spec.md`.
+Milestone de la [Fase 10 — Elastic workers e integrations](archive/2026-11-25-phase-10-elastic.md). Implementa §9.6, §41 de `docs/codefabric-spec.md`.
 
 Owner previsto en el bucle Develop: devops-eng y backend-eng.
 

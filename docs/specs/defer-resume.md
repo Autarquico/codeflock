@@ -20,7 +20,7 @@ updated: 2026-11-13
 
 ## Contexto / problema
 
-Milestone de la [Fase 5 — Checkpoint/handoff](phase-5-handoff.md). Implementa §11.4, §11.7 de `docs/codefabric-spec.md`.
+Milestone de la [Fase 5 — Checkpoint/handoff](archive/2026-11-25-phase-5-handoff.md). Implementa §11.4, §11.7 de `docs/codefabric-spec.md`.
 
 Owner previsto en el bucle Develop: backend-eng.
 

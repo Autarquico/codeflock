@@ -22,7 +22,7 @@ abandoned_reason: "Red de peers (v0.5): dependía de la tabla de Artifacts del C
 
 ## Contexto / problema
 
-Milestone de la [Fase 7 — Experiments](phase-7-experiments.md). Implementa §24, §16.8 de `docs/codefabric-spec.md`.
+Milestone de la [Fase 7 — Experiments](2026-11-25-phase-7-experiments.md). Implementa §24, §16.8 de `docs/codefabric-spec.md`.
 
 Owner previsto en el bucle Develop: backend-eng.
 

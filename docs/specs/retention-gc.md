@@ -20,7 +20,7 @@ updated: 2026-11-08
 
 ## Contexto / problema
 
-Milestone de la [Fase 4 — Logs, recovery y reconciliation](phase-4-recovery.md). Implementa §20.5, §29, §22.4, §22.6 de `docs/codefabric-spec.md`.
+Milestone de la [Fase 4 — Logs, recovery y reconciliation](archive/2026-11-25-phase-4-recovery.md). Implementa §20.5, §29, §22.4, §22.6 de `docs/codefabric-spec.md`.
 
 Owner previsto en el bucle Develop: backend-eng y devops-eng.
 

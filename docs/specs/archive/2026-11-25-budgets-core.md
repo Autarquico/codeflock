@@ -22,7 +22,7 @@ abandoned_reason: "Red de peers (v0.5): sin presupuestos centrales"
 
 ## Contexto / problema
 
-Milestone de la [Fase 8 — MCP y Plans](phase-8-mcp-plans.md). Implementa §15 de `docs/codefabric-spec.md`.
+Milestone de la [Fase 8 — MCP y Plans](2026-11-25-phase-8-mcp-plans.md). Implementa §15 de `docs/codefabric-spec.md`.
 
 Owner previsto en el bucle Develop: backend-eng.
 

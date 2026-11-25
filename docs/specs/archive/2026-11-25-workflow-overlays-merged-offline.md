@@ -22,7 +22,7 @@ abandoned_reason: "Red de peers (v0.5): sin Workflows"
 
 ## Contexto / problema
 
-Milestone de la [Fase 9 — Policies, budgets y scheduler avanzado](phase-9-policies.md). Implementa §8.3, §8.4, §8.5, §8.7 de `docs/codefabric-spec.md`.
+Milestone de la [Fase 9 — Policies, budgets y scheduler avanzado](2026-11-25-phase-9-policies.md). Implementa §8.3, §8.4, §8.5, §8.7 de `docs/codefabric-spec.md`.
 
 Owner previsto en el bucle Develop: backend-eng.
 

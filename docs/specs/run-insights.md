@@ -26,7 +26,7 @@ updated: 2026-11-25
 
 ## Contexto / problema
 
-Milestone de la [Fase 7 — Experiments](phase-7-experiments.md). Amplía `analytics-history` (§39) y el drill-down de usage (§14.5) de `docs/codefabric-spec.md`.
+Milestone de la [Fase 7 — Experiments](archive/2026-11-25-phase-7-experiments.md). Amplía `analytics-history` (§39) y el drill-down de usage (§14.5) de `docs/codefabric-spec.md`.
 
 Inspirado en [agentlytics](https://github.com/f/agentlytics), que analiza en local el historial de sesiones de varios editores y agentes. Aquí se aplica solo a los Runs que orquesta CodeFabric. Los datos ya pasan por el Controller (eventos, usage atribuido por `run_id`, output, `native_state` del checkpoint), pero hoy no se agregan para responder preguntas como estas:
 - qué tools usa cada agente;

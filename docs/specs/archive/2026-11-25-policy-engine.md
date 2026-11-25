@@ -22,7 +22,7 @@ abandoned_reason: "Red de peers (v0.5): sin políticas ni elegibilidad del Contr
 
 ## Contexto / problema
 
-Milestone de la [Fase 9 — Policies, budgets y scheduler avanzado](phase-9-policies.md). Implementa §16.1, §16.2, §16.8 de `docs/codefabric-spec.md`.
+Milestone de la [Fase 9 — Policies, budgets y scheduler avanzado](2026-11-25-phase-9-policies.md). Implementa §16.1, §16.2, §16.8 de `docs/codefabric-spec.md`.
 
 Owner previsto en el bucle Develop: backend-eng.
 

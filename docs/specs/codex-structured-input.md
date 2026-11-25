@@ -18,7 +18,7 @@ updated: 2026-11-25
 
 # Input estructurado para Codex vía app-server
 
-> **Pendiente de reescribir para la red de peers (v0.5, sin Controller).** Lo que se escribió aquí supone un Controller. La versión p2p: Solo si el `notify` de Codex no ve las preguntas (pregunta abierta en p2p-peers); si no, se abandona. Ver [la hoja de ruta](../ROADMAP.md).
+> **Pendiente de reescribir para la red de peers (v0.5, sin Controller).** Lo que se escribió aquí supone un Controller. La versión p2p: solo si el `notify` de Codex no ve las preguntas (pregunta abierta en p2p-peers); si no, se abandona. Ver [la hoja de ruta](../ROADMAP.md).
 
 ## Contexto / problema
 

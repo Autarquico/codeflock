@@ -9,7 +9,7 @@ issue: null
 prs: []
 related_issues: []
 sub_issues: []
-depends_on: [artifacts, repo-config-environment-host]
+depends_on: [repo-config-environment-host]
 supersedes: []
 related_specs: [codefabric-spec, phase-7-experiments]
 created: 2026-10-10
@@ -22,7 +22,7 @@ updated: 2026-11-25
 
 ## Contexto / problema
 
-Milestone de la [Fase 7 — Experiments](phase-7-experiments.md). Implementa §13, §10.5, §11.7 de `docs/codefabric-spec.md`.
+Milestone de la [Fase 7 — Experiments](archive/2026-11-25-phase-7-experiments.md). Implementa §13, §10.5, §11.7 de `docs/codefabric-spec.md`.
 
 Owner previsto en el bucle Develop: backend-eng.
 
