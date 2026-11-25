@@ -2,7 +2,7 @@
 codename: codefabric
 title: Los Runs remotos en Claude Code
 type: task
-status: active
+status: shipped
 priority: P2
 size: M
 issue: 180
@@ -12,7 +12,7 @@ depends_on: [claude-handto]
 supersedes: []
 related_specs: [live-attach, claude-handto]
 created: 2026-11-15
-updated: 2026-11-15
+updated: 2026-11-25
 ---
 
 # Los Runs remotos en Claude Code

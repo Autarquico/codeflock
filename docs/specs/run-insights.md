@@ -1,6 +1,6 @@
 ---
 codename: codefabric
-title: "Insights de Runs y visor de conversación"
+title: Insights de Runs y visor de conversación
 type: task
 status: draft
 priority: P2
@@ -9,14 +9,20 @@ issue: null
 prs: []
 related_issues: []
 sub_issues: []
-depends_on: [analytics-history, usage-attribution, checkpoint-capture, models-tui]
+depends_on:
+  - analytics-history
+  - usage-attribution
+  - checkpoint-capture
+  - models-tui
 supersedes: []
 related_specs: [codefabric-spec, phase-7-experiments, phase-6-models-usage]
 created: 2026-10-15
-updated: 2026-10-15
+updated: 2026-11-25
 ---
 
 # Insights de Runs y visor de conversación
+
+> **Pendiente de reescribir para la red de peers (v0.5, sin Controller).** Lo que se escribió aquí supone un Controller. La versión p2p: `cflk transcript <job>` leyendo por ssh la sesión nativa en el peer; los insights se calculan en local. Ver [la hoja de ruta](../ROADMAP.md).
 
 ## Contexto / problema
 

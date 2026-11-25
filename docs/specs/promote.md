@@ -1,6 +1,6 @@
 ---
 codename: codefabric
-title: "Promote"
+title: Promote
 type: task
 status: draft
 priority: P2
@@ -13,10 +13,12 @@ depends_on: [fork-compare]
 supersedes: []
 related_specs: [codefabric-spec, phase-7-experiments]
 created: 2026-10-10
-updated: 2026-10-10
+updated: 2026-11-25
 ---
 
 # Promote
+
+> **Pendiente de reescribir para la red de peers (v0.5, sin Controller).** Lo que se escribió aquí supone un Controller. La versión p2p: Ampliar `pull --finish` (`cmd/cflk/finish.go`) con `--pr`/`--merge` usando el `gh` y el git locales. Ver [la hoja de ruta](../ROADMAP.md).
 
 ## Contexto / problema
 

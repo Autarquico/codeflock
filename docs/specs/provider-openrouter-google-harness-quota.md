@@ -1,6 +1,6 @@
 ---
 codename: codefabric
-title: "OpenRouter, Google y cuota vía harness"
+title: OpenRouter, Google y cuota vía harness
 type: task
 status: draft
 priority: P1
@@ -13,10 +13,12 @@ depends_on: [provider-anthropic-openai]
 supersedes: []
 related_specs: [codefabric-spec, phase-6-models-usage]
 created: 2026-10-10
-updated: 2026-10-10
+updated: 2026-11-25
 ---
 
 # OpenRouter, Google y cuota vía harness
+
+> **Pendiente de reescribir para la red de peers (v0.5, sin Controller).** Lo que se escribió aquí supone un Controller. La versión p2p: La cuota del harness de cada peer (los `rate_limits` de Codex) en `cflk peers`, para elegir `--on`. Ver [la hoja de ruta](../ROADMAP.md).
 
 ## Contexto / problema
 

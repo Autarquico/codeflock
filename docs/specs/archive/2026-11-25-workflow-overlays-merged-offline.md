@@ -1,8 +1,8 @@
 ---
 codename: codefabric
-title: "Overlays, `merged` y sync offline"
+title: Overlays, `merged` y sync offline
 type: task
-status: draft
+status: abandoned
 priority: P2
 size: L
 issue: null
@@ -13,7 +13,9 @@ depends_on: [workflow-apply-drift-lock]
 supersedes: []
 related_specs: [codefabric-spec, phase-9-policies]
 created: 2026-10-10
-updated: 2026-10-10
+updated: 2026-11-25
+abandoned_at: 2026-11-25
+abandoned_reason: "Red de peers (v0.5): sin Workflows"
 ---
 
 # Overlays, `merged` y sync offline

@@ -1,8 +1,8 @@
 ---
 codename: codefabric
-title: "Fase 10 — Elastic workers e integrations"
+title: Fase 10 — Elastic workers e integrations
 type: epic
-status: draft
+status: abandoned
 priority: P2
 size: XL
 issue: null
@@ -13,7 +13,9 @@ depends_on: [phase-9-policies]
 supersedes: []
 related_specs: [codefabric-spec]
 created: 2026-10-10
-updated: 2026-10-10
+updated: 2026-11-25
+abandoned_at: 2026-11-25
+abandoned_reason: "Red de peers (v0.5): épica de la hoja de ruta del Controller; lo que sobrevive está en docs/ROADMAP.md"
 ---
 
 # Fase 10 — Elastic workers e integrations

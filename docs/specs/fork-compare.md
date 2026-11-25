@@ -1,6 +1,6 @@
 ---
 codename: codefabric
-title: "Fork y compare"
+title: Fork y compare
 type: task
 status: draft
 priority: P2
@@ -13,10 +13,12 @@ depends_on: [checkpoint-capture, evaluators]
 supersedes: []
 related_specs: [codefabric-spec, phase-7-experiments]
 created: 2026-10-10
-updated: 2026-10-10
+updated: 2026-11-25
 ---
 
 # Fork y compare
+
+> **Pendiente de reescribir para la red de peers (v0.5, sin Controller).** Lo que se escribió aquí supone un Controller. La versión p2p: `cflk fork <job> --on X --harness Y` lanza un Job nuevo desde la misma rama y sesión; `cflk diff <jobA> <jobB>` compara las dos ramas `cflk/`. Ver [la hoja de ruta](../ROADMAP.md).
 
 ## Contexto / problema
 

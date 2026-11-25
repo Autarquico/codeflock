@@ -1,8 +1,8 @@
 ---
 codename: codefabric
-title: "Concurrencia, quotas y límites de modelo"
+title: Concurrencia, quotas y límites de modelo
 type: task
-status: draft
+status: abandoned
 priority: P2
 size: M
 issue: null
@@ -13,7 +13,9 @@ depends_on: [policy-engine, provider-anthropic-openai]
 supersedes: []
 related_specs: [codefabric-spec, phase-9-policies]
 created: 2026-10-10
-updated: 2026-10-10
+updated: 2026-11-25
+abandoned_at: 2026-11-25
+abandoned_reason: "Red de peers (v0.5): sin scheduler ni cola"
 ---
 
 # Concurrencia, quotas y límites de modelo

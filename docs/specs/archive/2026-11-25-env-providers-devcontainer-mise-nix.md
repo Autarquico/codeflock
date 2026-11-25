@@ -1,8 +1,8 @@
 ---
 codename: codefabric
-title: "Environment providers devcontainer, mise y nix"
+title: Environment providers devcontainer, mise y nix
 type: task
-status: draft
+status: abandoned
 priority: P2
 size: M
 issue: null
@@ -13,7 +13,9 @@ depends_on: [docker-environment-runtime]
 supersedes: []
 related_specs: [codefabric-spec, phase-10-elastic]
 created: 2026-10-10
-updated: 2026-10-10
+updated: 2026-11-25
+abandoned_at: 2026-11-25
+abandoned_reason: "Red de peers (v0.5): sin Environments"
 ---
 
 # Environment providers devcontainer, mise y nix

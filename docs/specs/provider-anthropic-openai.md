@@ -1,6 +1,6 @@
 ---
 codename: codefabric
-title: "Providers Anthropic y OpenAI"
+title: Providers Anthropic y OpenAI
 type: task
 status: draft
 priority: P1
@@ -13,10 +13,12 @@ depends_on: [usage-attribution]
 supersedes: []
 related_specs: [codefabric-spec, phase-6-models-usage]
 created: 2026-10-10
-updated: 2026-10-10
+updated: 2026-11-25
 ---
 
 # Providers Anthropic y OpenAI
+
+> **Pendiente de reescribir para la red de peers (v0.5, sin Controller).** Lo que se escribió aquí supone un Controller. La versión p2p: `cflk models`: estado y uso consultados en vivo en el peer local, sin guardar nada. Ver [la hoja de ruta](../ROADMAP.md).
 
 ## Contexto / problema
 

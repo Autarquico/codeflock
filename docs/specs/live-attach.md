@@ -2,7 +2,7 @@
 codename: codefabric
 title: Entrar en un Run o un Worker desde el TUI
 type: task
-status: active
+status: shipped
 priority: P1
 size: L
 issue: 179
@@ -12,7 +12,7 @@ depends_on: [observe-attach-events, tui-views-actions]
 supersedes: [pty-relay-attach]
 related_specs: [codefabric-spec, claude-remote-runs]
 created: 2026-11-15
-updated: 2026-11-16
+updated: 2026-11-25
 ---
 
 # Entrar en un Run o un Worker desde el TUI

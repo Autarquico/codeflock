@@ -1,8 +1,8 @@
 ---
 codename: codefabric
-title: "Backend central de secrets"
+title: Backend central de secrets
 type: task
-status: draft
+status: abandoned
 priority: P2
 size: M
 issue: null
@@ -13,7 +13,9 @@ depends_on: [secrets-local]
 supersedes: []
 related_specs: [codefabric-spec, phase-10-elastic]
 created: 2026-10-10
-updated: 2026-10-10
+updated: 2026-11-25
+abandoned_at: 2026-11-25
+abandoned_reason: "Red de peers (v0.5): cada peer tiene su login y sus credenciales; sin SecretStore central"
 ---
 
 # Backend central de secrets

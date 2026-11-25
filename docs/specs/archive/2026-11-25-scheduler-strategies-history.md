@@ -1,8 +1,8 @@
 ---
 codename: codefabric
-title: "Estrategias de scheduling e historial"
+title: Estrategias de scheduling e historial
 type: task
-status: draft
+status: abandoned
 priority: P2
 size: M
 issue: null
@@ -13,7 +13,9 @@ depends_on: [analytics-history, concurrency-quotas-model-limits]
 supersedes: []
 related_specs: [codefabric-spec, phase-9-policies]
 created: 2026-10-10
-updated: 2026-10-10
+updated: 2026-11-25
+abandoned_at: 2026-11-25
+abandoned_reason: "Red de peers (v0.5): sin scheduler; el peer lo elige quien lanza o --on any"
 ---
 
 # Estrategias de scheduling e historial

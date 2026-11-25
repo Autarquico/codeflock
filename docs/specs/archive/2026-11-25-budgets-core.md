@@ -1,8 +1,8 @@
 ---
 codename: codefabric
-title: "Budgets (núcleo)"
+title: Budgets (núcleo)
 type: task
-status: draft
+status: abandoned
 priority: P2
 size: M
 issue: null
@@ -13,7 +13,9 @@ depends_on: [usage-attribution, plans-dag]
 supersedes: []
 related_specs: [codefabric-spec, phase-8-mcp-plans]
 created: 2026-10-10
-updated: 2026-10-10
+updated: 2026-11-25
+abandoned_at: 2026-11-25
+abandoned_reason: "Red de peers (v0.5): sin presupuestos centrales"
 ---
 
 # Budgets (núcleo)

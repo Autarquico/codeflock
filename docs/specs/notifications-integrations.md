@@ -1,6 +1,6 @@
 ---
 codename: codefabric
-title: "Notificaciones e integraciones"
+title: Notificaciones e integraciones
 type: task
 status: draft
 priority: P2
@@ -13,10 +13,12 @@ depends_on: [palette-search-notify, promote]
 supersedes: []
 related_specs: [codefabric-spec, phase-10-elastic]
 created: 2026-10-10
-updated: 2026-10-10
+updated: 2026-11-25
 ---
 
 # Notificaciones e integraciones
+
+> **Pendiente de reescribir para la red de peers (v0.5, sin Controller).** Lo que se escribió aquí supone un Controller. La versión p2p: Avisar (ntfy/Slack) cuando un Job pasa a `waiting` o `done`, desde los hooks y el `notify` que ya existen (`cflk internal notify`). Ver [la hoja de ruta](../ROADMAP.md).
 
 ## Contexto / problema
 

@@ -1,6 +1,6 @@
 ---
 codename: codefabric
-title: "Atribución de usage"
+title: Atribución de usage
 type: task
 status: draft
 priority: P1
@@ -13,10 +13,12 @@ depends_on: [claude-code-adapter, codex-adapter, logs-output-storage]
 supersedes: []
 related_specs: [codefabric-spec, phase-6-models-usage]
 created: 2026-10-10
-updated: 2026-10-10
+updated: 2026-11-25
 ---
 
 # Atribución de usage
+
+> **Pendiente de reescribir para la red de peers (v0.5, sin Controller).** Lo que se escribió aquí supone un Controller. La versión p2p: Tokens por Job leídos del fichero de sesión del harness, en `show` y `ps --json`; sin tabla `model_usage_events`. Ver [la hoja de ruta](../ROADMAP.md).
 
 ## Contexto / problema
 

@@ -1,8 +1,8 @@
 ---
 codename: codefabric
-title: "Worker provisioner"
+title: Worker provisioner
 type: task
-status: draft
+status: abandoned
 priority: P2
 size: L
 issue: null
@@ -13,7 +13,9 @@ depends_on: [binary-distribution-upgrade, budgets-core]
 supersedes: []
 related_specs: [codefabric-spec, phase-10-elastic]
 created: 2026-10-10
-updated: 2026-10-10
+updated: 2026-11-25
+abandoned_at: 2026-11-25
+abandoned_reason: "Red de peers (v0.5): sin cola ni presupuestos que lo disparen"
 ---
 
 # Worker provisioner

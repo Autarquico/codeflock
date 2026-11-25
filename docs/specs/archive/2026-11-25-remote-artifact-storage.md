@@ -1,8 +1,8 @@
 ---
 codename: codefabric
-title: "Almacenamiento remoto de artifacts"
+title: Almacenamiento remoto de artifacts
 type: task
-status: draft
+status: abandoned
 priority: P2
 size: S
 issue: null
@@ -13,7 +13,9 @@ depends_on: [retention-gc]
 supersedes: []
 related_specs: [codefabric-spec, phase-10-elastic]
 created: 2026-10-10
-updated: 2026-10-10
+updated: 2026-11-25
+abandoned_at: 2026-11-25
+abandoned_reason: "Red de peers (v0.5): sin blob store del Controller"
 ---
 
 # Almacenamiento remoto de artifacts

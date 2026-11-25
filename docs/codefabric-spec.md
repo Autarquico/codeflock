@@ -1,5 +1,7 @@
 # Code Flock (`cflk`) — Especificación técnica y de producto
 
+> **Registro histórico.** Este documento describe Code Flock con Controller (hasta la 0.4). Desde la 0.5 es una red de peers sin Controller: ver [la spec de la red de peers](specs/p2p-peers.md) y [la hoja de ruta](ROADMAP.md).
+
 **Estado:** Especificación de implementación — rev. 4.1 (2026-10-10; cambios en Apéndice B, decisiones en Apéndice C)  
 **Objetivo:** Definir Code Flock de principio a fin con suficiente precisión para implementar el sistema completo de forma incremental.  
 **Interfaz principal:** `cflk` (CLI + TUI)  
@@ -2862,6 +2864,8 @@ Escenarios obligatorios:
 ---
 
 ## 43. Roadmap de implementación
+
+> Sustituido por [la hoja de ruta de la red de peers](ROADMAP.md). Las fases siguientes son el plan con Controller.
 
 ### Fase 0 — Skeleton
 
