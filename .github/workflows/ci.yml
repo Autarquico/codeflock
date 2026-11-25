@@ -16,7 +16,56 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # What a PR has to test. A push (main, next) tests everything: a release needs every check green on
+  # its exact commit, whatever the commit touched. In a PR, a change to docs, the site or Markdown only
+  # skips the Go jobs (site.yml covers the site), and the macOS jobs run only when the change can behave
+  # differently on macOS or the PR has the label ci/macos. A skipped job counts as passed for the
+  # required checks of main, so the jobs skip only on an explicit "false": if this job fails, they run.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      go: ${{ steps.what.outputs.go }}
+      macos: ${{ steps.what.outputs.macos }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: what
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [ "$EVENT" != pull_request ]; then
+            printf 'go=true\nmacos=true\n' >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          files="$(git diff --name-only "$BASE...$HEAD")"
+          printf '%s\n' "$files"
+          # Anything but docs, the site and Markdown is code.
+          code="$(printf '%s\n' "$files" | grep -v -E '^(docs/|site/)|\.md$' || true)"
+          go=false; [ -z "$code" ] || go=true
+          # The label is read now, not from the event, so that a re-run after adding it sees it.
+          label="$(gh pr view "$PR" --json labels -q '[.labels[].name] | index("ci/macos") != null')"
+          # macOS-specific: a file that names darwin or the OS, the installer and packaging, tmux,
+          # the attach window, the workflows, or the dependencies.
+          mac="$(printf '%s\n' "$code" | grep -E 'darwin|^install\.sh$|^packaging/|^internal/adapters/runtime/tmux/|^internal/attachwindow/|^\.github/workflows/|^go\.(mod|sum)$' || true)"
+          for f in $code; do
+            case "$f" in *.go) [ -f "$f" ] && grep -q -E 'darwin|GOOS|keychain' "$f" && mac="$mac $f" ;; esac
+          done
+          macos=false
+          if [ "$go" = true ] && { [ "$label" = true ] || [ -n "$mac" ]; }; then macos=true; fi
+          printf 'go=%s\nmacos=%s\n' "$go" "$macos" | tee -a "$GITHUB_OUTPUT"
+
   lint:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.go != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -29,10 +78,24 @@ jobs:
           version: v2.14
 
   unit:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    name: unit (ubuntu-latest)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.go != 'false' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.x"
+          check-latest: true
+      - run: make test-race
+
+
+  unit-macos:
+    name: unit (macos-latest)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.macos != 'false' }}
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -42,10 +105,33 @@ jobs:
       - run: make test-race
 
   integration:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    name: integration (ubuntu-latest)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.go != 'false' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.x"
+          check-latest: true
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y git tmux
+      - if: runner.os == 'macOS'
+        run: brew install tmux
+      - run: git --version && tmux -V
+      # Without tmux or git the tests that need them skip; here they must run.
+      - run: make test-integration
+        env:
+          CF_REQUIRE_TMUX: "1"
+          CF_REQUIRE_GIT: "1"
+
+
+  integration-macos:
+    name: integration (macos-latest)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.macos != 'false' }}
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -64,6 +150,8 @@ jobs:
           CF_REQUIRE_GIT: "1"
 
   cross-build:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.go != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -74,6 +162,8 @@ jobs:
       - run: make cross
 
   govulncheck:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.go != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -86,11 +176,34 @@ jobs:
   # The installer and the release chain, against an ephemeral key. Registered in
   # packaging/release/required-checks.txt: release.yml refuses to build without it.
   installer:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    name: installer (ubuntu-latest)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.go != 'false' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.x"
+          check-latest: true
+      - name: Install prerequisites (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y shellcheck openssh-client python3
+      - name: Install prerequisites (macOS)
+        if: runner.os == 'macOS'
+        run: brew install shellcheck
+      - name: shellcheck
+        run: git ls-files -z '*.sh' | xargs -0 shellcheck
+      - run: make test-installer
+
+
+  installer-macos:
+    name: installer (macos-latest)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.macos != 'false' }}
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
