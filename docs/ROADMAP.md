@@ -30,4 +30,4 @@ Desde la 0.5 Code Flock es una red de peers iguales sobre Tailscale, ssh, tmux y
 - Adaptadores de OpenCode y Pi, con export y resume de la sesión para que `move` funcione ([opencode-pi-adapters](specs/opencode-pi-adapters.md)).
 - Entrada estructurada de Codex, solo si su `notify` no ve las preguntas ([codex-structured-input](specs/codex-structured-input.md)).
 
-Las specs de v0.6 y v0.8, y la de entrada estructurada de Codex, están escritas para el Controller y llevan al principio la versión p2p que hay que escribir antes de implementarlas. La de OpenCode y Pi no depende del Controller; le falta pedir el export y el resume de la sesión.
+Las specs de v0.6 a v0.8 y la de entrada estructurada de Codex, están escritas para el Controller y llevan al principio la versión p2p que hay que escribir antes de implementarlas. La de OpenCode y Pi no depende del Controller; le falta pedir el export y el resume de la sesión.
