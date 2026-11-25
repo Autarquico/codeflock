@@ -65,7 +65,7 @@ A typical turn: the model calls `jobs_list`, sees a Job `waiting`, reads `jobs_s
 
 ## What is tested, and what is not
 
-The install and uninstall commands are tested in CI with fake `claude` and `codex` programs. They have not been run against every version of the real tools. On real machines, `cflk mcp serve` was checked to list its tools and the Jobs of the peers. The other peer tools call the same code as the CLI commands of the same name; what of that was checked by hand is in [Getting started](../getting-started/). `jobs_attach` was not.
+The install and uninstall commands are tested in CI with fake `claude` and `codex` programs. They have not been run against every version of the real tools. On real machines, `cflk mcp serve` was checked to list its tools and the Jobs of the peers, and `cflk mcp install --claude` to register it in Claude Code, which then listed the peers and started a Job on another one. A registration left by 0.4 (`mcp serve --profile execute`) is not replaced: remove it first with `claude mcp remove --scope user cflk`. The other peer tools call the same code as the CLI commands of the same name; what of that was checked by hand is in [Getting started](../getting-started/). `jobs_attach` was not.
 
 ## Running the server by hand
 
