@@ -332,6 +332,27 @@ func replying(resp wire.Response) remotetest.ServeFunc {
 	}
 }
 
+func TestAJobOnAPeerThatAnswersLateIsStillFoundForTheCommandThatNamesIt(t *testing.T) {
+	tf := newTestFleet(t, []fakeharness.Step{neverEnds}, "slow")
+	answer := replying(wire.Response{Job: &wire.JobView{ID: "job-aaaaaaaaaa", State: "waiting", Gen: 1}})
+	tf.dialer.Peers["slow"] = func(ctx context.Context, in io.Reader, out io.Writer) error {
+		select {
+		case <-time.After(3 * tf.timeout / 2): // later than a listing waits
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return answer(ctx, in, out)
+	}
+	if l, err := tf.List(t.Context(), ""); err != nil || len(l.Unreachable) != 1 {
+		t.Fatalf("a listing does not wait for the slow peer: %+v, %v", l, err)
+	}
+	tf.findTimeout = 10 * tf.timeout
+	v, err := tf.Show(t.Context(), "job-aaaaaaaaaa")
+	if err != nil || v.ID != "job-aaaaaaaaaa" {
+		t.Errorf("a Job on a peer slower than a listing: %+v, %v", v, err)
+	}
+}
+
 func TestAPeerThatAnswersForAnotherJobIsNotTheOwner(t *testing.T) {
 	tf := newTestFleet(t, []fakeharness.Step{neverEnds}, "liar")
 	tf.dialer.Peers["liar"] = replying(wire.Response{Job: &wire.JobView{ID: "job-bbbbbbbbbb", State: "running", Gen: 9}})

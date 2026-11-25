@@ -32,6 +32,11 @@ const queryTimeout = 4 * time.Second
 // share it, and the local Jobs are read meanwhile.
 const listBudget = 4500 * time.Millisecond
 
+// findTimeout is how long a peer has to say whether it has a Job that a command
+// names (attach, send, move...): a person waits for that one Job, and a tailnet
+// can take seconds to open a connection.
+const findTimeout = 15 * time.Second
+
 // fleet is cli.Jobs over this peer and the others: every command works on a Job
 // wherever it is. The peers are the discovered ones, and a peer is only ever
 // reached through the Transport.
@@ -42,6 +47,9 @@ type fleet struct {
 	windows   attachwindow.Runner
 	// timeout is how long a peer has to answer a question.
 	timeout time.Duration
+	// findTimeout is how long a peer has to answer whether it has a Job a
+	// command names; zero is timeout.
+	findTimeout time.Duration
 	// budget is how long a listing may take in all; zero is listBudget.
 	budget time.Duration
 	// orderTimeout is how long a peer has to carry out an order (stop, send,
@@ -70,10 +78,10 @@ type reply struct {
 	err  error
 }
 
-// ask sends req to every peer at once, each with its own timeout, and returns
-// the answers in the order of the peers. A peer that Tailscale says is offline
-// is not dialed.
-func (f *fleet) ask(ctx context.Context, peers []discovery.Peer, req wire.Request) []reply {
+// ask sends req to every peer at once, each with timeout, and returns the
+// answers in the order of the peers. A peer that Tailscale says is offline is
+// not dialed.
+func (f *fleet) ask(ctx context.Context, peers []discovery.Peer, req wire.Request, timeout time.Duration) []reply {
 	replies := make([]reply, len(peers))
 	var wg sync.WaitGroup
 	for i, p := range peers {
@@ -85,7 +93,7 @@ func (f *fleet) ask(ctx context.Context, peers []discovery.Peer, req wire.Reques
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ctx, cancel := context.WithTimeout(ctx, f.timeout)
+			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 			replies[i].resp, replies[i].body, replies[i].err = remote.Call(ctx, f.transport, p, req, nil)
 		}()
@@ -169,7 +177,7 @@ func (f *fleet) List(ctx context.Context, only string) (cli.JobList, error) {
 			localDone <- r
 		}()
 	}
-	replies := f.ask(budget, peers, wire.Request{Op: wire.OpPS})
+	replies := f.ask(budget, peers, wire.Request{Op: wire.OpPS}, f.timeout)
 	var local localRead
 	if wantLocal {
 		select {
@@ -240,7 +248,7 @@ func (f *fleet) Peers(ctx context.Context) ([]cli.PeerView, error) {
 		return nil, err
 	}
 	views := []cli.PeerView{{Name: self, This: true, Reachable: true, Harnesses: hello.Harnesses, Jobs: hello.Jobs}}
-	for _, r := range f.ask(ctx, res.Peers, wire.Request{Op: wire.OpHello}) {
+	for _, r := range f.ask(ctx, res.Peers, wire.Request{Op: wire.OpHello}, f.timeout) {
 		v := cli.PeerView{Name: r.peer.Name, Probe: "ssh " + r.peer.Host + " " + cmp.Or(r.peer.Cflk, discovery.DefaultCflk) + " peer"}
 		if r.err != nil {
 			v.Problem = r.err.Error()
@@ -310,7 +318,7 @@ func (f *fleet) locate(ctx context.Context, id string) (owner, error) {
 	}
 	var found *owner
 	var silent []string
-	for _, r := range f.ask(ctx, res.Peers, wire.Request{Op: wire.OpShow, Job: id}) {
+	for _, r := range f.ask(ctx, res.Peers, wire.Request{Op: wire.OpShow, Job: id}, cmp.Or(f.findTimeout, f.timeout)) {
 		switch {
 		case codeOf(r.err) == domain.CodeNotFound:
 		case r.err != nil || r.resp.Job == nil || r.resp.Job.ID != id:
@@ -345,7 +353,7 @@ func (f *fleet) locatePending(ctx context.Context, id string) (owner, error) {
 		return owner{view: v}, nil
 	}
 	if res, err := f.discover(ctx); err == nil {
-		for _, r := range f.ask(ctx, res.Peers, wire.Request{Op: wire.OpShow, Job: id}) {
+		for _, r := range f.ask(ctx, res.Peers, wire.Request{Op: wire.OpShow, Job: id}, cmp.Or(f.findTimeout, f.timeout)) {
 			if r.err == nil && r.resp.Job != nil && r.resp.Job.ID == id && r.resp.Job.State == string(job.Moving) {
 				return owner{peer: &r.peer, view: cli.JobView(*r.resp.Job)}, nil
 			}
@@ -600,7 +608,7 @@ func (f *fleet) target(ctx context.Context, res discovery.Result, on, harness st
 	if hello, err := (peerService{f.local}).Hello(ctx); err == nil && slices.Contains(hello.Harnesses, harness) {
 		fewest = hello.Jobs
 	}
-	for _, r := range f.ask(ctx, res.Peers, wire.Request{Op: wire.OpHello}) {
+	for _, r := range f.ask(ctx, res.Peers, wire.Request{Op: wire.OpHello}, f.timeout) {
 		h := r.resp.Hello
 		if r.err == nil && h != nil && slices.Contains(h.Harnesses, harness) && (fewest < 0 || h.Jobs < fewest) {
 			best, fewest = &r.peer, h.Jobs
@@ -612,18 +620,20 @@ func (f *fleet) target(ctx context.Context, res discovery.Result, on, harness st
 	return best, nil
 }
 
-// connectTimeout is how long ssh has to reach a peer.
-const connectTimeout = 3 * time.Second
+// connectTimeout is how long ssh has to reach a peer: a tailnet can take seconds
+// to open a connection. A listing is bounded by its own budget, not by this.
+const connectTimeout = 10 * time.Second
 
 // newFleet is the fleet of this binary: the peers of Tailscale and the config
 // file, reached over ssh.
 func newFleet(local *localJobs) *fleet {
 	f := &fleet{
-		local:     local,
-		transport: remote.SSH{ConnectTimeout: connectTimeout},
-		discover:  discoverPeers,
-		windows:   attachwindow.ExecRunner{},
-		timeout:   queryTimeout,
+		local:       local,
+		transport:   remote.SSH{ConnectTimeout: connectTimeout},
+		discover:    discoverPeers,
+		windows:     attachwindow.ExecRunner{},
+		timeout:     queryTimeout,
+		findTimeout: findTimeout,
 	}
 	local.net = &network{transport: f.transport, discover: f.discover}
 	return f

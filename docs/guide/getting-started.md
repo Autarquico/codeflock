@@ -8,7 +8,7 @@ Code Flock home: [autarquico.github.io/codeflock](https://autarquico.github.io/c
 This page takes you from nothing to a Job running on another machine of yours. You need two machines on the same [Tailscale](https://tailscale.com) tailnet, and a Git repository.
 
 :::note[What has been verified]
-This guide describes the behaviour of the 0.5.0 betas. Verified with the real CLIs: a Claude Code session moved to another machine, in another directory, is resumed and remembers the conversation; the same for Codex across directories on one machine. Checked by hand on two Macs and a Linux box: a Claude Code Job run on another peer, sent to, pulled here and moved back, remembering the conversation; a Codex Job run on another peer, pulled here, finished with `pull --finish` and cleaned; Claude Code Jobs moved in both directions between the Linux box and the second Mac; `tui` listing the Jobs of the three machines; `cflk mcp install --claude`. Not yet checked by hand: `attach`, entering a Job from `tui`, `cflk mcp install --codex`, a Codex Job moved back, and moves between the two Macs.
+This guide describes the behaviour of the 0.5.0 betas. Verified with the real CLIs: a Claude Code session moved to another machine, in another directory, is resumed and remembers the conversation; the same for Codex across directories on one machine. Checked by hand on two Macs and a Linux box: a Claude Code Job run on another peer, sent to, pulled here and moved back, remembering the conversation; a Codex Job run on another peer, pulled here, finished with `pull --finish` and cleaned; Claude Code Jobs moved in both directions between the Linux box and the second Mac; `tui` listing the Jobs of the three machines; `cflk mcp install --claude`; `attach` from a Mac to a Job on the Linux box. Not yet checked by hand: entering a Job from `tui`, `cflk mcp install --codex`, a Codex Job moved back, and moves between the two Macs.
 :::
 
 ## What a machine needs
@@ -129,7 +129,7 @@ cflk send <job> "yes, go on"  # type into the agent
 cflk attach <job>             # enter it
 ```
 
-A Job that stopped to ask something shows as `waiting`. Claude Code reports it through its hooks and Codex through its notify program; a harness that cannot never shows `waiting`. `cflk attach --read-only <job>` watches without typing.
+A Job that stopped to ask something shows as `waiting`. Claude Code reports it through its hooks and Codex through its notify program; a harness that cannot never shows `waiting`. `cflk attach --read-only <job>` watches without typing. To leave, press Ctrl+] (on a keyboard where `]` needs Option, closing the terminal tab works too): the agent keeps running. Ctrl+C reaches the agent, and the usual tmux keys do nothing.
 
 Without a terminal on its input, `cflk attach` opens the Job in a new window when it runs inside tmux, iTerm2 or Terminal.app. That is what `jobs_attach` does from Claude Code, see [Use cflk from Claude Code](../mcp/). The first time on macOS, the system asks whether your terminal may control iTerm2 or Terminal.app; allow it.
 
