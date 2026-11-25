@@ -16,7 +16,74 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # What a PR has to test. A push (main, next) tests everything: a release needs every check green on
+  # its exact commit, whatever the commit touched. In a PR, a change to docs, the site or Markdown only
+  # skips the Go jobs (site.yml covers the site), and the macOS jobs run only when the change can behave
+  # differently on macOS or the PR has the label ci/macos. A skipped job counts as passed for the
+  # required checks of main, so the jobs skip only on an explicit "false": if this job fails, they run.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      go: ${{ steps.what.outputs.go }}
+      macos: ${{ steps.what.outputs.macos }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: what
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != pull_request ]; then
+            printf 'go=true\nmacos=true\n' >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Both sides of a rename, NUL-separated: a moved file counts where it was and where it went.
+          # The same baseline for the list and for the old content: the merge base.
+          mb="$(git merge-base "$BASE" "$HEAD")"
+          git diff --name-only -z --no-renames "$mb" "$HEAD" > "$RUNNER_TEMP/files"
+          mapfile -d '' files < "$RUNNER_TEMP/files"
+          go=false; mac=false
+          for f in "${files[@]}"; do
+            # Only docs, the site and the Markdown at the root are not code: a .md elsewhere can be
+            # embedded in the binary (internal/cli/skills), and a .go file anywhere is built by ./...
+            if [[ "$f" != *.go && ( "$f" =~ ^(docs/|site/) || "$f" =~ ^[^/]+\.md$ ) ]]; then continue; fi
+            go=true
+            if [[ "$f" =~ darwin|^install\.sh$|^packaging/|^internal/adapters/runtime/tmux/|^internal/adapters/pty/|^internal/attachwindow/|^\.github/workflows/|^go\.(mod|sum)$|^Makefile$|_(linux|darwin|unix|windows|bsd)(_test)?\.go$ ]]; then
+              mac=true; continue
+            fi
+            # A Go file whose old or new content names the OS or carries a build constraint.
+            if [[ "$f" == *.go ]]; then
+              for side in "$mb" "$HEAD"; do
+                if git cat-file -e "$side:$f" 2>/dev/null; then
+                  git show "$side:$f" > "$RUNNER_TEMP/side.go"
+                  rc=0; grep -q -E 'darwin|GOOS|keychain|^//go:build|^// \+build|"syscall"|golang.org/x/sys/|EvalSymlinks' "$RUNNER_TEMP/side.go" || rc=$?
+                  case "$rc" in 0) mac=true ;; 1) ;; *) exit "$rc" ;; esac
+                fi
+              done
+            fi
+          done
+          printf '%s files changed\n' "${#files[@]}"
+          # The label is read now, not from the event: after adding it, "Re-run all jobs" (or a new
+          # push) sees it; "Re-run failed jobs" does not run this job again.
+          label="$(gh pr view "$PR" --json labels -q '[.labels[].name] | index("ci/macos") != null')"
+          macos=false
+          if [ "$label" = true ] || { [ "$go" = true ] && [ "$mac" = true ]; }; then macos=true; fi
+          printf 'go=%s\nmacos=%s\n' "$go" "$macos" | tee -a "$GITHUB_OUTPUT"
+
   lint:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.go != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -29,10 +96,23 @@ jobs:
           version: v2.14
 
   unit:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    name: unit (ubuntu-latest)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.go != 'false' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.x"
+          check-latest: true
+      - run: make test-race
+
+  unit-macos:
+    name: unit (macos-latest)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.macos != 'false' }}
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -42,20 +122,36 @@ jobs:
       - run: make test-race
 
   integration:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    name: integration (ubuntu-latest)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.go != 'false' }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version: "1.27.x"
           check-latest: true
-      - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y git tmux
-      - if: runner.os == 'macOS'
-        run: brew install tmux
+      - run: sudo apt-get update && sudo apt-get install -y git tmux
+      - run: git --version && tmux -V
+      # Without tmux or git the tests that need them skip; here they must run.
+      - run: make test-integration
+        env:
+          CF_REQUIRE_TMUX: "1"
+          CF_REQUIRE_GIT: "1"
+
+  integration-macos:
+    name: integration (macos-latest)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.macos != 'false' }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.x"
+          check-latest: true
+      - run: brew install tmux
       - run: git --version && tmux -V
       # Without tmux or git the tests that need them skip; here they must run.
       - run: make test-integration
@@ -64,6 +160,8 @@ jobs:
           CF_REQUIRE_GIT: "1"
 
   cross-build:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.go != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -74,6 +172,8 @@ jobs:
       - run: make cross
 
   govulncheck:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.go != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -86,11 +186,10 @@ jobs:
   # The installer and the release chain, against an ephemeral key. Registered in
   # packaging/release/required-checks.txt: release.yml refuses to build without it.
   installer:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    name: installer (ubuntu-latest)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.go != 'false' }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -100,10 +199,25 @@ jobs:
           go-version: "1.27.x"
           check-latest: true
       - name: Install prerequisites (Linux)
-        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y shellcheck openssh-client python3
+      - name: shellcheck
+        run: git ls-files -z '*.sh' | xargs -0 shellcheck
+      - run: make test-installer
+
+  installer-macos:
+    name: installer (macos-latest)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.macos != 'false' }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.x"
+          check-latest: true
       - name: Install prerequisites (macOS)
-        if: runner.os == 'macOS'
         run: brew install shellcheck
       - name: shellcheck
         run: git ls-files -z '*.sh' | xargs -0 shellcheck
