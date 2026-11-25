@@ -103,13 +103,14 @@ export const landing = {
 		verified: [
 			'A Claude Code session exported on one machine and imported on another, in a different directory and with a new session id, is resumed by Claude Code and remembers the conversation.',
 			'A Codex session does the same across directories, on one machine.',
-			'By hand on two Macs and a Linux box: a Claude Code Job run on another peer, moved here and back again, remembering the conversation; a Codex Job run on another peer, moved here and finished into the repository.',
+			'By hand on two Macs and a Linux box: a Claude Code Job run on another peer, moved here and back again, remembering the conversation; a Codex Job run on another peer, moved here and finished into the repository; Claude Code Jobs moved in both directions between the Linux box and the second Mac, remembering the conversation.',
+			'By hand: the tui over the Jobs of the three machines, and cflk mcp install registering the server in Claude Code, which then lists the peers and starts Jobs on them.',
 			'Claude Code and Codex, in tmux, signal that they wait for a person: Claude Code through its hooks, Codex through its notify program. Both were observed with the real CLIs.',
 			"The installer's signature and checksum checks are tested in CI against a throwaway key.",
 		],
 		notVerifiedTitle: 'Not verified',
 		notVerified: [
-			{ text: 'Not checked by hand: entering a Job (attach, tui), cflk mcp install, a Codex Job moved back to the peer it came from, and moves between every pair of machines.' },
+			{ text: 'Not checked by hand: entering a Job with attach, and a Codex Job moved back to the peer it came from.' },
 			{ text: 'Opening an attach in a new window: iTerm2, tmux and Terminal.app have not been checked for this version.' },
 			{ text: 'The installer has not yet been run on a clean machine against a published release.' },
 			{ text: 'Every peer trusts every other one fully: what a peer can do on another is what you could do by ssh. Add a machine only if you would let it do that.' },
@@ -165,13 +166,14 @@ export const landing = {
 		verified: [
 			'Una sesión de Claude Code exportada en una máquina e importada en otra, en otro directorio y con un id de sesión nuevo, la reanuda Claude Code y recuerda la conversación.',
 			'Una sesión de Codex hace lo mismo entre directorios, en una sola máquina.',
-			'A mano en dos Macs y un Linux: un Job de Claude Code lanzado en otro peer, movido aquí y de vuelta, que recuerda la conversación; un Job de Codex lanzado en otro peer, movido aquí y terminado en el repositorio.',
+			'A mano en dos Macs y un Linux: un Job de Claude Code lanzado en otro peer, movido aquí y de vuelta, que recuerda la conversación; un Job de Codex lanzado en otro peer, movido aquí y terminado en el repositorio; Jobs de Claude Code movidos en los dos sentidos entre el Linux y el segundo Mac, que recuerdan la conversación.',
+			'A mano: el tui sobre los Jobs de las tres máquinas, y cflk mcp install registrando el servidor en Claude Code, que luego lista los peers y lanza Jobs en ellos.',
 			'Claude Code y Codex, en tmux, avisan de que esperan a una persona: Claude Code con sus hooks, Codex con su programa notify. Los dos se observaron con los CLIs reales.',
 			'Las comprobaciones de firma y checksum del instalador se prueban en CI con una clave desechable.',
 		],
 		notVerifiedTitle: 'Sin verificar',
 		notVerified: [
-			{ text: 'Sin comprobar a mano: entrar en un Job (attach, tui), cflk mcp install, devolver un Job de Codex al peer del que vino y mover entre todos los pares de máquinas.' },
+			{ text: 'Sin comprobar a mano: entrar en un Job con attach y devolver un Job de Codex al peer del que vino.' },
 			{ text: 'Abrir un attach en una ventana nueva: iTerm2, tmux y Terminal.app no se han comprobado para esta versión.' },
 			{ text: 'El instalador aún no se ha ejecutado en una máquina limpia contra una release publicada.' },
 			{ text: 'Cada peer confía por completo en los demás: lo que un peer puede hacer en otro es lo que tú harías por ssh. Añade una máquina solo si la dejarías hacerlo.' },

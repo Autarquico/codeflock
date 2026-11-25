@@ -8,14 +8,21 @@ Code Flock home: [autarquico.github.io/codeflock](https://autarquico.github.io/c
 This page takes you from nothing to a Job running on another machine of yours. You need two machines on the same [Tailscale](https://tailscale.com) tailnet, and a Git repository.
 
 :::note[What has been verified]
-This guide describes the behaviour of the 0.5.0 betas. Verified with the real CLIs: a Claude Code session moved to another machine, in another directory, is resumed and remembers the conversation; the same for Codex across directories on one machine. Checked by hand on two Macs and a Linux box: a Claude Code Job run on another peer, sent to, pulled here and moved back, remembering the conversation; a Codex Job run on another peer, pulled here, finished with `pull --finish` and cleaned. Not yet checked by hand: `attach`, `tui`, `cflk mcp install`, a Codex Job moved back, and moves between every pair of machines.
+This guide describes the behaviour of the 0.5.0 betas. Verified with the real CLIs: a Claude Code session moved to another machine, in another directory, is resumed and remembers the conversation; the same for Codex across directories on one machine. Checked by hand on two Macs and a Linux box: a Claude Code Job run on another peer, sent to, pulled here and moved back, remembering the conversation; a Codex Job run on another peer, pulled here, finished with `pull --finish` and cleaned; Claude Code Jobs moved in both directions between the Linux box and the second Mac; `tui` and `cflk mcp install`. Not yet checked by hand: `attach` and a Codex Job moved back.
 :::
 
 ## What a machine needs
 
 - `cflk`, `git` and `tmux`.
 - At least one harness: `claude` or `codex`, logged in on that machine. Each machine keeps its own login; nothing is shared.
-- Tailscale, with ssh from each machine to the others working (plain ssh keys or Tailscale SSH).
+- Tailscale, with ssh from each machine to the others working (plain ssh keys or Tailscale SSH). With Tailscale SSH, the default policy rule is `check`: it asks for a login in the browser, which a peer's ssh cannot answer, so the connection hangs. Give your own user an `accept` rule that `check` does not also match, because Tailscale puts `check` rules first:
+
+  ```json
+  "ssh": [
+    { "action": "accept", "src": ["autogroup:member"], "dst": ["autogroup:self"], "users": ["autogroup:nonroot"] },
+    { "action": "check",  "src": ["autogroup:member"], "dst": ["autogroup:self"], "users": ["root"] }
+  ]
+  ```
 - Linux or macOS (amd64, arm64). Windows is not supported.
 
 ## Install
